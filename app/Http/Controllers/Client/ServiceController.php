@@ -3,8 +3,12 @@
 namespace App\Http\Controllers\Client;
 
 use App\Billing\PlanChanges;
+use App\Contracts\HasPanelSections;
 use App\Enums\InvoiceStatus;
 use App\Enums\ServiceStatus;
+use App\Extensions\Servers\Panel\ClientContext;
+use App\Extensions\Servers\Panel\PanelResult;
+use App\Extensions\Servers\Panel\StandardSections;
 use App\Http\Controllers\Controller;
 use App\Models\Service;
 use App\Provisioning\Provisioner;
@@ -12,6 +16,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Str;
 use Illuminate\View\View;
 
 class ServiceController extends Controller
@@ -39,13 +44,15 @@ class ServiceController extends Controller
             'invoiceItems.invoice',
         ]);
         $changes = app(PlanChanges::class);
+        $panel = $provisioner->serverPanel($service, ClientContext::fromRequest($request, $service));
 
         return view('theme::client.services.show', [
             'service' => $service,
             'canChangePlan' => $changes->enabled() && $service->status === ServiceStatus::Active && $changes->targets($service)->isNotEmpty(),
             'pendingChange' => $changes->enabled() ? $changes->pendingFor($service) : null,
-            'canLogin' => filled($service->product->server_module) && $service->server !== null && $service->username !== null && $provisioner->hasLoginLink($service),
-            'panel' => $provisioner->clientPanel($service),
+            // A server panel with sections has its own sign-in button in its header.
+            'canLogin' => ! isset($panel['sections']) && filled($service->product->server_module) && $service->server !== null && $service->username !== null && $provisioner->hasLoginLink($service),
+            'panel' => $panel,
         ]);
     }
 
@@ -66,7 +73,8 @@ class ServiceController extends Controller
                 : $this->loginUnavailable($service);
         }
 
-        $url = $provisioner->loginUrl($service);
+        // A module that signs in with the client's context gets it; others give their loginUrl().
+        $url = $provisioner->signInUrl($service, ClientContext::fromRequest($request, $service));
 
         $response = $url !== null ? redirect()->away($url) : $this->loginUnavailable($service);
 
@@ -80,6 +88,10 @@ class ServiceController extends Controller
     public function panel(Request $request, Service $service, string $action, Provisioner $provisioner): RedirectResponse|JsonResponse
     {
         $this->authorizeOwner($request, $service);
+
+        if ($provisioner->productSupports($service->loadMissing('product')->product, HasPanelSections::class)) {
+            return $this->sectionAction($request, $service, $action, $provisioner);
+        }
 
         $result = $provisioner->clientAction($service, $action, $request->except('_token'));
 
@@ -95,6 +107,53 @@ class ServiceController extends Controller
         return back()
             ->with($result->success ? 'status' : 'error', $result->message)
             ->with('panel_result', $result->success ? $result->data : null);
+    }
+
+    /**
+     * An old panel action ("restart", "hostname" and so on) for a module with panel sections: it is
+     * mapped to its section action (StandardSections::LEGACY_ACTIONS) and goes through the panel gate,
+     * so the product switches, input rules and limits apply here too. The answer keeps the old shape;
+     * a secret is only ever in a JSON answer, never in the session.
+     */
+    private function sectionAction(Request $request, Service $service, string $action, Provisioner $provisioner): RedirectResponse|JsonResponse
+    {
+        $target = StandardSections::LEGACY_ACTIONS[$action] ?? null;
+        $input = $request->except('_token');
+
+        // The old reinstall form named the template os_id, and the old forms had no field to type a
+        // new password twice. A destructive action still needs its own ticked confirm box.
+        if ($target === 'reinstall.run' && ! array_key_exists('template', $input) && array_key_exists('os_id', $input)) {
+            $input['template'] = $input['os_id'];
+        }
+
+        if (in_array($target, ['settings.root-password', 'reinstall.run'], true) && array_key_exists('password', $input) && ! array_key_exists('password_confirmation', $input)) {
+            $input['password_confirmation'] = $input['password'];
+        }
+
+        $result = $target === null
+            ? PanelResult::fail(__('This action is not available.'), null, 404)
+            : $provisioner->panelAction($service, Str::before($target, '.'), Str::after($target, '.'), $input, ClientContext::fromRequest($request, $service), $request->expectsJson());
+
+        if ($request->expectsJson()) {
+            $body = [
+                'ok' => $result->ok,
+                'message' => $result->message,
+                'pending' => $result->ok && in_array($result->pending, ['start', 'stop', 'restart', 'poweroff'], true) ? $result->pending : null,
+                'state' => $result->ok ? $this->panelState($result->state) : null,
+            ];
+
+            if ($result->secret !== null) {
+                $body['secret'] = $result->secret;
+            }
+
+            $headers = self::PRIVATE_HEADERS + ($result->retryAfter !== null ? ['Retry-After' => (string) $result->retryAfter] : []);
+
+            return response()->json($body, $result->ok ? 200 : $result->status)->withHeaders($headers);
+        }
+
+        return back()
+            ->with($result->ok ? 'status' : 'error', $result->message !== '' ? $result->message : __('Done.'))
+            ->with('panel_result', $result->ok ? array_filter(['pending' => $result->pending]) : null);
     }
 
     /**
