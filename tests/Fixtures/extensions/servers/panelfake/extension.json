@@ -1,0 +1,9 @@
+{
+    "slug": "panelfake",
+    "type": "server",
+    "name": "Panel fake",
+    "version": "1.0.0",
+    "namespace": "Tests\\Fixtures\\PanelFake\\",
+    "class": "Tests\\Fixtures\\PanelFake\\PanelFakeModule",
+    "description": "A server module that only exists in the test suite. It implements every optional server contract, makes no network calls and records what core asks it."
+}

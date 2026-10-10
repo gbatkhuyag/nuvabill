@@ -24,8 +24,11 @@ final readonly class ModuleResult
         return new self(true, $message, $data);
     }
 
-    public static function fail(string $message): self
+    /**
+     * @param  array<string, mixed>  $data  Flags for core, for example ['busy' => true] when the server was busy and nothing changed.
+     */
+    public static function fail(string $message, array $data = []): self
     {
-        return new self(false, $message);
+        return new self(false, $message, $data);
     }
 }
