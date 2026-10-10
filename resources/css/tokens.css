@@ -36,6 +36,13 @@
     --nb-shadow: 0 1px 2px rgb(15 27 45 / 0.05);
     --nb-shadow-lg: 0 12px 32px rgb(15 27 45 / 0.14);
     --nb-overlay: rgb(8 16 27 / 0.5);
+    /* Chart lines and bars (server panel graphs), and their grid lines. They name other tokens, so
+       they follow the light and dark values below without being set again. */
+    --nb-chart-1: var(--nb-accent);
+    --nb-chart-2: var(--nb-info);
+    --nb-chart-3: var(--nb-warn);
+    --nb-chart-4: var(--nb-good);
+    --nb-chart-grid: var(--nb-line-2);
     --nb-radius: 6px;
     --nb-radius-sm: 6px;
     --nb-font-body: 'Figtree', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;

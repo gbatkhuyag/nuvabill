@@ -284,3 +284,56 @@ test('a tool form is locked only when it is really sent', async () => {
     assert.equal(sent.submitter.disabled, true);
     assert.equal(cancelled.submitter.disabled, false);
 });
+
+test('a forced restart waits for the running state and sends its confirm field', async () => {
+    const appended = [];
+    globalThis.FormData = class {
+        append(name, value) {
+            appended.push([name, value]);
+        }
+    };
+    const panel = vpsPanel(config({ state: 'running', pendingLabels: { reset: 'Restarting…' } }));
+    const event = click('reset', 'Force a restart?');
+    event.submitter.dataset.destructive = '';
+
+    panel.power(event);
+    await settle();
+
+    assert.deepEqual(confirms, ['Force a restart?']);
+    assert.deepEqual(appended, [['confirm', '1']]);
+    requests[0].answer({ ok: true, message: 'The server was reset.', pending: 'reset', state: 'stopped' });
+    await settle();
+    assert.equal(panel.label, 'Restarting…');
+
+    mock.timers.tick(4000);
+    await settle();
+    requests[1].answer({ state: 'running' });
+    await settle();
+    assert.equal(panel.state, 'running');
+    assert.equal(panel.busy, false);
+});
+
+test('a power action without a state to reach shows its message only, and a busy server says so', async () => {
+    const panel = vpsPanel(config({ state: 'stopped' }));
+
+    assert.equal(panel.shows('wol'), true);
+    panel.state = 'running';
+    assert.equal(panel.shows('wol'), false);
+    assert.equal(panel.shows('power-button'), true);
+
+    panel.power(click('power-button'));
+    await settle();
+    requests[0].answer({ ok: true, message: 'The power button was pressed.', pending: null, state: null });
+    await settle();
+    assert.equal(panel.message, 'The power button was pressed.');
+    assert.equal(panel.busy, false);
+    assert.equal(panel.pending, null);
+    mock.timers.tick(10000);
+    assert.equal(requests.length, 1);
+
+    panel.power(click('restart'));
+    await settle();
+    requests[1].answer({ ok: false, message: 'Another change is running on this server. Try again in a moment.' }, 409);
+    await settle();
+    assert.equal(panel.message, 'Another change is running on this server. Try again in a moment.');
+});

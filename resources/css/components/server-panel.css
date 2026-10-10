@@ -1,7 +1,524 @@
 /*
- * The client server panel: tabs, stat tiles, charts, the secret box and loading skeletons.
- * Imported by components.css, so the admin area can reuse these classes. Use only tokens from
- * tokens.css, so light and dark mode work, and only logical directions, so right-to-left pages work.
- *
- * Empty for now; the server panel screens add their classes here.
+ * The client server panel: tabs, live figure tiles, charts, the secret box, loading skeletons and
+ * progress bars. Imported by components.css, so the admin area and module views can reuse these
+ * classes. Only tokens from tokens.css (light and dark mode) and only logical directions
+ * (right-to-left pages). Charts read left to right on every page, like their numbers.
  */
+@layer components {
+    /* Tabs: a row of buttons that scrolls sideways on phones, with faded edges. */
+    .tabs {
+        display: flex;
+        gap: 2px;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scrollbar-width: none;
+        border-bottom: 1px solid var(--nb-line);
+        -webkit-mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+        mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+        padding-inline: 4px;
+    }
+
+    .tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        flex: none;
+        margin-bottom: -1px;
+        padding: 0.6rem 0.8rem;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        background: none;
+        color: var(--nb-muted);
+        font: inherit;
+        font-size: 0.86rem;
+        font-weight: 600;
+        white-space: nowrap;
+        cursor: pointer;
+    }
+
+    .tab svg {
+        width: 1rem;
+        height: 1rem;
+        flex: none;
+    }
+
+    .tab:hover {
+        color: var(--nb-ink);
+    }
+
+    .tab[aria-selected='true'] {
+        color: var(--nb-accent);
+        border-bottom-color: var(--nb-accent);
+    }
+
+    .tab:focus-visible {
+        outline-offset: -2px;
+    }
+
+    .tab-panel {
+        display: grid;
+        gap: 1rem;
+        min-width: 0;
+    }
+
+    .tab-panel:focus-visible {
+        outline-offset: 4px;
+    }
+
+    /* Shown only without JavaScript (the noscript style of the panel switches these on). */
+    .nojs-only {
+        display: none;
+    }
+
+    /* Live figure tiles */
+    .panel-stats {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    }
+
+    .panel-stat {
+        display: grid;
+        gap: 6px;
+        align-content: start;
+        min-width: 0;
+        padding: 12px 14px;
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius);
+        background: var(--nb-surface);
+    }
+
+    .panel-stat-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--nb-muted);
+        font-size: 0.82rem;
+        font-weight: 600;
+    }
+
+    .panel-stat-head svg {
+        width: 16px;
+        height: 16px;
+        flex: none;
+    }
+
+    .panel-stat-value {
+        font-family: var(--nb-font-display);
+        font-size: 1.35rem;
+        font-weight: 700;
+        line-height: 1.2;
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+        text-align: start;
+    }
+
+    .panel-spark {
+        height: 32px;
+    }
+
+    .sparkline {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+    }
+
+    .sparkline-line {
+        fill: none;
+        stroke: var(--nb-chart-1);
+        stroke-width: 1.6;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+    }
+
+    /* Charts */
+    .chart {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        min-width: 0;
+        padding: 12px 14px;
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius);
+        background: var(--nb-surface);
+    }
+
+    .chart-title {
+        font-size: 0.88rem;
+        font-weight: 700;
+    }
+
+    .chart-box {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .chart-plot {
+        position: relative;
+        height: 200px;
+        margin-inline-start: 56px;
+        margin-bottom: 22px;
+        touch-action: pan-y;
+    }
+
+    .chart-svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+    }
+
+    .chart-grid {
+        stroke: var(--nb-chart-grid);
+        stroke-width: 1;
+        stroke-dasharray: 3 4;
+    }
+
+    .chart-line {
+        fill: none;
+        stroke-width: 2;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+    }
+
+    .chart-cross {
+        stroke: var(--nb-faint);
+        stroke-width: 1;
+    }
+
+    .chart-line,
+    .sparkline-line[data-color='0'] {
+        stroke: var(--nb-chart-1);
+    }
+
+    .chart-bar {
+        fill: var(--nb-chart-1);
+    }
+
+    .chart-line[data-color='1'],
+    .sparkline-line[data-color='1'] {
+        stroke: var(--nb-chart-2);
+    }
+
+    .chart-bar[data-color='1'] {
+        fill: var(--nb-chart-2);
+    }
+
+    .chart-line[data-color='2'] {
+        stroke: var(--nb-chart-3);
+    }
+
+    .chart-line[data-color='3'] {
+        stroke: var(--nb-chart-4);
+    }
+
+    /* Value labels left of the plot, time labels under it. Charts are left to right on every page. */
+    .chart-axis {
+        position: absolute;
+        pointer-events: none;
+        color: var(--nb-faint);
+        font-size: 0.72rem;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+
+    .chart-axis span {
+        position: absolute;
+    }
+
+    .chart-axis-y {
+        top: 0;
+        bottom: 0;
+        right: calc(100% + 6px);
+        width: 56px;
+    }
+
+    .chart-axis-y span {
+        right: 0;
+        transform: translateY(-50%);
+    }
+
+    .chart-axis-x {
+        left: 0;
+        right: 0;
+        top: calc(100% + 4px);
+        height: 18px;
+    }
+
+    .chart-axis-x span {
+        transform: translateX(-50%);
+    }
+
+    .chart-axis-x span:first-child {
+        transform: none;
+    }
+
+    .chart-axis-x span:last-child:not(:first-child) {
+        transform: translateX(-100%);
+    }
+
+    .chart-tooltip {
+        position: absolute;
+        top: 4px;
+        z-index: 2;
+        display: grid;
+        gap: 2px;
+        min-width: 120px;
+        max-width: 240px;
+        padding: 6px 9px;
+        border: 1px solid var(--nb-line-2);
+        border-radius: var(--nb-radius-sm);
+        background: var(--nb-surface);
+        box-shadow: var(--nb-shadow-lg);
+        color: var(--nb-ink);
+        font-size: 0.78rem;
+        font-variant-numeric: tabular-nums;
+        pointer-events: none;
+        transform: translateX(-50%);
+    }
+
+    .chart-tooltip[hidden] {
+        display: none;
+    }
+
+    .chart-tooltip[data-side='start'] {
+        transform: translateX(8px);
+    }
+
+    .chart-tooltip[data-side='end'] {
+        transform: translateX(calc(-100% - 8px));
+    }
+
+    .chart-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 14px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        color: var(--nb-muted);
+        font-size: 0.8rem;
+    }
+
+    .chart-legend li {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .chart-swatch {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        flex: none;
+        border-radius: 3px;
+        background: var(--nb-chart-1);
+        margin-inline-end: 4px;
+    }
+
+    .chart-swatch[data-color='1'] {
+        background: var(--nb-chart-2);
+    }
+
+    .chart-swatch[data-color='2'] {
+        background: var(--nb-chart-3);
+    }
+
+    .chart-swatch[data-color='3'] {
+        background: var(--nb-chart-4);
+    }
+
+    .chart-empty {
+        margin: 0;
+        padding: 1.5rem 0;
+        text-align: center;
+        font-size: 0.88rem;
+    }
+
+    .chart-table summary {
+        cursor: pointer;
+        color: var(--nb-accent);
+        font-size: 0.82rem;
+        font-weight: 600;
+    }
+
+    .chart-table .table-wrap {
+        max-height: 320px;
+        margin-top: 8px;
+        overflow: auto;
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius-sm);
+    }
+
+    /* A secret shown once */
+    .secret-box {
+        display: grid;
+        gap: 10px;
+        padding: 12px 14px;
+        border: 1px solid var(--nb-warn);
+        border-radius: var(--nb-radius);
+        background: var(--nb-warn-soft);
+    }
+
+    .secret-box-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 10px;
+        font-size: 0.9rem;
+    }
+
+    .secret-box-head svg {
+        width: 18px;
+        height: 18px;
+        color: var(--nb-warn);
+        flex: none;
+    }
+
+    .secret-list {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+    }
+
+    .secret-row {
+        display: grid;
+        gap: 4px;
+    }
+
+    .secret-row dt {
+        color: var(--nb-muted);
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+
+    .secret-row dd {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+    }
+
+    .secret-row .mono {
+        padding: 4px 8px;
+        border: 1px solid var(--nb-line-2);
+        border-radius: var(--nb-radius-sm);
+        background: var(--nb-surface);
+        font-size: 0.95rem;
+        overflow-wrap: anywhere;
+        user-select: all;
+    }
+
+    /* Loading skeleton */
+    .skeleton-block {
+        display: grid;
+        gap: 10px;
+    }
+
+    .skeleton {
+        display: block;
+        height: 14px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--nb-surface-2), var(--nb-line), var(--nb-surface-2));
+        background-size: 200% 100%;
+        animation: nb-skeleton 1.4s ease-in-out infinite;
+    }
+
+    .skeleton[data-size='short'] {
+        width: 45%;
+    }
+
+    @keyframes nb-skeleton {
+        from {
+            background-position: 100% 0;
+        }
+
+        to {
+            background-position: -100% 0;
+        }
+    }
+
+    /* Progress bar (role="progressbar" with a span for the share done) */
+    .progress {
+        width: 100%;
+        min-width: 80px;
+        height: 8px;
+        overflow: hidden;
+        border: 1px solid var(--nb-line);
+        border-radius: 999px;
+        background: var(--nb-surface-2);
+    }
+
+    .progress span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--nb-accent);
+        transition: width 0.3s ease;
+    }
+
+    /* Buttons that pick one of a few values (such as a graph period) */
+    .segmented {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 3px;
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius);
+        background: var(--nb-surface-2);
+    }
+
+    .segmented .btn {
+        box-shadow: none;
+        border-color: transparent;
+        background: transparent;
+    }
+
+    .segmented .btn[aria-pressed='true'] {
+        border-color: var(--nb-line-2);
+        background: var(--nb-surface);
+        color: var(--nb-accent);
+    }
+
+    /* An input with a button next to it, such as a password and "Generate" */
+    .input-row {
+        display: flex;
+        gap: 6px;
+        min-width: 0;
+    }
+
+    .input-row .input {
+        flex: 1 1 auto;
+    }
+
+    .input-row .btn {
+        flex: none;
+    }
+
+    /* Buttons at the end of a table row */
+    .row-actions {
+        display: inline-flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 4px;
+    }
+
+    /* Icons and a button inside a .flash message */
+    .flash-icon {
+        width: 18px;
+        height: 18px;
+        flex: none;
+        margin-top: 1px;
+    }
+
+    .flash-action {
+        margin-inline-start: auto;
+    }
+}

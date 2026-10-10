@@ -17,6 +17,7 @@
         "@laravel/multiplex": "^0.4.1"
     },
     "dependencies": {
+        "@novnc/novnc": "1.7.0",
         "alpinejs": "^3.17.4"
     }
 }

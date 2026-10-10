@@ -8,7 +8,6 @@ use App\Extensions\Servers\Panel\ClientContext;
 use App\Models\Client;
 use App\Models\Product;
 use App\Models\Service;
-use Illuminate\Support\Facades\View;
 use Tests\Fixtures\PanelFake\PanelFakeModule;
 
 /**
@@ -28,7 +27,6 @@ trait UsesPanelFake
         PanelFakeModule::reset();
 
         $this->client = Client::factory()->create(['first_name' => 'Mer', 'last_name' => 'Las', 'email' => 'mer.las@example.test', 'company_name' => null]);
-        $this->useViewStandIns();
     }
 
     /**
@@ -53,18 +51,5 @@ trait UsesPanelFake
     protected function contextFor(Service $service, ?Client $client = null): ClientContext
     {
         return new ClientContext(($client ?? $this->client)->id, '203.0.113.9', true, route('client.services.show', $service), 'en');
-    }
-
-    /**
-     * The panel's page views are made by the panel UI work. Until the theme has them, small
-     * stand-ins from the fixtures render instead; once it does, the real views are tested.
-     */
-    private function useViewStandIns(): void
-    {
-        foreach (['console', 'server-panel'] as $view) {
-            if (! View::exists("theme::client.services.{$view}")) {
-                View::prependNamespace('theme', base_path("tests/Fixtures/panel-views/{$view}"));
-            }
-        }
     }
 }
