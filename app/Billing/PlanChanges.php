@@ -2,8 +2,10 @@
 
 namespace App\Billing;
 
+use App\Contracts\LimitsPlanChanges;
 use App\Enums\InvoiceStatus;
 use App\Enums\ServiceStatus;
+use App\Extensions\ExtensionManager;
 use App\Mail\TemplateMailer;
 use App\Models\Admin;
 use App\Models\Client;
@@ -12,7 +14,10 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\PlanChange;
 use App\Models\Product;
+use App\Models\ResourceChange;
+use App\Models\ResourceOption;
 use App\Models\Service;
+use App\Models\ServiceResourceOption;
 use App\Provisioning\Provisioner;
 use App\Support\Activity;
 use App\Support\Locales;
@@ -21,6 +26,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
+use Throwable;
 
 /**
  * Moves a service to a bigger or smaller product. The price is fair for the rest of the billing
@@ -43,7 +49,9 @@ class PlanChanges
     }
 
     /**
-     * Why the service cannot change plan right now, or null when it can.
+     * Why the service cannot change plan right now, or null when it can. Only one change waits at a
+     * time, plan or resources, and a plan never changes while the server still takes the last
+     * resource change.
      */
     public function blockedReason(Service $service): ?string
     {
@@ -51,7 +59,9 @@ class PlanChanges
             $service->status !== ServiceStatus::Active => __('Only active services can change plan.'),
             ! $service->billing_cycle->isRecurring() || $service->next_due_date === null => __('This service does not renew, so its plan cannot change.'),
             $this->pendingFor($service) !== null => __('A plan change for this service is already waiting.'),
+            $this->hasPendingResourceChange($service) => __('A resource change for this service is waiting.'),
             $this->hasUnpaidInvoice($service) => __('Pay the open invoice for this service first.'),
+            $this->serverBusyWithResources($service) => __('We are still setting the last change on your server.'),
             default => null,
         };
     }
@@ -59,7 +69,10 @@ class PlanChanges
     /**
      * The products the service may move to, with a price in its currency and billing cycle. Clients
      * get the products chosen on the product that are in stock; staff may pick any product with the
-     * same server module.
+     * same server module. A module that allows only some moves (LimitsPlanChanges) is asked for
+     * each product. A product sold from the hardware inventory counts no stock here: the service
+     * keeps its own machine. Clients do not get products that cannot take the service's size
+     * extras (see ladderConflict).
      *
      * @return Collection<int, Product>
      */
@@ -72,10 +85,15 @@ class PlanChanges
             $query->whereIn('id', array_map('intval', (array) ($service->product->upgrade_product_ids ?? [])));
         }
 
+        $limits = $this->planLimits($service);
+        $ladders = $staff ? collect() : $this->ladderRows($service);
+
         return $query->get()
             ->filter(fn (Product $product): bool => $product->server_module === $service->product->server_module
                 && $product->priceFor($service->currency, $service->billing_cycle) !== null
-                && ($staff || $product->isInStock()))
+                && ($staff || $product->uses_machines || $product->isInStock())
+                && $this->moduleAllows($limits, $service, $product)
+                && $this->ladderConflict($ladders, $product) === null)
             ->values();
     }
 
@@ -86,19 +104,10 @@ class PlanChanges
      */
     public function quote(Service $service, Product $product, ?CarbonInterface $today = null): array
     {
-        $today = CarbonImmutable::instance($today ?? today())->startOfDay();
-        $end = $service->next_due_date;
-        $start = $end->subMonthsNoOverflow((int) $service->billing_cycle->months());
-        // A due date on the day the service started (or that month's last day) was billed from the
-        // same day before it, as BillingCycle::advance moves it: 31 Mar - 29 Apr for 30 Apr, not 30 Mar.
-        $anchor = $service->registration_date?->day;
-
-        if ($anchor !== null && $end->day === min($anchor, $end->daysInMonth)) {
-            $start = $start->setDay(min($anchor, $start->daysInMonth));
-        }
-
-        $periodDays = max(1, (int) round($start->diffInDays($end)));
-        $daysLeft = max(0, min($periodDays, (int) round($today->diffInDays($end, false))));
+        $period = Proration::period($service, $today);
+        $end = $period['end'];
+        $periodDays = $period['period_days'];
+        $daysLeft = $period['days_left'];
 
         $old = (int) $service->recurring_amount;
         $new = (int) $product->priceFor($service->currency, $service->billing_cycle)?->price;
@@ -215,15 +224,7 @@ class PlanChanges
      */
     private function keptShare(Invoice $invoice): float
     {
-        if ($invoice->status === InvoiceStatus::Refunded) {
-            return 0.0;
-        }
-
-        if ($invoice->total <= 0) {
-            return 1.0;
-        }
-
-        return max(0.0, min(1.0, $invoice->creditableAmount() / $invoice->total));
+        return Proration::keptShare($invoice);
     }
 
     /**
@@ -268,12 +269,23 @@ class PlanChanges
 
             $locked = Service::query()->lockForUpdate()->findOrFail($service->id);
             $locked->setRelation('product', $service->product);
-            $soldOut = $admin === null && $product->lockedStockLeft() === 0;
+            // A product sold from the hardware inventory is not counted: the service keeps its machine.
+            $soldOut = $admin === null && ! $product->uses_machines && $product->lockedStockLeft() === 0;
 
             $reason = $this->blockedReason($locked);
 
             if ($reason !== null) {
                 throw new RuntimeException($reason);
+            }
+
+            $ladder = $this->ladderConflict($this->ladderRows($locked), $product);
+
+            if ($ladder !== null) {
+                throw new RuntimeException(__('Set :resource to 0 first.', ['resource' => $ladder]));
+            }
+
+            if (! $this->moduleAllows($this->planLimits($locked), $locked, $product)) {
+                throw new RuntimeException(__('This plan needs a different server. Contact support.'));
             }
 
             if (! $this->targets($locked, $admin !== null)->contains('id', $product->id)) {
@@ -367,7 +379,8 @@ class PlanChanges
             // The last one of a plan in stock may have gone while the client's change waited. A change
             // for the renewal date, or one staff made, held its unit while it waited (see
             // Product::lockedStockLeft), so it is not counted again, which would count it against itself.
-            $countsStock = $product !== null && $locked->admin_id === null && $locked->mode !== PlanChange::MODE_RENEWAL;
+            // A product sold from the hardware inventory is not counted: the service keeps its machine.
+            $countsStock = $product !== null && $locked->admin_id === null && $locked->mode !== PlanChange::MODE_RENEWAL && ! $product->uses_machines;
             $stopped = $this->stopReason($locked, $service, $product, $countsStock ? $product->lockedStockLeft() : null);
 
             if ($stopped !== null) {
@@ -377,6 +390,8 @@ class PlanChanges
             }
 
             $service->update(['product_id' => $locked->to_product_id, 'recurring_amount' => $locked->new_amount]);
+            // The extras stay, with their steps and price; they now belong to the new plan's options.
+            $service->relinkResources($product);
             $locked->update(['status' => PlanChange::STATUS_APPLIED, 'applied_at' => now()]);
 
             $service->loadMissing('client');
@@ -410,7 +425,9 @@ class PlanChanges
             Activity::log('service.plan_change_credit', 'The '.money($notCredited, $change->currency)." for the unused time of the old plan of service #{$service->id} could not go into the client's wallet (wallet off or another currency). Settle it by hand.", $service);
         }
 
-        if ($service->product->server_module !== null && $service->server_id !== null) {
+        // A service on a machine from the hardware inventory has no server record, but its module
+        // still moves it to the new plan.
+        if ($service->product->server_module !== null && ($service->server_id !== null || $service->product->uses_machines)) {
             // A failed server update is logged for staff; the new plan and price stand.
             $this->provisioner->changePackage($service);
         }
@@ -431,11 +448,13 @@ class PlanChanges
     }
 
     /**
-     * Lock the rows of the plans a service moves between, in id order. Checkouts and plan changes
-     * lock rows in one order, so two of them never wait for each other in a circle: a plan change,
-     * then a client, then a coupon, then products in id order, then services. Two changes in
-     * opposite directions (Small to Large and Large to Small) so queue on the first plan, instead of
-     * each holding its own service while it counts the other's plan.
+     * Lock the rows of the plans a service moves between, in id order. Checkouts, plan changes and
+     * resource changes lock rows in one order, so two of them never wait for each other in a circle:
+     * a plan change or resource change, then a client, then a coupon, then products in id order,
+     * then machines, then resource options, then services, then the services' resource rows (see
+     * Product::lockedStockLeft). Two changes in opposite directions (Small to Large and Large to
+     * Small) so queue on the first plan, instead of each holding its own service while it counts
+     * the other's plan.
      *
      * @return Collection<int, Product>
      */
@@ -464,7 +483,129 @@ class PlanChanges
             return __('The new plan is sold out.');
         }
 
+        $ladder = $this->ladderConflict($this->ladderRows($service), $product);
+
+        if ($ladder !== null) {
+            return __('Set :resource to 0 first.', ['resource' => $ladder]);
+        }
+
+        if (! $this->moduleAllows($this->planLimits($service), $service, $product)) {
+            return __('This plan needs a different server. Contact support.');
+        }
+
         return null;
+    }
+
+    /**
+     * The service's module when it allows only some plan changes, or null when it allows any. Read
+     * from the service's current product.
+     */
+    private function planLimits(Service $service): ?LimitsPlanChanges
+    {
+        $slug = $service->loadMissing('product')->product?->server_module;
+
+        if (blank($slug)) {
+            return null;
+        }
+
+        try {
+            $module = app(ExtensionManager::class)->serverModule($slug);
+        } catch (Throwable) {
+            // A module that is not installed cannot apply a change either; that is logged when it runs.
+            return null;
+        }
+
+        return $module instanceof LimitsPlanChanges ? $module : null;
+    }
+
+    /**
+     * Whether the module lets the service move to the product. A module that fails to answer
+     * refuses, so nobody pays for a change that cannot be made.
+     */
+    private function moduleAllows(?LimitsPlanChanges $limits, Service $service, Product $product): bool
+    {
+        if ($limits === null) {
+            return true;
+        }
+
+        try {
+            return $limits->allowsPlanChange($service, $product);
+        } catch (Throwable $exception) {
+            // Only the kind of error: a raw message may hold a server address with a key.
+            report(new RuntimeException("Plan change check for service #{$service->id}: ".class_basename($exception)));
+
+            return false;
+        }
+    }
+
+    /**
+     * The service's active extras whose steps are sizes (a ladder, such as a bigger server type),
+     * with the ladder of each.
+     *
+     * @return Collection<int, array{kind: string, label: string, ladder: list<string>}>
+     */
+    private function ladderRows(Service $service): Collection
+    {
+        return ServiceResourceOption::query()
+            ->with('option')
+            ->where('service_id', $service->id)
+            ->where('status', ServiceResourceOption::STATUS_ACTIVE)
+            ->where('steps', '>', 0)
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (ServiceResourceOption $row): bool => is_array($row->option?->ladder))
+            ->map(fn (ServiceResourceOption $row): array => [
+                'kind' => $row->kind,
+                'label' => $row->option->displayLabel(),
+                'ladder' => array_values($row->option->ladder),
+            ])
+            ->values();
+    }
+
+    /**
+     * The name of the first size extra the product cannot take, or null when it takes them all. A
+     * step of a ladder is a size of that product only (step 2 of one plan is another server type
+     * than step 2 of the next), so the service may move only to a product with an active option of
+     * the same kind and the very same ladder. Otherwise the extra must go to 0 first.
+     *
+     * @param  Collection<int, array{kind: string, label: string, ladder: list<string>}>  $rows
+     */
+    private function ladderConflict(Collection $rows, Product $product): ?string
+    {
+        if ($rows->isEmpty()) {
+            return null;
+        }
+
+        $options = ResourceOption::query()->where('product_id', $product->id)->where('is_active', true)->get(['id', 'kind', 'ladder']);
+
+        foreach ($rows as $row) {
+            $fits = $options->contains(fn (ResourceOption $option): bool => $option->kind === $row['kind']
+                && is_array($option->ladder)
+                && array_values($option->ladder) === $row['ladder']);
+
+            if (! $fits) {
+                return $row['label'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a resource change for the service waits for its invoice or its renewal date.
+     */
+    private function hasPendingResourceChange(Service $service): bool
+    {
+        return ResourceChange::query()->where('service_id', $service->id)->where('status', ResourceChange::STATUS_PENDING)->exists();
+    }
+
+    /**
+     * Whether the server is still taking the service's last resource change: waiting for its job,
+     * being set, or being checked.
+     */
+    private function serverBusyWithResources(Service $service): bool
+    {
+        return ResourceChange::query()->where('service_id', $service->id)->latest('id')->first()?->serverBusy() === true;
     }
 
     /**
