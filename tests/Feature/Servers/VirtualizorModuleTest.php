@@ -14,6 +14,7 @@ use Closure;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Http;
 use stdClass;
@@ -263,6 +264,56 @@ class VirtualizorModuleTest extends TestCase
         $this->assertTrue(collect($api->calls)->contains(fn (array $call): bool => str_starts_with($call['url'], 'https://vz.example.test:4085/')));
         $this->assertTrue(collect($api->calls)->contains(fn (array $call): bool => str_starts_with($call['url'], 'http://vz2.example.test:4085/')));
         $this->assertFalse(collect($api->calls)->contains(fn (array $call): bool => str_starts_with($call['url'], 'http://vz.example.test')));
+    }
+
+    public function test_a_power_action_is_refused_while_a_suspend_holds_the_service(): void
+    {
+        $api = $this->fakeVirtualizor([
+            'power' => ['done' => true, 'done_msg' => 'Done', 'vsop' => ['action' => 'start', 'id' => '77', 'status' => ['77' => 1]]],
+        ]);
+        $service = $this->service();
+        // A suspend is running on the server for this service.
+        $lock = Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 120);
+        $this->assertTrue($lock->get());
+
+        $result = app(Provisioner::class)->clientAction($service, 'start', []);
+
+        $this->assertFalse($result->success);
+        $this->assertTrue($result->data['busy']);
+        $this->assertSame('This service is busy on the server. Try again in a minute.', $result->message);
+
+        $this->actingAs($service->client, 'web')
+            ->postJson(route('client.services.panel', [$service, 'start']))
+            ->assertStatus(422)
+            ->assertJson(['ok' => false, 'message' => 'This service is busy on the server. Try again in a minute.']);
+
+        $this->assertSame([], $api->calls);
+        $this->assertFalse(ActivityLog::query()->where('action', 'service.client_action')->exists());
+        $lock->release();
+    }
+
+    public function test_a_power_action_is_refused_when_the_vps_was_suspended_before_it_got_the_lock(): void
+    {
+        $api = $this->fakeVirtualizor([
+            'power' => ['done' => true, 'done_msg' => 'Done', 'vsop' => ['action' => 'start', 'id' => '77', 'status' => ['77' => 1]]],
+        ]);
+        $service = $this->service();
+        $stale = Service::query()->findOrFail($service->id);
+
+        // The suspend finished after the client's copy of the service was loaded.
+        Service::query()->whereKey($service->id)->update(['status' => ServiceStatus::Suspended, 'suspended_at' => now(), 'suspension_reason' => 'Overdue on payment']);
+
+        $result = app(Provisioner::class)->clientAction($stale, 'start', []);
+
+        $this->assertFalse($result->success);
+        $this->assertSame('This action is not available.', $result->message);
+        $this->assertSame([], $api->calls);
+
+        // Once unsuspended, the client can start the VPS again: the refused action released the lock.
+        Service::query()->whereKey($service->id)->update(['status' => ServiceStatus::Active, 'suspended_at' => null, 'suspension_reason' => null]);
+
+        $this->assertTrue(app(Provisioner::class)->clientAction($service->fresh(), 'start', [])->success);
+        $this->assertSame(['power'], array_column($api->calls, 'kind'));
     }
 
     public function test_a_server_hostname_that_is_not_a_hostname_is_refused(): void

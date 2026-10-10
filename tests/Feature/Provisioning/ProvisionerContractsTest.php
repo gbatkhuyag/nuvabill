@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Provisioning;
 
+use App\Billing\InvoicePaidHandler;
+use App\Billing\PaymentRecorder;
 use App\Contracts\HasResourceOptions;
 use App\Contracts\UsesMachineInventory;
 use App\Enums\InvoiceStatus;
@@ -12,6 +14,7 @@ use App\Extensions\Servers\Panel\ClientContext;
 use App\Extensions\Servers\Resources\ResourceKind;
 use App\Extensions\Servers\Resources\ResourceLimit;
 use App\Jobs\ChangeServicePackage;
+use App\Jobs\UnsuspendService;
 use App\Mail\TemplatedMessage;
 use App\Models\ActivityLog;
 use App\Models\Client;
@@ -25,6 +28,8 @@ use App\Models\Service;
 use App\Models\ServiceResourceOption;
 use App\Provisioning\OrderPaymentGate;
 use App\Provisioning\Provisioner;
+use Illuminate\Bus\UniqueLock;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
@@ -245,7 +250,7 @@ class ProvisionerContractsTest extends TestCase
         $lock->release();
     }
 
-    public function test_suspend_and_unsuspend_wait_for_other_work_on_the_service(): void
+    public function test_suspend_waits_for_other_work_on_the_service(): void
     {
         Sleep::fake(syncWithCarbon: true);
         $service = $this->fakeService();
@@ -265,14 +270,95 @@ class ProvisionerContractsTest extends TestCase
         $lock->release();
         $this->assertTrue(app(Provisioner::class)->suspend($service, 'Overdue on payment')->success);
         $this->assertSame(ServiceStatus::Suspended, $service->fresh()->status);
+    }
 
-        $lock->get();
-        $this->assertFalse(app(Provisioner::class)->unsuspend($service)->success);
+    public function test_an_invoice_paid_while_the_service_is_busy_unsuspends_it_in_the_background(): void
+    {
+        Queue::fake();
+        Sleep::fake();
+        $service = $this->fakeService(['status' => ServiceStatus::Suspended, 'suspended_at' => now()->subDays(2), 'suspension_reason' => InvoicePaidHandler::OVERDUE_REASON]);
+        $invoice = Invoice::factory()->create(['client_id' => $this->client->id, 'due_at' => today()->subDays(4), 'total' => 1000]);
+        $invoice->items()->create(['type' => 'service', 'service_id' => $service->id, 'description' => 'Renewal', 'amount' => 1000]);
+        // A resource change job holds the service on its server.
+        $lock = Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 900);
+        $this->assertTrue($lock->get());
+
+        app(PaymentRecorder::class)->record($invoice, 1000, 'banktransfer');
+
+        $this->assertSame(InvoiceStatus::Paid, $invoice->fresh()->status);
         $this->assertSame(ServiceStatus::Suspended, $service->fresh()->status);
+        $this->assertSame([], PanelFakeModule::calls('unsuspend'));
+        Sleep::assertNeverSlept();
+        $this->assertTrue(ActivityLog::query()->where('action', 'service.unsuspend_queued')->exists());
+        $this->assertFalse(ActivityLog::query()->where('action', 'service.module_failed')->exists(), 'A busy service is tried again, not reported.');
+        Queue::assertPushed(UnsuspendService::class, fn (UnsuspendService $job): bool => $job->serviceId === $service->id && $job->busyTry === 0 && $job->delay === UnsuspendService::BUSY_DELAY);
+
+        // Still busy at the first try: it tries again later.
+        $this->runQueued(Queue::pushed(UnsuspendService::class)->first());
+        Queue::assertPushed(UnsuspendService::class, fn (UnsuspendService $job): bool => $job->busyTry === 1);
+        $this->assertSame(ServiceStatus::Suspended, $service->fresh()->status);
+
+        // The other work ends, and the next try unsuspends it.
+        $lock->release();
+        $this->runQueued(Queue::pushed(UnsuspendService::class, fn (UnsuspendService $job): bool => $job->busyTry === 1)->first());
+
+        $this->assertSame(ServiceStatus::Active, $service->fresh()->status);
+        $this->assertCount(1, PanelFakeModule::calls('unsuspend'));
+        $this->assertTrue(ActivityLog::query()->where('action', 'service.unsuspended')->exists());
+        Queue::assertPushed(UnsuspendService::class, 2);
+    }
+
+    public function test_the_unsuspend_job_gives_up_after_its_tries_and_never_lifts_a_newer_suspension(): void
+    {
+        Queue::fake();
+        $service = $this->fakeService(['status' => ServiceStatus::Suspended, 'suspended_at' => now()->subDays(2), 'suspension_reason' => 'Suspended by staff']);
+        $lock = Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 900);
+        $lock->get();
+
+        // Staff press "Unsuspend" while the service is busy.
+        $result = app(Provisioner::class)->unsuspend($service);
+
+        $this->assertTrue($result->success);
+        $this->assertTrue($result->data['queued']);
+        $this->assertSame('This service is busy on the server. It will be unsuspended in a few minutes.', $result->message);
+        $suspendedAt = $service->fresh()->suspended_at->getTimestamp();
+        Queue::assertPushed(UnsuspendService::class, fn (UnsuspendService $job): bool => $job->suspendedAt === $suspendedAt);
+
+        // After the last try staff are told.
+        (new UnsuspendService($service->id, $suspendedAt, UnsuspendService::BUSY_TRIES - 1))->handle(app(Provisioner::class));
+        $this->assertTrue(ActivityLog::query()->where('action', 'service.module_failed')->where('description', 'like', '%kept the service busy%')->exists());
+        Queue::assertPushed(UnsuspendService::class, 1);
         $lock->release();
 
-        $this->assertTrue(app(Provisioner::class)->unsuspend($service)->success);
+        // Unsuspended and suspended again by staff meanwhile: the old job leaves the new suspension.
+        $service->update(['suspended_at' => now()->subHour(), 'suspension_reason' => 'Abuse report']);
+        (new UnsuspendService($service->id, $suspendedAt))->handle(app(Provisioner::class));
+
+        $this->assertSame(ServiceStatus::Suspended, $service->fresh()->status);
+        $this->assertSame([], PanelFakeModule::calls('unsuspend'));
+        $this->assertTrue(ActivityLog::query()->where('action', 'service.unsuspend_skipped')->exists());
+
+        (new UnsuspendService($service->id, $service->fresh()->suspended_at->getTimestamp()))->handle(app(Provisioner::class));
         $this->assertSame(ServiceStatus::Active, $service->fresh()->status);
+    }
+
+    public function test_the_nightly_suspension_recheck_leaves_a_busy_service_for_the_next_night(): void
+    {
+        $service = $this->fakeService(['status' => ServiceStatus::Suspended, 'suspension_reason' => 'Overdue on payment', 'module_data' => ['fake_id' => 'vm-1', Provisioner::RECHECK_SUSPENSION => 3]]);
+        $lock = Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 900);
+        $lock->get();
+
+        $this->assertSame(0, app(Provisioner::class)->recheckSuspensions());
+
+        $this->assertSame([], PanelFakeModule::calls('suspend'));
+        $this->assertSame(3, $service->fresh()->module_data[Provisioner::RECHECK_SUSPENSION], 'No try is used up.');
+
+        $lock->release();
+        $this->assertSame(1, app(Provisioner::class)->recheckSuspensions());
+
+        $this->assertCount(1, PanelFakeModule::calls('suspend'));
+        $this->assertSame(['fake_id' => 'vm-1'], $service->fresh()->module_data);
+        $this->assertTrue(Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 10)->get(), 'The lock is released.');
     }
 
     public function test_apply_resources_without_a_module_is_done_by_hand(): void
@@ -448,6 +534,17 @@ class ProvisionerContractsTest extends TestCase
         $this->assertSame(['vps_id' => '77'], PanelFakeModule::calls('linkExistingAccount')[0]['args']['input'], 'Only the module\'s own fields reach it.');
         $this->assertSame('77', $service->fresh()->module_data['fake_id']);
         $this->assertTrue(ActivityLog::query()->where('action', 'service.account_linked')->exists());
+    }
+
+    /**
+     * Run a queued job the way the worker does: a job that is unique until processing frees its
+     * place in the queue first, so it can send itself again.
+     */
+    private function runQueued(UnsuspendService $job): void
+    {
+        (new UniqueLock(app(CacheRepository::class)))->release($job);
+
+        $job->handle(app(Provisioner::class));
     }
 
     /**

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Servers;
 
 use App\Enums\ServiceStatus;
+use App\Jobs\ChangeServicePackage;
 use App\Models\ActivityLog;
 use App\Models\Client;
 use App\Models\Product;
@@ -14,6 +15,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 /**
@@ -94,6 +96,60 @@ class ProvisioningLockTest extends TestCase
         $this->assertFalse($result->success);
         $this->assertSame(ServiceStatus::Pending, $service->fresh()->status);
         $lock->release();
+    }
+
+    public function test_terminate_says_the_service_is_busy_while_other_work_holds_it(): void
+    {
+        $service = $this->cpanelService(ServiceStatus::Suspended, ['username' => 'razacc']);
+        $lock = Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 120);
+        $lock->get();
+
+        $result = app(Provisioner::class)->terminate($service);
+
+        $this->assertFalse($result->success);
+        $this->assertTrue($result->data['busy']);
+        $this->assertSame('This service is busy on the server. Try again in a minute.', $result->message);
+        $this->assertSame(ServiceStatus::Suspended, $service->fresh()->status);
+        Http::assertNothingSent();
+        $lock->release();
+    }
+
+    public function test_a_plan_change_waits_in_the_queue_while_other_work_holds_the_service(): void
+    {
+        Queue::fake();
+        $service = $this->cpanelService(ServiceStatus::Active, ['username' => 'razacc']);
+        $lock = Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 900);
+        $lock->get();
+
+        $result = app(Provisioner::class)->changePackage($service);
+
+        $this->assertTrue($result->success);
+        $this->assertTrue($result->data['queued']);
+        $this->assertSame('The new plan is being set on the server. This can take a few minutes.', $result->message);
+        Http::assertNothingSent();
+        $this->assertSame(1, ActivityLog::query()->where('action', 'service.package_queued')->count());
+        Queue::assertPushed(ChangeServicePackage::class, fn (ChangeServicePackage $job): bool => $job->serviceId === $service->id);
+
+        // The job sets the plan once the other work ends.
+        $lock->release();
+        Queue::pushed(ChangeServicePackage::class)->first()->handle(app(Provisioner::class));
+
+        Http::assertSent(fn (Request $request): bool => str_contains($request->url(), '/json-api/changepackage') && $request['user'] === 'razacc');
+        $this->assertSame(1, ActivityLog::query()->where('action', 'service.package_changed')->count());
+    }
+
+    public function test_a_plan_change_runs_at_once_under_the_service_lock_when_the_service_is_free(): void
+    {
+        Queue::fake();
+        $service = $this->cpanelService(ServiceStatus::Active, ['username' => 'razacc']);
+
+        $result = app(Provisioner::class)->changePackage($service);
+
+        $this->assertTrue($result->success);
+        $this->assertArrayNotHasKey('queued', $result->data);
+        Http::assertSentCount(1);
+        Queue::assertNothingPushed();
+        $this->assertTrue(Cache::lock(Provisioner::LOCK_PREFIX.$service->id, 10)->get(), 'The lock is released.');
     }
 
     public function test_terminate_removes_an_account_a_setup_created_after_the_copy_was_loaded(): void

@@ -61,6 +61,11 @@ class ChangeService extends Step
             throw new StepFailed($result->message);
         }
 
+        // The service was busy: it is unsuspended in the background, so do not claim it is done.
+        if (($result->data['queued'] ?? false) === true) {
+            return $result->message;
+        }
+
         return $this->unsuspend
             ? __('Unsuspended :service', ['service' => $context->label()])
             : __('Suspended :service', ['service' => $context->label()]);

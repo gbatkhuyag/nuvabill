@@ -204,7 +204,7 @@ class RoutesAndLocksTest extends TestCase
 
         $product = Product::query()->where('slug', 'fixture-plan')->firstOrFail();
         // Unknown keys are dropped; sections that were not posted get the module's default (snapshots is off by default).
-        $this->assertSame([
+        $this->assertSameSections([
             'overview' => false, 'power' => true, 'console' => true, 'graphs' => true, 'network' => true,
             'reinstall' => true, 'settings' => true, 'snapshots' => false,
         ], $product->panel_sections);
@@ -218,7 +218,7 @@ class RoutesAndLocksTest extends TestCase
             'server_module' => 'panelfake',
             'panel_sections' => ['graphs' => '0', 'snapshots' => '1'],
         ]))->assertSessionHasNoErrors();
-        $this->assertSame([
+        $this->assertSameSections([
             'overview' => false, 'power' => true, 'console' => true, 'graphs' => false, 'network' => true,
             'reinstall' => true, 'settings' => true, 'snapshots' => true,
         ], $product->fresh()->panel_sections);
@@ -341,6 +341,20 @@ class RoutesAndLocksTest extends TestCase
         app()->forgetInstance(ExtensionManager::class);
         app(ExtensionManager::class)->manifests();
         PanelFakeModule::reset();
+    }
+
+    /**
+     * The saved panel switches, without their order: MySQL's JSON type keeps object keys in its own
+     * order, while SQLite and MariaDB keep them as saved.
+     *
+     * @param  array<string, bool>  $expected
+     */
+    private function assertSameSections(array $expected, mixed $actual): void
+    {
+        $this->assertIsArray($actual);
+        ksort($expected);
+        ksort($actual);
+        $this->assertSame($expected, $actual);
     }
 
     /**

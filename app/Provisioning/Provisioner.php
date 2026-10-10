@@ -33,6 +33,7 @@ use App\Extensions\Servers\Resources\ResourceExtras;
 use App\Extensions\Servers\Resources\ResourceKind;
 use App\Extensions\Servers\Resources\ResourceLimit;
 use App\Jobs\ChangeServicePackage;
+use App\Jobs\UnsuspendService;
 use App\Mail\TemplateMailer;
 use App\Models\EmailTemplate;
 use App\Models\Product;
@@ -56,9 +57,11 @@ use Throwable;
  * Products without a server module are handled here too: their status simply changes.
  *
  * Work that changes a service on its server holds one cache lock per service (lockFor): create
- * and terminate (900 seconds), resource changes (900), the slow plan change job (900, waiting up
- * to 60), suspend and unsuspend (120, waiting up to 30) and the client panel's changing actions
- * (120). So none of them runs on top of another.
+ * and terminate (900 seconds), resource changes (900), plan changes (900; the queued job waits up
+ * to 60), suspend (120, waiting up to 30), unsuspend (120), the nightly suspension recheck (120)
+ * and the client panel's actions (120). So none of them runs on top of another. Work that must
+ * still happen when the service is busy goes to a queued job instead of waiting: an unsuspend
+ * (UnsuspendService) and a plan change (ChangeServicePackage).
  */
 class Provisioner
 {
@@ -414,20 +417,46 @@ class Provisioner
     }
 
     /**
-     * Unsuspend the service on its server, waiting up to 30 seconds for other work on it, as
-     * suspend() does.
+     * Unsuspend the service on its server. It never waits: when other work holds the service (a
+     * resource change, say), or the module says its server is busy, an UnsuspendService job tries
+     * again in the background, and the result is ok with data['queued'] = true. So a payment
+     * webhook never blocks, and a paid service is not left suspended.
      */
     public function unsuspend(Service $service): ModuleResult
     {
+        $result = $this->unsuspendNow($service);
+
+        if ($result->success || ($result->data['busy'] ?? false) !== true) {
+            return $result;
+        }
+
+        return $this->queueUnsuspend($service);
+    }
+
+    /**
+     * Unsuspend the service now, for unsuspend() and the UnsuspendService job. When other work
+     * holds the service, or the module says its server is busy, it fails with data['busy'] = true,
+     * changes and logs nothing, and queues nothing.
+     *
+     * @param  int|null  $suspendedAt  When given, only the suspension that started then is lifted (see suspensionStart()): a newer one stays.
+     */
+    public function unsuspendNow(Service $service, ?int $suspendedAt = null): ModuleResult
+    {
         $lock = $this->lockFor($service, 120);
 
-        if (! $this->waitFor($lock, 30)) {
-            return $this->failed($service->loadMissing('product'), 'unsuspend', $this->busy());
+        if (! $lock->get()) {
+            return $this->busy();
         }
 
         try {
-            // Read again inside the lock: the service may have changed while this waited.
+            // Read again inside the lock: the service may have changed meanwhile.
             $service->refresh();
+
+            if ($suspendedAt !== null && $service->status === ServiceStatus::Suspended && $this->suspensionStart($service) !== $suspendedAt) {
+                Activity::log('service.unsuspend_skipped', "Service #{$service->id} ({$service->label()}) stays suspended: it was suspended again after the unsuspend was asked for.", $service);
+
+                return ModuleResult::fail(__('The service was suspended again in the meantime, so it stays suspended.'));
+            }
 
             [$result, $unsuspended] = $this->runUnsuspend($service);
         } finally {
@@ -439,6 +468,33 @@ class Provisioner
         }
 
         return $result;
+    }
+
+    /**
+     * Send an UnsuspendService job for a service that was busy, if it is still suspended.
+     */
+    private function queueUnsuspend(Service $service): ModuleResult
+    {
+        $current = $service->fresh();
+
+        if ($current === null || $current->status !== ServiceStatus::Suspended) {
+            return ModuleResult::ok(__('The service is not suspended.'));
+        }
+
+        // Logged first: on a queue that runs jobs at once, the job logs its own result before this returns.
+        Activity::log('service.unsuspend_queued', "Service #{$current->id} ({$current->label()}): other work holds it on the server, so it is unsuspended in the background", $current);
+        UnsuspendService::dispatch($current->id, $this->suspensionStart($current))->delay(UnsuspendService::BUSY_DELAY)->afterCommit();
+
+        return ModuleResult::ok(__('This service is busy on the server. It will be unsuspended in a few minutes.'), ['queued' => true]);
+    }
+
+    /**
+     * When the service's suspension started, in Unix seconds, or 0 when it has no date (an imported
+     * service, say). Tells one suspension from a later one.
+     */
+    private function suspensionStart(Service $service): int
+    {
+        return $service->suspended_at?->getTimestamp() ?? 0;
     }
 
     /**
@@ -455,7 +511,8 @@ class Provisioner
         $result = $this->runModule($service, fn (ServerModule $module): ModuleResult => $module->unsuspend($service));
 
         if (! $result->success) {
-            return [$this->failed($service, 'unsuspend', $result), false];
+            // The module's own lock was busy: it is tried again later, nothing to log yet.
+            return [($result->data['busy'] ?? false) === true ? $result : $this->failed($service, 'unsuspend', $result), false];
         }
 
         $service->update([
@@ -472,7 +529,9 @@ class Provisioner
     /**
      * For the nightly run: run the module's suspend once more for suspended services flagged with
      * RECHECK_SUSPENSION, at most $limit per run. The flag goes when that works, or after its last
-     * try. A service that failed waits behind the others. Returns how many were done.
+     * try. A service that failed waits behind the others. Each runs under the service lock, so an
+     * unsuspend at the same time cannot be undone on the server; a service busy with other work is
+     * left for the next night, without using a try. Returns how many were done.
      */
     public function recheckSuspensions(int $limit = 25): int
     {
@@ -487,30 +546,51 @@ class Provisioner
             ->get();
 
         foreach ($services as $listed) {
-            // Read again: each call may wait minutes on its node, and a service unsuspended, removed
-            // or deleted meanwhile must not be stopped.
-            $service = $listed->fresh(['product', 'client', 'server']);
+            $lock = $this->lockFor($listed, 120);
 
-            if ($service === null || $service->status !== ServiceStatus::Suspended || ! array_key_exists(self::RECHECK_SUSPENSION, (array) $service->module_data)) {
+            if (! $lock->get()) {
                 continue;
             }
 
-            $result = $this->runModule($service, fn (ServerModule $module): ModuleResult => $module->suspend($service, (string) $service->suspension_reason));
-            $data = (array) $service->module_data;
-            $triesLeft = $result->success ? 0 : (int) ($data[self::RECHECK_SUSPENSION] ?? 0) - 1;
-
-            if ($result->success) {
-                Activity::log('service.suspension_checked', "Suspension of service #{$service->id} ({$service->label()}) checked again on the server: {$result->message}", $service);
-                $done++;
-            } else {
-                Activity::log('service.module_failed', "Could not recheck the suspension of service #{$service->id} ({$service->label()}): {$result->message}".($triesLeft > 0 ? '' : ' That was the last try, so check it on the server.'), $service);
+            try {
+                if ($this->recheckSuspension($listed)) {
+                    $done++;
+                }
+            } finally {
+                $lock->release();
             }
-
-            $service->module_data = $triesLeft > 0 ? array_merge($data, [self::RECHECK_SUSPENSION => $triesLeft]) : Arr::except($data, self::RECHECK_SUSPENSION);
-            $service->save();
         }
 
         return $done;
+    }
+
+    /**
+     * Run the module's suspend once more for one listed service, under its lock. True when it worked.
+     */
+    private function recheckSuspension(Service $listed): bool
+    {
+        // Read again inside the lock: each call may wait minutes on its node, and a service
+        // unsuspended, removed or deleted meanwhile must not be stopped.
+        $service = $listed->fresh(['product', 'client', 'server']);
+
+        if ($service === null || $service->status !== ServiceStatus::Suspended || ! array_key_exists(self::RECHECK_SUSPENSION, (array) $service->module_data)) {
+            return false;
+        }
+
+        $result = $this->runModule($service, fn (ServerModule $module): ModuleResult => $module->suspend($service, (string) $service->suspension_reason));
+        $data = (array) $service->module_data;
+        $triesLeft = $result->success ? 0 : (int) ($data[self::RECHECK_SUSPENSION] ?? 0) - 1;
+
+        if ($result->success) {
+            Activity::log('service.suspension_checked', "Suspension of service #{$service->id} ({$service->label()}) checked again on the server: {$result->message}", $service);
+        } else {
+            Activity::log('service.module_failed', "Could not recheck the suspension of service #{$service->id} ({$service->label()}): {$result->message}".($triesLeft > 0 ? '' : ' That was the last try, so check it on the server.'), $service);
+        }
+
+        $service->module_data = $triesLeft > 0 ? array_merge($data, [self::RECHECK_SUSPENSION => $triesLeft]) : Arr::except($data, self::RECHECK_SUSPENSION);
+        $service->save();
+
+        return $result->success;
     }
 
     /**
@@ -526,13 +606,16 @@ class Provisioner
         return array_key_exists(self::RECHECK_SUSPENSION, $data) ? ['module_data' => Arr::except($data, self::RECHECK_SUSPENSION)] : [];
     }
 
+    /**
+     * Remove the service from its server. Not while other work holds it (a setup would finish and
+     * make it active again): then it fails with data['busy'] = true and changes nothing.
+     */
     public function terminate(Service $service): ModuleResult
     {
-        // Not while the account is being created: the setup would finish and make it active again.
         $lock = $this->lockFor($service);
 
         if (! $lock->get()) {
-            return ModuleResult::fail(__('This service is being set up right now. Check again in a few minutes.'));
+            return $this->busy();
         }
 
         try {
@@ -587,33 +670,58 @@ class Provisioner
      * Move the service to its current plan on the server. A module whose plan change is slow
      * (QueuesPackageChanges) gets it in a queued job (ChangeServicePackage), so a payment webhook
      * that applied the plan change never waits for the server; the result then says it was queued.
+     * Other modules change it now under the service lock; when other work holds the service, the
+     * same job sets the plan once that work ends.
      */
     public function changePackage(Service $service): ModuleResult
     {
         $service->loadMissing('product', 'client', 'server');
 
         if ($this->moduleFor($service) instanceof QueuesPackageChanges) {
-            // The job skips other services, so say so now instead of promising a change.
-            if (! in_array($service->status, [ServiceStatus::Active, ServiceStatus::Suspended], true)) {
-                return ModuleResult::fail(__('Only an active or suspended service can change its plan on the server.'));
-            }
-
-            // Logged first: on a queue that runs jobs at once, the job logs its own result before this returns.
-            Activity::log('service.package_queued', "Service #{$service->id} ({$service->label()}): the new plan is being set on the server in the background", $service);
-            ChangeServicePackage::dispatch($service->id)->afterCommit();
-
-            return ModuleResult::ok(__('The new plan is being set on the server. This can take a few minutes.'), ['queued' => true]);
+            return $this->queuePackageChange($service);
         }
 
-        $result = $this->runModule($service, fn (ServerModule $module): ModuleResult => $module->changePackage($service));
+        $lock = $this->lockFor($service);
+
+        if (! $lock->get()) {
+            return $this->queuePackageChange($service);
+        }
+
+        try {
+            // Read again inside the lock: the plan, or the service itself, may have changed meanwhile.
+            $service->refresh();
+            $service->loadMissing('product', 'client', 'server');
+
+            $result = $this->runModule($service, fn (ServerModule $module): ModuleResult => $module->changePackage($service));
+        } finally {
+            $lock->release();
+        }
 
         if (! $result->success) {
-            return $this->failed($service, 'change package', $result);
+            // The module's own lock was busy: the job sets the plan later, nothing to log yet.
+            return ($result->data['busy'] ?? false) === true ? $this->queuePackageChange($service) : $this->failed($service, 'change package', $result);
         }
 
         Activity::log('service.package_changed', "Service #{$service->id} ({$service->label()}) package updated on the server", $service);
 
         return $result;
+    }
+
+    /**
+     * Send a ChangeServicePackage job, which sets the plan the service has when it runs.
+     */
+    private function queuePackageChange(Service $service): ModuleResult
+    {
+        // The job skips other services, so say so now instead of promising a change.
+        if (! in_array($service->status, [ServiceStatus::Active, ServiceStatus::Suspended], true)) {
+            return ModuleResult::fail(__('Only an active or suspended service can change its plan on the server.'));
+        }
+
+        // Logged first: on a queue that runs jobs at once, the job logs its own result before this returns.
+        Activity::log('service.package_queued', "Service #{$service->id} ({$service->label()}): the new plan is being set on the server in the background", $service);
+        ChangeServicePackage::dispatch($service->id)->afterCommit();
+
+        return ModuleResult::ok(__('The new plan is being set on the server. This can take a few minutes.'), ['queued' => true]);
     }
 
     /**
@@ -1307,20 +1415,40 @@ class Provisioner
     }
 
     /**
-     * Run a client panel action (for example "restart") and log it.
+     * Run a client panel action (for example "restart") and log it. It holds the service lock, so
+     * it never runs on top of a suspend, terminate, resource change or plan change: when one is
+     * running it fails with data['busy'] = true, and a service suspended meanwhile is refused.
      *
      * @param  array<string, mixed>  $input
      */
     public function clientAction(Service $service, string $action, array $input): ModuleResult
     {
         $service->loadMissing('product', 'server', 'client');
-        $module = $this->moduleFor($service);
 
-        if (! $module instanceof HasClientPanel || ! array_key_exists($action, $module->clientActions()) || $service->status !== ServiceStatus::Active) {
+        if ($this->clientActionModule($service, $action) === null) {
             return ModuleResult::fail(__('This action is not available.'));
         }
 
-        $result = $this->attempt(fn (): ModuleResult => $module->clientAction($service, $action, $input));
+        $lock = $this->lockFor($service, 120);
+
+        if (! $lock->get()) {
+            return $this->busy();
+        }
+
+        try {
+            // Read again inside the lock: a suspend or terminate may have finished meanwhile.
+            $service->refresh();
+            $service->loadMissing('product', 'server', 'client');
+            $module = $this->clientActionModule($service, $action);
+
+            if ($module === null) {
+                return ModuleResult::fail(__('This action is not available.'));
+            }
+
+            $result = $this->attempt(fn (): ModuleResult => $module->clientAction($service, $action, $input));
+        } finally {
+            $lock->release();
+        }
 
         Activity::log(
             $result->success ? 'service.client_action' : 'service.module_failed',
@@ -1329,6 +1457,17 @@ class Provisioner
         );
 
         return $result;
+    }
+
+    /**
+     * The module that runs the client panel action, or null when the service is not active or its
+     * module's client panel has no such action.
+     */
+    private function clientActionModule(Service $service, string $action): ?HasClientPanel
+    {
+        $module = $this->moduleFor($service);
+
+        return $module instanceof HasClientPanel && $service->status === ServiceStatus::Active && array_key_exists($action, $module->clientActions()) ? $module : null;
     }
 
     /**

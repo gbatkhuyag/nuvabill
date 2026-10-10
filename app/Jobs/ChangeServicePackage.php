@@ -13,8 +13,9 @@ use Throwable;
 
 /**
  * Moves a service to its current plan on the server in the background, for modules whose plan
- * change is slow (QueuesPackageChanges). Provisioner dispatches it instead of calling the module
- * inside the request that applied the plan change, which may be a payment webhook. The job always
+ * change is slow (QueuesPackageChanges), and for any module when other work held the service.
+ * Provisioner dispatches it instead of calling the module (or waiting) inside the request that
+ * applied the plan change, which may be a payment webhook. The job always
  * sets the plan the service has when it runs, so a second dispatch for the same service while one
  * waits in the queue is dropped.
  */
