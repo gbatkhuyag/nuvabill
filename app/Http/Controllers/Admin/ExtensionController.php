@@ -67,6 +67,8 @@ class ExtensionController extends Controller
                 'manual' => $all->where('origin', ExtensionOverview::ORIGIN_MANUAL)->count(),
             ],
             'may' => collect(self::PERMISSIONS)->map(fn (string $permission): bool => $admin->hasPermission($permission))->all(),
+            // Server modules that sell machines link to Admin → Hardware instead of the server list.
+            'hardware' => ['power' => $admin->hasPermission('hardware.power'), 'manage' => $admin->hasPermission('hardware.manage')],
             // Switched-on gateways in the order clients see them, for staff who may change it.
             'paymentOrder' => $tab === 'gateways' && $search === '' && $admin->hasPermission(self::PERMISSIONS[ExtensionManifest::TYPE_GATEWAY])
                 ? $extensions->activeGateways()->map(fn ($gateway): string => $gateway->name())

@@ -15,6 +15,8 @@ use App\Provisioning\Hardware\Tls\CertificateProbe;
 use App\Provisioning\Hardware\Tls\PinningSupport;
 use App\Provisioning\Hardware\Tls\StreamCertificateProbe;
 use App\Support\ServicePanels;
+use App\View\Composers\ProductMachineStockComposer;
+use App\View\Composers\ServiceMachineComposer;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
@@ -53,6 +55,9 @@ class HardwareServiceProvider extends ServiceProvider
         Service::observe(ServiceMachineObserver::class);
 
         $this->app->make(ServicePanels::class)->add(fn (Service $service): ?array => $this->pendingCard($service));
+
+        View::composer('admin.products.partials.machine-stock', ProductMachineStockComposer::class);
+        View::composer('admin.services.partials.machine', ServiceMachineComposer::class);
     }
 
     /**

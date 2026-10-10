@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Contracts\UsesMachineInventory;
 use App\Extensions\ExtensionManager;
 use App\Http\Controllers\Controller;
 use App\Models\Server;
@@ -10,9 +11,11 @@ use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
+use Throwable;
 
 class ServerController extends Controller
 {
@@ -32,7 +35,7 @@ class ServerController extends Controller
      */
     public function create(Request $request, ExtensionManager $extensions): View
     {
-        $module = $extensions->serverModuleNames()->has((string) $request->query('module')) ? (string) $request->query('module') : null;
+        $module = self::modules($extensions)->has((string) $request->query('module')) ? (string) $request->query('module') : null;
 
         return $this->form(new Server(['use_ssl' => true, 'is_active' => true, 'username' => 'root', 'module' => $module]), $extensions);
     }
@@ -95,9 +98,26 @@ class ServerController extends Controller
         return back()->with($result->success ? 'status' : 'error', $result->message);
     }
 
+    /**
+     * Server modules a server record can be made for: not the ones whose services run on machines
+     * from Admin → Hardware, which never use a server record.
+     *
+     * @return Collection<string, string>
+     */
+    private static function modules(ExtensionManager $extensions): Collection
+    {
+        return $extensions->serverModuleNames()->reject(function (string $name, string $slug) use ($extensions): bool {
+            try {
+                return $extensions->serverModule($slug) instanceof UsesMachineInventory;
+            } catch (Throwable) {
+                return false;
+            }
+        });
+    }
+
     private function form(Server $server, ExtensionManager $extensions): View
     {
-        $modules = $extensions->serverModuleNames();
+        $modules = self::modules($extensions);
 
         return view('admin.servers.form', [
             'server' => $server,
@@ -116,7 +136,7 @@ class ServerController extends Controller
     {
         $data = $request->validate([
             'name' => ['required', 'string', 'max:100'],
-            'module' => ['required', Rule::in($extensions->serverModuleNames()->keys()->all())],
+            'module' => ['required', Rule::in(self::modules($extensions)->keys()->all())],
             'hostname' => ['required', 'string', 'max:190', 'regex:/^[A-Za-z0-9.-]+$/'],
             'ip_address' => ['nullable', 'ip'],
             'port' => ['nullable', 'integer', 'between:1,65535'],

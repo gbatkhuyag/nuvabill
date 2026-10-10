@@ -4,13 +4,17 @@ namespace App\Support;
 
 use App\Enums\DomainStatus;
 use App\Enums\InvoiceStatus;
+use App\Enums\MachineStatus;
 use App\Enums\OrderStatus;
+use App\Enums\PowerState;
 use App\Enums\ServiceStatus;
 use App\Models\ActivityLog;
 use App\Models\Domain;
 use App\Models\HealthRun;
 use App\Models\Invoice;
+use App\Models\Machine;
 use App\Models\Order;
+use App\Models\ResourceChange;
 use App\Models\Service;
 use Illuminate\Support\Carbon;
 
@@ -55,10 +59,17 @@ final class AttentionList
             ];
         }
 
-        $stuck = ! $may('services.manage') ? 0 : Service::query()
+        $paidPending = fn () => Service::query()
             ->where('status', ServiceStatus::Pending)
-            ->whereHas('invoiceItems.invoice', fn ($query) => $query->where('status', InvoiceStatus::Paid))
-            ->count();
+            ->whereHas('invoiceItems.invoice', fn ($query) => $query->where('status', InvoiceStatus::Paid));
+
+        // A dedicated server whose machine waits for the OS install is listed on its own below. While
+        // an update has not made the hardware tables yet, every paid pending service counts.
+        $stuck = ! $may('services.manage') ? 0 : (int) rescue(
+            fn (): int => $paidPending()->whereDoesntHave('machine', fn ($query) => $query->where('status', MachineStatus::Provisioning->value))->count(),
+            fn (): int => $paidPending()->count(),
+            report: false,
+        );
 
         if ($stuck > 0) {
             $items[] = [
@@ -69,6 +80,9 @@ final class AttentionList
                 'action' => __('Review'),
             ];
         }
+
+        array_push($items, ...self::hardware($may));
+        array_push($items, ...self::resourceChanges($may));
 
         $waitingDomains = ! $may('domains.manage') ? 0 : Domain::query()
             ->where('status', DomainStatus::Pending)
@@ -146,5 +160,102 @@ final class AttentionList
         }
 
         return $items;
+    }
+
+    /**
+     * Dedicated servers in your own rack: OS installs to do (services.manage), machines that wait
+     * for a disk wipe (hardware.manage) and suspended machines that are still on (hardware.power).
+     *
+     * @param  callable(string): bool  $may
+     * @return list<array{key: string, tone: string, text: string, url: string|null, action: string|null}>
+     */
+    private static function hardware(callable $may): array
+    {
+        $mayServices = $may('services.manage');
+        $mayPower = $may('hardware.power');
+        $mayManage = $may('hardware.manage');
+
+        if (! $mayServices && ! $mayPower && ! $mayManage) {
+            return [];
+        }
+
+        // While an update has not made the hardware tables yet, there is nothing to list.
+        return rescue(function () use ($mayServices, $mayPower, $mayManage): array {
+            $items = [];
+            $list = fn (MachineStatus $status): ?string => $mayPower ? route('admin.machines.index', ['status' => $status->value]) : null;
+
+            $installs = ! $mayServices ? 0 : Machine::query()->where('status', MachineStatus::Provisioning->value)->whereNotNull('service_id')->count();
+
+            if ($installs > 0) {
+                $items[] = [
+                    'key' => 'hardware.install',
+                    'tone' => 'warn',
+                    'text' => trans_choice(':count dedicated server waits for an OS install.|:count dedicated servers wait for an OS install.', $installs, ['count' => $installs]),
+                    'url' => $list(MachineStatus::Provisioning) ?? route('admin.services.index', ['status' => ServiceStatus::Pending->value]),
+                    'action' => __('Review'),
+                ];
+            }
+
+            $wipes = ! $mayManage ? 0 : Machine::query()->where('status', MachineStatus::Wiping->value)->count();
+
+            if ($wipes > 0) {
+                $items[] = [
+                    'key' => 'hardware.wipe',
+                    'tone' => 'warn',
+                    'text' => trans_choice(':count machine waits for a disk wipe before it can be sold again.|:count machines wait for a disk wipe before they can be sold again.', $wipes, ['count' => $wipes]),
+                    'url' => $list(MachineStatus::Wiping),
+                    'action' => $mayPower ? __('Review') : null,
+                ];
+            }
+
+            $stillOn = ! $mayPower ? 0 : Machine::query()->where('status', MachineStatus::Suspended->value)->where('power_state', PowerState::On->value)->count();
+
+            if ($stillOn > 0) {
+                $items[] = [
+                    'key' => 'hardware.still_on',
+                    'tone' => 'crit',
+                    'text' => trans_choice(':count suspended machine is still on.|:count suspended machines are still on.', $stillOn, ['count' => $stillOn]),
+                    'url' => $list(MachineStatus::Suspended),
+                    'action' => __('Review'),
+                ];
+            }
+
+            return $items;
+        }, [], report: false);
+    }
+
+    /**
+     * Changes of server resources (extras) that the server did not take, or that no module can
+     * set, so staff must set them by hand or try again. Only for active and suspended services.
+     *
+     * @param  callable(string): bool  $may
+     * @return list<array{key: string, tone: string, text: string, url: string|null, action: string|null}>
+     */
+    private static function resourceChanges(callable $may): array
+    {
+        if (! $may('services.manage')) {
+            return [];
+        }
+
+        return rescue(function (): array {
+            $waiting = fn () => ResourceChange::query()
+                ->whereIn('server_state', [ResourceChange::SERVER_FAILED, ResourceChange::SERVER_MANUAL])
+                ->where('status', '!=', ResourceChange::STATUS_CANCELLED)
+                ->whereHas('service', fn ($query) => $query->whereIn('status', [ServiceStatus::Active, ServiceStatus::Suspended]));
+            $count = $waiting()->count();
+
+            if ($count === 0) {
+                return [];
+            }
+
+            // The services list has no filter for this, so the item opens the oldest one to fix.
+            return [[
+                'key' => 'resources.staff',
+                'tone' => 'crit',
+                'text' => trans_choice(':count resource change needs staff.|:count resource changes need staff.', $count, ['count' => $count]),
+                'url' => route('admin.services.show', (int) $waiting()->orderBy('id')->value('service_id')),
+                'action' => __('Review'),
+            ]];
+        }, [], report: false);
     }
 }
