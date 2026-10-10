@@ -44,6 +44,12 @@ final class PowerControl
     /** BMC failures in a row before staff get an alert (at most once a day per machine). */
     public const ALERT_AFTER_FAILURES = 3;
 
+    /** Minutes a failing power check waits longer for each BMC failure in a row after the first. */
+    public const RETRY_STEP_MINUTES = 5;
+
+    /** Minutes a failing power check waits at most. */
+    public const RETRY_MAX_MINUTES = 60;
+
     /** A saved power state that did not change is written again after this many seconds. */
     private const SAVE_STATE_AFTER_SECONDS = 300;
 
@@ -235,7 +241,8 @@ final class PowerControl
      * The scheduler's power check: machines whose power_check_at is due are switched off when they
      * should be off. A suspended machine (of a suspended service) is checked again every hour, as
      * a power cut or a BIOS setting can switch it on again; a machine waiting for a wipe is
-     * switched off once. A BMC that fails keeps the check due, so the next run tries again.
+     * switched off once. A check that cannot finish (a BMC that fails, say) is tried again on a
+     * later run, behind the other due machines, so broken BMCs never block the healthy ones.
      *
      * Bounded: at most $limit machines, and no new one after $budgetSeconds. Returns how many were
      * handled.
@@ -434,9 +441,7 @@ final class PowerControl
         }
 
         try {
-            $machine->refresh()->load('service');
-            $wiping = $machine->status === MachineStatus::Wiping;
-            $suspended = $machine->status === MachineStatus::Suspended && $machine->service?->status === ServiceStatus::Suspended;
+            [$wiping, $suspended] = $this->mustBeOff($machine);
 
             if (! $wiping && ! $suspended) {
                 $machine->forceFill(['power_check_at' => null])->save();
@@ -467,16 +472,35 @@ final class PowerControl
                 return;
             }
 
-            // Unknown (the BMC failed) or changing: the check stays due for the next run.
+            // Unknown (the BMC failed) or changing: tried again on a later run.
             if ($state !== PowerState::On) {
+                $this->retryLater($machine);
+
+                return;
+            }
+
+            // The state read can take seconds, and a payment may have unsuspended the service
+            // meanwhile (that change does not wait for the power lock): read both again.
+            [$wiping, $suspended] = $this->mustBeOff($machine);
+
+            if (! $wiping && ! $suspended) {
                 return;
             }
 
             $result = $this->send($machine, $driver, PowerAction::Off, null, $machine->service);
 
-            if ($result->ok && $wiping) {
-                $machine->forceFill(['power_check_at' => null])->save();
-            } elseif (! $result->ok && $suspended && Cache::add(self::ALERT_KEY.'still-on:'.$machine->getKey(), true, 86400)) {
+            if ($result->ok) {
+                // A suspended machine stays due, so the next run checks that it is really off.
+                if ($wiping) {
+                    $machine->forceFill(['power_check_at' => null])->save();
+                }
+
+                return;
+            }
+
+            $this->retryLater($machine);
+
+            if ($suspended && Cache::add(self::ALERT_KEY.'still-on:'.$machine->getKey(), true, 86400)) {
                 $this->alert($machine, __('A suspended server is still on'), __('Service #:service is suspended, but :machine is still on and Nuvabill could not switch it off: :error', [
                     'service' => $machine->service_id,
                     'machine' => $machine->name,
@@ -486,6 +510,35 @@ final class PowerControl
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * Read the machine and its service again. Returns whether the machine waits for a wipe, and
+     * whether it and its service are suspended: either means it must be off.
+     *
+     * @return array{0: bool, 1: bool}
+     */
+    private function mustBeOff(Machine $machine): array
+    {
+        $machine->refresh()->load('service');
+
+        return [
+            $machine->status === MachineStatus::Wiping,
+            $machine->status === MachineStatus::Suspended && $machine->service?->status === ServiceStatus::Suspended,
+        ];
+    }
+
+    /**
+     * A power check that could not finish (the BMC failed, the server was turning on or off, or
+     * the power off did not work) moves behind the other due machines, so a few broken BMCs never
+     * fill every run. It is tried again on the next run; while the BMC keeps failing, the wait
+     * grows by RETRY_STEP_MINUTES per failure in a row, up to RETRY_MAX_MINUTES.
+     */
+    private function retryLater(Machine $machine): void
+    {
+        $minutes = min(self::RETRY_MAX_MINUTES, self::RETRY_STEP_MINUTES * max(0, (int) $machine->bmc_failures - 1));
+
+        $machine->forceFill(['power_check_at' => now()->addMinutes($minutes)])->save();
     }
 
     private function alert(Machine $machine, string $title, string $message): void

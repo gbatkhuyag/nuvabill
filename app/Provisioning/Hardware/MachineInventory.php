@@ -12,6 +12,7 @@ use App\Models\MachineIp;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\Service;
+use App\Provisioning\Provisioner;
 use App\Support\Activity;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
@@ -51,6 +52,9 @@ final class MachineInventory
      * @var list<MachineStatus>
      */
     private const FREE = [MachineStatus::Available, MachineStatus::Maintenance, MachineStatus::Decommissioned];
+
+    /** Seconds the sweep holds a service's work lock at most: it only changes rows. */
+    private const SWEEP_LOCK_SECONDS = 60;
 
     public function __construct(private TemplateMailer $mailer) {}
 
@@ -121,7 +125,8 @@ final class MachineInventory
      * none, such as one staff made by hand) the free linked machine with the lowest id.
      *
      * A pending service gets it reserved, and a machine it held before is taken back. An active or
-     * suspended service (an import) gets it in that status straight away, without any power call.
+     * suspended service (an import) gets it in that status straight away, without any power call
+     * here; a suspended one gets a power check, so the scheduler switches it off.
      *
      * @throws InventoryException
      */
@@ -179,7 +184,7 @@ final class MachineInventory
                 'status' => $to,
                 'service_id' => $service->getKey(),
                 'provisioned_at' => $to === MachineStatus::Reserved ? null : now(),
-                'power_check_at' => null,
+                'power_check_at' => self::powerCheckFor($to),
             ])->save();
 
             $by = $admin !== null ? ' by staff' : '';
@@ -503,7 +508,8 @@ final class MachineInventory
     /**
      * Move an active or suspended service to another free machine. The new machine takes over the
      * service's status and its rented extra IPs (as many free extra IPs as the old one had); the old
-     * machine is released and must be wiped before it is sold again.
+     * machine is released and must be wiped before it is sold again. A suspended service's new
+     * machine gets a power check, so the scheduler switches it off and checks it every hour.
      *
      * @throws InventoryException
      */
@@ -555,7 +561,7 @@ final class MachineInventory
                 'status' => $status,
                 'service_id' => $service->getKey(),
                 'provisioned_at' => now(),
-                'power_check_at' => null,
+                'power_check_at' => self::powerCheckFor($status),
             ])->save();
 
             if ($rented > 0) {
@@ -626,7 +632,8 @@ final class MachineInventory
      * Every five minutes: fix machines whose service changed without them, for example through a
      * mass update or a deleted service. A machine whose service ended or is gone is released (it
      * needs a wipe, unless it was only reserved). A machine whose service staff set to active or
-     * suspended by hand gets the same status, without any power call. Returns how many were fixed.
+     * suspended by hand gets the same status, without any power call. A machine whose service is
+     * busy with other work (a suspend, say) waits for the next run. Returns how many were fixed.
      */
     public function sweep(): int
     {
@@ -650,17 +657,67 @@ final class MachineInventory
         return Route::has('admin.machines.show') ? route('admin.machines.show', $machine) : route('admin.dashboard');
     }
 
+    /**
+     * One machine of sweep(). A machine that looks out of step is fixed under its service's work
+     * lock (Provisioner::lockFor), because a suspend or unsuspend on the server changes the machine
+     * first and the service last: in between the two only look out of step. A service that is busy
+     * is left for the next run.
+     */
     private function sweepOne(Machine $machine): bool
     {
-        $service = $machine->service_id !== null ? Service::query()->find($machine->service_id) : null;
+        $serviceId = $machine->service_id;
+        $service = $serviceId !== null ? Service::query()->find($serviceId) : null;
 
-        if ($service === null || in_array($service->status, self::ENDED, true)) {
-            $before = $machine->status;
-            $this->release($machine, $service === null ? 'its service is gone' : "service {$service->status->value}");
-
-            return $machine->status !== $before;
+        if (! self::outOfStep($machine, $service)) {
+            return false;
         }
 
+        // A service that is gone has no work running on it, so there is nothing to wait for.
+        $lock = $service !== null ? app(Provisioner::class)->lockFor($service, self::SWEEP_LOCK_SECONDS) : null;
+
+        if ($lock !== null && ! $lock->get()) {
+            return false;
+        }
+
+        try {
+            // Read both again inside the lock: the work that held it may have changed them.
+            $current = Machine::query()->find($machine->getKey());
+            $service = $service?->fresh();
+
+            if ($current === null || (int) $current->service_id !== (int) $serviceId || ! self::outOfStep($current, $service)) {
+                return false;
+            }
+
+            if ($service === null || in_array($service->status, self::ENDED, true)) {
+                $before = $current->status;
+                $this->release($current, $service === null ? 'its service is gone' : "service {$service->status->value}");
+
+                return $current->status !== $before;
+            }
+
+            return $this->syncWithService($current);
+        } finally {
+            $lock?->release();
+        }
+    }
+
+    /**
+     * Whether the sweep must fix the machine: its service ended or is gone, or staff set the
+     * service active or suspended by hand.
+     */
+    private static function outOfStep(Machine $machine, ?Service $service): bool
+    {
+        return $service === null
+            || in_array($service->status, self::ENDED, true)
+            || ($machine->status === MachineStatus::Suspended && $service->status === ServiceStatus::Active)
+            || ($machine->status === MachineStatus::Active && $service->status === ServiceStatus::Suspended);
+    }
+
+    /**
+     * Copy a status staff set on the service by hand to its machine, without touching the power.
+     */
+    private function syncWithService(Machine $machine): bool
+    {
         return DB::transaction(function () use ($machine): bool {
             $locked = Machine::query()->whereKey($machine->getKey())->lockForUpdate()->first();
             $service = $locked?->service_id !== null ? Service::query()->whereKey($locked->service_id)->lockForUpdate()->first() : null;
@@ -782,6 +839,15 @@ final class MachineInventory
             ],
             'admin_url' => route('admin.services.show', $service),
         ];
+    }
+
+    /**
+     * The first power check of a machine that takes over a service in this status: a suspended
+     * machine is checked at once, so the scheduler switches it off and then checks it every hour.
+     */
+    private static function powerCheckFor(MachineStatus $status): ?CarbonInterface
+    {
+        return $status === MachineStatus::Suspended ? now() : null;
     }
 
     /**

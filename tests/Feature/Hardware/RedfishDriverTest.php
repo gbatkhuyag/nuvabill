@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Hardware;
 
+use App\Enums\MachineStatus;
 use App\Enums\PowerAction;
 use App\Enums\PowerState;
 use App\Mail\TemplatedMessage;
@@ -11,6 +12,8 @@ use App\Models\Client;
 use App\Models\Machine;
 use App\Provisioning\Hardware\BmcAddress;
 use App\Provisioning\Hardware\BmcException;
+use App\Provisioning\Hardware\BmcTestResult;
+use App\Provisioning\Hardware\Drivers\PowerDriver;
 use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\Drivers\RedfishDriver;
 use App\Provisioning\Hardware\PowerControl;
@@ -25,15 +28,20 @@ use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Handler\CurlHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Symfony\Component\Process\Process;
 use Tests\Fakes\FakeCertificateProbe;
 use Tests\TestCase;
+use Throwable;
 
 /**
  * Power control through Redfish: nothing is sent before the BMC's certificate is trusted, the TLS
@@ -371,10 +379,82 @@ class RedfishDriverTest extends TestCase
         $client = Client::factory()->create(['first_name' => 'Mer', 'last_name' => 'Las']);
         $this->assertSame("The server's management port does not answer. Try again later or open a ticket.", $power->run($machine, PowerAction::Off, $client)->message);
 
+        // A password with "<" in it is hidden whole, as sent and HTML-escaped.
+        $this->travel(21)->seconds();
+        $machine->forceFill(['bmc_password' => 'Ab<cd9!x'])->save();
+        $this->fakeBmc(['POST '.self::RESET => Http::response(['error' => ['message' => 'Login with Ab<cd9!x or Ab&lt;cd9!x was refused']], 400)]);
+        $this->assertSame('The BMC did not accept the request: Login with [hidden] or [hidden] was refused', $power->run($machine, PowerAction::Off, $this->admin)->message);
+        $this->assertStringNotContainsString('Ab', (string) $machine->fresh()->bmc_last_error);
+
         $this->assertFalse(ActivityLog::query()->where('description', 'like', '%'.self::PASSWORD.'%')->exists());
+        $this->assertFalse(ActivityLog::query()->where('description', 'like', '%with Ab%')->exists());
         $this->assertStringNotContainsString(self::PASSWORD, (string) $machine->fresh()->bmc_last_error);
-        $this->assertSame(4, ActivityLog::query()->where('action', 'machine.power_failed')->count());
+        $this->assertSame(5, ActivityLog::query()->where('action', 'machine.power_failed')->count());
         Exceptions::assertNothingReported();
+    }
+
+    public function test_unexpected_errors_reach_the_log_without_the_login(): void
+    {
+        Log::spy();
+        $leak = 'Request for nuvabill-operator:'.self::PASSWORD.' failed';
+
+        // A fault on this side, not a network error, while the scheduler reads the power state.
+        $this->fakeBmc([self::SYSTEM => fn () => throw new RuntimeException($leak)]);
+        $redfish = $this->machine(['name' => 'DS-101', 'status' => MachineStatus::Wiping, 'power_check_at' => now()->subMinutes(2)]);
+
+        // A power driver that fails where nothing expects it, with the login in its message.
+        app(PowerDrivers::class)->register(new class($leak) implements PowerDriver
+        {
+            public function __construct(private string $leak) {}
+
+            public function type(): string
+            {
+                return 'ipmi';
+            }
+
+            public function label(): string
+            {
+                return 'Failing driver';
+            }
+
+            public function available(): bool
+            {
+                throw new RuntimeException($this->leak);
+            }
+
+            public function test(Machine $machine): BmcTestResult
+            {
+                return BmcTestResult::failed('Not used.');
+            }
+
+            public function powerState(Machine $machine): PowerState
+            {
+                return PowerState::Unknown;
+            }
+
+            public function supportedActions(Machine $machine): array
+            {
+                return [];
+            }
+
+            public function run(Machine $machine, PowerAction $action): void {}
+        });
+        $failing = Machine::factory()->ipmi()->wiping()->create(['name' => 'DS-102', 'power_check_at' => now()->subMinute()]);
+
+        $this->assertSame(2, app(PowerControl::class)->enforce());
+
+        // Only the class name of what went wrong is logged.
+        Log::shouldHaveReceived('error')->with('A Redfish request failed: RuntimeException', Mockery::any())->once();
+        Log::shouldHaveReceived('error')->with("Power check of machine #{$failing->id} failed: RuntimeException", Mockery::any())->once();
+
+        foreach (['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug', 'log'] as $level) {
+            Log::shouldNotHaveReceived($level, fn (mixed ...$arguments): bool => $this->holdsLogin($arguments));
+        }
+
+        $this->assertSame(1, $redfish->fresh()->bmc_failures);
+        $this->assertStringNotContainsString(self::PASSWORD, (string) $redfish->fresh()->bmc_last_error);
+        $this->assertFalse(ActivityLog::query()->where('description', 'like', '%'.self::PASSWORD.'%')->exists());
+        $this->assertFalse(ActivityLog::query()->where('description', 'like', '%nuvabill-operator%')->exists());
     }
 
     public function test_a_changed_certificate_stops_every_call_with_a_clear_message(): void
@@ -388,6 +468,44 @@ class RedfishDriverTest extends TestCase
         $this->assertSame(PowerState::Unknown, app(PowerControl::class)->state($machine, fresh: true));
         $this->assertSame("The BMC's certificate changed. Check it on the BMC and trust it again.", $machine->fresh()->bmc_last_error);
         $this->assertSame(1, $machine->fresh()->bmc_failures);
+    }
+
+    public function test_a_changed_certificate_can_be_checked_and_trusted_again(): void
+    {
+        $this->fakeBmc(['/redfish/v1/' => fn (Request $request) => $this->pinMismatch($request)]);
+        $machine = $this->machine(['bmc_failures' => 4, 'bmc_last_error' => "The BMC's certificate changed. Check it on the BMC and trust it again."]);
+        $power = app(PowerControl::class);
+        $renewed = FakeCertificateProbe::certificate('B');
+        $this->probe->certificate = $renewed;
+
+        $result = $power->test($machine);
+
+        $this->assertTrue($result->needsTrust);
+        $this->assertFalse($result->ok);
+        $this->assertSame('The BMC shows a new certificate. Check it below and trust it again only when its fingerprint matches the one on the BMC.', $result->message);
+        $this->assertSame($renewed->fingerprint, $result->certificate?->fingerprint);
+        $this->assertCount(1, $this->sent, 'Only the service root was asked for, and curl stopped at the handshake.');
+        $this->assertFalse($this->sent[0]['request']->hasHeader('Authorization'));
+        $this->assertNotSame($renewed->pin, $machine->fresh()->bmc_tls_pin, 'Nothing changes before staff trust it.');
+
+        $power->trust($machine, $renewed->fingerprint, null, $this->admin);
+
+        $machine->refresh();
+        $this->assertSame($renewed->pin, $machine->bmc_tls_pin);
+        $this->assertSame($renewed->fingerprint, $machine->bmc_tls_fingerprint);
+        $this->assertSame(0, $machine->bmc_failures);
+        $this->assertNull($machine->bmc_last_error);
+
+        // A certificate read with the trusted key after all is nothing new to trust.
+        $this->fakeBmc(['/redfish/v1/' => fn (Request $request) => $this->pinMismatch($request)]);
+        $again = $power->test($machine);
+        $this->assertFalse($again->needsTrust);
+        $this->assertNull($again->certificate);
+        $this->assertSame("The BMC's certificate changed. Check it on the BMC and trust it again.", $again->message);
+
+        // Other failures of the service root stay plain failures.
+        $this->fakeBmc(['/redfish/v1/' => fn (Request $request) => Http::failedConnection()($request)]);
+        $this->assertFalse($power->test($machine)->needsTrust);
     }
 
     public function test_restart_is_hidden_when_graceful_restart_is_not_supported(): void
@@ -729,6 +847,50 @@ class RedfishDriverTest extends TestCase
         $answer = $this->routes[$request->method().' '.$path] ?? $this->routes[$path] ?? Http::response(['error' => ['message' => 'Not found']], 404);
 
         return $answer instanceof Closure ? $answer($request) : $answer;
+    }
+
+    /**
+     * What curl does when the BMC shows another key than the pinned one: it stops at the handshake.
+     */
+    private function pinMismatch(Request $request): PromiseInterface
+    {
+        return Create::rejectionFor(new ConnectException(
+            'cURL error 90: SSL: public key does not match pinned public key (see https://curl.se/libcurl/c/libcurl-errors.html)',
+            $request->toPsrRequest(),
+        ));
+    }
+
+    /**
+     * Whether log call arguments hold the BMC login: in a message, a context value, or an
+     * exception's message, trace or earlier exceptions.
+     *
+     * @param  array<array-key, mixed>  $values
+     */
+    private function holdsLogin(array $values): bool
+    {
+        foreach ($values as $value) {
+            $texts = match (true) {
+                is_string($value) => [$value],
+                $value instanceof Throwable => [$value->getMessage(), $value->getTraceAsString()],
+                default => [],
+            };
+
+            foreach ($texts as $text) {
+                if (str_contains($text, self::PASSWORD) || str_contains($text, 'nuvabill-operator')) {
+                    return true;
+                }
+            }
+
+            if (is_array($value) && $this->holdsLogin($value)) {
+                return true;
+            }
+
+            if ($value instanceof Throwable && $value->getPrevious() !== null && $this->holdsLogin([$value->getPrevious()])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function assertTrustRefused(Closure $trust, string $message): void

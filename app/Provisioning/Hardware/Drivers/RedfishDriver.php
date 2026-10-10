@@ -202,7 +202,12 @@ final class RedfishDriver implements PowerDriver
             }
         }
 
-        $root = $this->get($machine, $address, '/redfish/v1/', auth: false);
+        try {
+            $root = $this->get($machine, $address, '/redfish/v1/', auth: false);
+        } catch (BmcException $exception) {
+            return $this->trustChangedCertificate($machine, $address, $exception);
+        }
+
         $collection = $this->requirePath(is_array($root['Systems'] ?? null) ? ($root['Systems']['@odata.id'] ?? null) : null, __('The BMC does not list its systems.'));
         $listed = $this->get($machine, $address, $collection)['Members'] ?? null;
         $members = [];
@@ -259,6 +264,30 @@ final class RedfishDriver implements PowerDriver
             model: $model !== '' ? $model : null,
             powerState: PowerState::fromRedfish(is_string($system['PowerState'] ?? null) ? $system['PowerState'] : null),
         );
+    }
+
+    /**
+     * The service root failed. When it failed because the BMC shows another key than the trusted
+     * one (a reset or a firmware update, say), staff get the new certificate to check and trust
+     * again. curl stopped at the handshake and the root is read without the login, so nothing
+     * reached the BMC. PowerControl::trust() reads the certificate again before it replaces the pin.
+     *
+     * @throws BmcException any other failure, as it came.
+     */
+    private function trustChangedCertificate(Machine $machine, BmcAddress $address, BmcException $failure): BmcTestResult
+    {
+        if ($failure->reason !== BmcException::PIN_MISMATCH || ! $this->pinned($machine)) {
+            throw $failure;
+        }
+
+        $seen = $this->probe->fetch($address->ip, $address->port, $address->host);
+
+        // The certificate read here has the trusted key after all: nothing new to trust.
+        if ($seen->pin === $machine->bmc_tls_pin) {
+            throw $failure;
+        }
+
+        return BmcTestResult::trustFirst($seen, __('The BMC shows a new certificate. Check it below and trust it again only when its fingerprint matches the one on the BMC.'));
     }
 
     /**
@@ -538,6 +567,9 @@ final class RedfishDriver implements PowerDriver
 
     /**
      * A text from the BMC made safe to keep and show: no tags, no line breaks, no login, cut short.
+     *
+     * The login is hidden before the tags go, because strip_tags() cuts a password that holds "<"
+     * and would leave its first part; and once more after, for a login the BMC sent HTML-escaped.
      */
     private function text(Machine $machine, mixed $value, int $limit): string
     {
@@ -545,15 +577,27 @@ final class RedfishDriver implements PowerDriver
             return '';
         }
 
-        $text = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5);
+        $text = $this->hideLogin($machine, $value);
+        $text = $this->hideLogin($machine, html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5));
+
+        return Str::limit(trim((string) preg_replace('/[\s\x00-\x1F\x7F]+/u', ' ', $text)), $limit, '…');
+    }
+
+    /**
+     * Replace the BMC user name, password and "user:password", as they are and URL or base64
+     * encoded, with [hidden]. The longest go first, so no part of a longer one is left.
+     */
+    private function hideLogin(Machine $machine, string $text): string
+    {
         $username = (string) $machine->bmc_username;
         $password = (string) $machine->bmc_password;
-        $secrets = [$username, $password, $username.':'.$password];
+        $secrets = array_filter([$username.':'.$password, $password, $username], fn (string $secret): bool => strlen($secret) >= 3);
+        usort($secrets, fn (string $a, string $b): int => strlen($b) <=> strlen($a));
 
-        foreach (array_filter($secrets, fn (string $secret): bool => strlen($secret) >= 3) as $secret) {
+        foreach ($secrets as $secret) {
             $text = str_ireplace([$secret, rawurlencode($secret), urlencode($secret), base64_encode($secret)], '[hidden]', $text);
         }
 
-        return Str::limit(trim((string) preg_replace('/[\s\x00-\x1F\x7F]+/u', ' ', $text)), $limit, '…');
+        return $text;
     }
 }

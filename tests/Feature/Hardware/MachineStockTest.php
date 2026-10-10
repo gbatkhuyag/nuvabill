@@ -215,6 +215,13 @@ class MachineStockTest extends TestCase
         $this->refused(fn () => $this->inventory->assign($this->service(), $free, $this->admin), 'DS-101 is not free.');
         $this->refused(fn () => $this->inventory->assign($this->service(ServiceStatus::Cancelled), Machine::factory()->create(['name' => 'DS-105']), $this->admin), 'Only a pending, active or suspended service');
         $this->refused(fn () => $this->inventory->assign($this->service()), 'No free machine for this product.');
+
+        // An imported suspended service: the scheduler switches its machine off and checks it hourly.
+        $suspended = Machine::factory()->create(['name' => 'DS-106']);
+        $this->inventory->assign($this->service(ServiceStatus::Suspended), $suspended, $this->admin);
+        $this->assertSame(MachineStatus::Suspended, $suspended->fresh()->status);
+        $this->assertTrue($suspended->fresh()->power_check_at?->lte(now()));
+        $this->assertNull($free->fresh()->power_check_at, 'A running service is left alone.');
         Mail::assertNothingSent();
     }
 
@@ -289,6 +296,7 @@ class MachineStockTest extends TestCase
         $this->inventory->replace($service, $new, $this->admin);
 
         $this->assertSame(MachineStatus::Suspended, $new->fresh()->status);
+        $this->assertTrue($new->fresh()->power_check_at?->lte(now()), 'The scheduler switches the new machine off, as the service is suspended.');
         $this->assertSame($service->id, $new->fresh()->service_id);
         $this->assertSame(MachineStatus::Wiping, $old->fresh()->status);
         $this->assertSame($service->id, $old->fresh()->last_service_id);

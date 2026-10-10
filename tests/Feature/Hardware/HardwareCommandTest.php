@@ -11,7 +11,11 @@ use App\Models\Machine;
 use App\Models\Product;
 use App\Models\Service;
 use App\Provisioning\Hardware\Drivers\PowerDrivers;
+use App\Provisioning\Hardware\MachineInventory;
+use App\Provisioning\Hardware\PowerControl;
 use App\Provisioning\Hardware\Tls\PinningSupport;
+use App\Provisioning\Provisioner;
+use Closure;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -38,6 +42,11 @@ class HardwareCommandTest extends TestCase
      */
     private array $states = [];
 
+    /**
+     * Runs while a fake BMC answers a power state read, as something else happening meanwhile.
+     */
+    private ?Closure $whileReading = null;
+
     private Product $product;
 
     private Client $client;
@@ -53,6 +62,10 @@ class HardwareCommandTest extends TestCase
         Http::fake(function (Request $request) {
             $host = (string) parse_url($request->url(), PHP_URL_HOST);
             $path = (string) parse_url($request->url(), PHP_URL_PATH);
+
+            if ($this->whileReading !== null && $request->method() === 'GET') {
+                ($this->whileReading)($host);
+            }
 
             return match (true) {
                 ! isset($this->states[$host]) => Http::failedConnection()($request),
@@ -160,6 +173,111 @@ class HardwareCommandTest extends TestCase
 
         $this->artisan('nuvabill:hardware')->expectsOutputToContain('power checks: 5')->assertSuccessful();
         $this->assertSame(0, Machine::query()->whereNotNull('power_check_at')->count());
+    }
+
+    public function test_the_sweep_waits_while_a_suspend_or_unsuspend_holds_the_service(): void
+    {
+        $service = $this->service(ServiceStatus::Active);
+        $machine = Machine::factory()->activeFor($service)->create(['name' => 'DS-150']);
+        $inventory = app(MachineInventory::class);
+        $lock = app(Provisioner::class)->lockFor($service, 120);
+        $this->assertTrue($lock->get());
+
+        // A suspend is running: the module suspended the machine and is still switching it off.
+        // The service is marked suspended only when the module is done.
+        $inventory->suspend($machine, now()->addMinutes(10));
+        $checkAt = $machine->fresh()->power_check_at;
+
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('Machines fixed: 0')->assertSuccessful();
+
+        $this->assertSame(MachineStatus::Suspended, $machine->fresh()->status);
+        $this->assertNotNull($checkAt);
+        $this->assertEquals($checkAt, $machine->fresh()->power_check_at, 'The forced power off stays planned.');
+
+        $service->forceFill(['status' => ServiceStatus::Suspended])->save();
+        $lock->release();
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('Machines fixed: 0')->assertSuccessful();
+        $this->assertSame(MachineStatus::Suspended, $machine->fresh()->status);
+        $this->assertEquals($checkAt, $machine->fresh()->power_check_at);
+
+        // An unsuspend is running: the machine is in use again before the service is active.
+        $this->assertTrue($lock->get());
+        $inventory->unsuspend($machine);
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('Machines fixed: 0')->assertSuccessful();
+        $this->assertSame(MachineStatus::Active, $machine->fresh()->status);
+
+        $service->forceFill(['status' => ServiceStatus::Active])->save();
+        $lock->release();
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('Machines fixed: 0')->assertSuccessful();
+        $this->assertSame(MachineStatus::Active, $machine->fresh()->status);
+        $this->assertSame(0, ActivityLog::query()->where('action', 'machine.status_synced')->count());
+    }
+
+    public function test_the_sweep_fixes_a_busy_service_on_a_later_run(): void
+    {
+        $service = $this->service(ServiceStatus::Suspended);
+        $machine = Machine::factory()->activeFor($service)->create(['name' => 'DS-151']);
+        $lock = app(Provisioner::class)->lockFor($service, 120);
+        $this->assertTrue($lock->get());
+
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('Machines fixed: 0')->assertSuccessful();
+        $this->assertSame(MachineStatus::Active, $machine->fresh()->status);
+
+        // Staff had set the service suspended by hand: once the other work is done, it is copied.
+        $lock->release();
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('Machines fixed: 1')->assertSuccessful();
+        $this->assertSame(MachineStatus::Suspended, $machine->fresh()->status);
+    }
+
+    public function test_failing_bmcs_never_keep_a_healthy_machine_waiting(): void
+    {
+        // A dead management switch: twenty BMCs that do not answer, due before the healthy one.
+        foreach (range(40, 59) as $number) {
+            $this->machine("10.20.1.{$number}", null, null, MachineStatus::Wiping, now()->subMinutes(100 - $number));
+        }
+
+        $healthy = $this->machine('10.20.0.11', 'on', $this->service(ServiceStatus::Suspended), MachineStatus::Suspended, now()->subMinute());
+
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('power checks: 20')->assertSuccessful();
+
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '10.20.0.11'));
+        $this->assertSame(20, Machine::query()->where('bmc_failures', 1)->whereNotNull('power_check_at')->count());
+
+        // They wait behind it now, so the next run switches it off first.
+        $this->travel(5)->minutes();
+        $this->artisan('nuvabill:hardware')->expectsOutputToContain('power checks: 20')->assertSuccessful();
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST' && $request->data() === ['ResetType' => 'ForceOff'] && str_contains($request->url(), '10.20.0.11'));
+        $this->assertNotNull($healthy->fresh()->power_check_at, 'Checked again until it is really off.');
+
+        // A BMC that keeps failing is tried less often, at most an hour apart.
+        $failing = Machine::query()->where('name', 'DS-40')->sole();
+        $this->assertSame(2, $failing->bmc_failures);
+        $this->assertTrue($failing->power_check_at->between(now()->addMinutes(4), now()->addMinutes(6)));
+
+        $failing->forceFill(['bmc_failures' => 40, 'power_check_at' => now()->subHour()])->save();
+        app(PowerControl::class)->enforce(1);
+        $this->assertTrue($failing->fresh()->power_check_at->between(now()->addMinutes(59), now()->addMinutes(61)));
+    }
+
+    public function test_a_service_unsuspended_while_the_power_is_read_is_not_switched_off(): void
+    {
+        $service = $this->service(ServiceStatus::Suspended);
+        $machine = $this->machine('10.20.0.11', 'on', $service, MachineStatus::Suspended, now()->subMinute());
+
+        // The client pays while the BMC answers: the service and its machine are active again.
+        $this->whileReading = function (string $host) use ($service, $machine): void {
+            $this->whileReading = null;
+            app(MachineInventory::class)->unsuspend($machine);
+            $service->forceFill(['status' => ServiceStatus::Active])->save();
+        };
+
+        $this->assertSame(1, app(PowerControl::class)->enforce());
+
+        Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+        $this->assertSame(MachineStatus::Active, $machine->fresh()->status);
+        $this->assertNull($machine->fresh()->power_check_at);
+        $this->assertSame(0, ActivityLog::query()->where('action', 'machine.power')->count());
     }
 
     private function service(ServiceStatus $status): Service

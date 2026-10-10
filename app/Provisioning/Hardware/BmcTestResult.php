@@ -39,12 +39,14 @@ final readonly class BmcTestResult
 
     /**
      * The certificate must be trusted first. Nothing was sent to the BMC but the TLS handshake.
+     *
+     * @param  ?string  $message  What staff read instead of the usual text, such as when the BMC's certificate changed.
      */
-    public static function trustFirst(PeerCertificate $certificate): self
+    public static function trustFirst(PeerCertificate $certificate, ?string $message = null): self
     {
         return new self(
             ok: false,
-            message: __('Check the BMC certificate below. Trust it only when its fingerprint matches the one on the BMC.'),
+            message: $message ?? __('Check the BMC certificate below. Trust it only when its fingerprint matches the one on the BMC.'),
             needsTrust: true,
             certificate: $certificate,
         );
