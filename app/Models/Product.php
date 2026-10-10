@@ -6,6 +6,7 @@ use App\Enums\AutoSetup;
 use App\Enums\BillingCycle;
 use App\Enums\ProductType;
 use App\Enums\ServiceStatus;
+use App\Provisioning\Hardware\MachineInventory;
 use App\Seo\Sitemap;
 use Database\Factories\ProductFactory;
 use Illuminate\Database\Eloquent\Builder;
@@ -13,6 +14,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Product extends Model
@@ -44,6 +46,8 @@ class Product extends Model
         'seo_description',
         'seo_hidden',
         'upgrade_product_ids',
+        'panel_sections',
+        'uses_machines',
     ];
 
     /**
@@ -66,6 +70,8 @@ class Product extends Model
             'sort_order' => 'integer',
             'seo_hidden' => 'boolean',
             'upgrade_product_ids' => 'array',
+            'panel_sections' => 'array',
+            'uses_machines' => 'boolean',
         ];
     }
 
@@ -120,6 +126,37 @@ class Product extends Model
     }
 
     /**
+     * The resource sliders (extra RAM, IPs and so on) the product offers, in display order.
+     *
+     * @return HasMany<ResourceOption, $this>
+     */
+    public function resourceOptions(): HasMany
+    {
+        return $this->hasMany(ResourceOption::class)->orderBy('sort_order')->orderBy('id');
+    }
+
+    /**
+     * The dedicated server machines this product can be sold as (when uses_machines is on).
+     *
+     * @return BelongsToMany<Machine, $this>
+     */
+    public function machines(): BelongsToMany
+    {
+        return $this->belongsToMany(Machine::class, 'machine_product');
+    }
+
+    /**
+     * Whether staff left a client server panel feature (a section key such as "graphs") switched on
+     * for this product. A section staff never saved a choice for uses the module's default.
+     */
+    public function panelSectionEnabled(string $key, bool $default): bool
+    {
+        $sections = $this->panel_sections;
+
+        return is_array($sections) && array_key_exists($key, $sections) ? (bool) $sections[$key] : $default;
+    }
+
+    /**
      * @param  Builder<Product>  $query
      */
     public function scopeVisible(Builder $query): void
@@ -166,9 +203,16 @@ class Product extends Model
      * holds one, and so does each waiting plan change into it that will not count the stock when it
      * happens (see planChangesHoldingStock). Good for showing; where the answer decides a sale or a
      * plan change, use lockedStockLeft().
+     *
+     * A product sold from the hardware inventory (uses_machines) has as many left as it has free
+     * linked machines; its stock column and plan changes do not count.
      */
     public function stockLeft(): ?int
     {
+        if ($this->uses_machines) {
+            return app(MachineInventory::class)->availableCount($this);
+        }
+
         if ($this->stock === null) {
             return null;
         }
@@ -185,10 +229,15 @@ class Product extends Model
      *
      * On MySQL and MariaDB a plain count can read an older snapshot of the transaction and miss an
      * order another checkout saved a moment ago. This locking read cannot. Call it before anything
-     * else is read in the transaction. Lock rows in the one order checkouts and plan changes use, so
-     * two of them never wait for each other in a circle: a plan change, then a client, then a coupon,
-     * then every product the transaction needs (in id order), then services. Lock any other product
-     * first, then call this.
+     * else is read in the transaction. Lock rows in the one order checkouts, plan changes and resource
+     * changes use, so two of them never wait for each other in a circle: a plan change or resource
+     * change, then a client, then a coupon, then every product the transaction needs (in id order),
+     * then machines (in id order), then resource options (in id order), then services (in id order),
+     * then the services' resource rows. Never lock an earlier one after a later one: lock any other
+     * product first, then call this.
+     *
+     * A product sold from the hardware inventory (uses_machines) locks its row, then its free linked
+     * machines in id order, and has as many left as there are such machines.
      *
      * The waiting plan changes are counted with a plain read, after the locks, and are not locked:
      * applying a change locks the change before the products, so locking changes here could make
@@ -199,10 +248,14 @@ class Product extends Model
     public function lockedStockLeft(): ?int
     {
         // A product deleted meanwhile has nothing left to sell.
-        $saved = static::query()->whereKey($this->getKey())->lockForUpdate()->first(['id', 'stock']);
+        $saved = static::query()->whereKey($this->getKey())->lockForUpdate()->first(['id', 'stock', 'uses_machines']);
 
         if ($saved === null) {
             return 0;
+        }
+
+        if ($saved->uses_machines) {
+            return app(MachineInventory::class)->lockedAvailableCount($saved);
         }
 
         if ($saved->stock === null) {

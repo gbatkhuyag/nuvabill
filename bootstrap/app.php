@@ -139,6 +139,9 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Passwords typed on the Account page are never kept in the session after a form error.
         $exceptions->dontFlash(OwnerCheck::PASSWORD_FIELDS);
+        // Nor are server API tokens, BMC logins of dedicated servers, or root passwords staff type,
+        // so a form shown again after an error never writes them back into the page.
+        $exceptions->dontFlash(['api_token', 'bmc_username', 'bmc_password', 'root_password']);
 
         // A store page that got a new web address: send visitors and search engines to it.
         $exceptions->render(function (NotFoundHttpException $exception, Request $request) {

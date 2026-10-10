@@ -39,6 +39,8 @@ class Role extends Model
         ],
         'Setup' => [
             'products.manage' => 'Manage products and servers',
+            'hardware.manage' => 'Manage dedicated server hardware and BMC logins',
+            'hardware.power' => 'See and switch the power of dedicated servers',
             'settings.manage' => 'Change system settings, gateways and email templates',
             'staff.manage' => 'Manage staff and roles',
             'system.update' => 'Install updates',

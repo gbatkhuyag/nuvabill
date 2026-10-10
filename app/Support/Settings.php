@@ -31,6 +31,8 @@ class Settings
         'billing.renewal_days_before' => 7,
         'billing.payment_terms_days' => 7,
         'billing.plan_changes' => true,
+        // Clients add and remove extras (resource options) on their services and pay for the days left.
+        'billing.resource_changes' => true,
         // Payment gateway slugs in the order clients see them. Gateways not listed come last, by name.
         'billing.gateway_order' => [],
         // Knowledge base, announcements and the network status page. Servers are checked every 5 minutes.
@@ -102,6 +104,22 @@ class Settings
 
         'theme.active' => 'nova',
         'orderform.active' => 'standard',
+
+        // Client server panel: the in-browser console, how often live figures refresh (5 to 60
+        // seconds), and emails to clients when something changes on their server.
+        'services.panel_console' => true,
+        'services.panel_live_seconds' => 10,
+        'services.panel_change_emails' => true,
+
+        // Dedicated servers (Admin → Hardware). The systems clients may ask for in a reinstall
+        // request, the ticket department for those requests (null: the first visible one), the
+        // wait after a shut down signal before the power is forced off, whether clients see the
+        // machine's location, and whether IPMI is offered (needs ipmitool on this server).
+        'hardware.os_choices' => ['Ubuntu 24.04', 'Debian 12', 'AlmaLinux 9', 'Rocky Linux 9'],
+        'hardware.ticket_department' => null,
+        'hardware.suspend_grace_minutes' => 10,
+        'hardware.show_location' => true,
+        'hardware.allow_ipmi' => false,
 
         'orders.accept_terms_url' => '',
         // New orders still unpaid this many days after their invoice was due are cancelled, so the

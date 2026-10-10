@@ -24,7 +24,7 @@ class DefaultDataSeeder extends Seeder
     {
         $roles = [
             'Owner' => ['*'],
-            'Billing' => ['clients.view', 'clients.manage', 'orders.manage', 'services.manage', 'domains.manage', 'billing.manage', 'coupons.manage', 'affiliates.manage'],
+            'Billing' => ['clients.view', 'clients.manage', 'orders.manage', 'services.manage', 'domains.manage', 'billing.manage', 'coupons.manage', 'affiliates.manage', 'hardware.power'],
             'Support' => ['clients.view', 'support.manage', 'ai.use', 'content.manage', 'status.manage'],
         ];
 
@@ -276,6 +276,62 @@ class DefaultDataSeeder extends Seeder
                 {{ company.name }}
                 MD,
             ],
+            'service.resources_changed' => [
+                'Resources changed',
+                'Your server resources changed',
+                <<<'MD'
+                Hi {{ client.first_name }},
+
+                The resources of **{{ service.domain }}** changed:
+
+                {{ resources.list }}
+
+                From your next renewal you pay {{ resources.amount }} ({{ resources.cycle }}) for these extras. {{ resources.note }}
+
+                [See your service]({{ service.url }})
+
+                {{ company.name }}
+                MD,
+            ],
+            'service.server_change' => [
+                'Server change',
+                'Change on your server {{ service.domain }}',
+                <<<'MD'
+                Hi {{ client.first_name }},
+
+                {{ change.text }}
+
+                - When: {{ change.time }}
+                - From IP address: {{ change.ip }}
+
+                If you did not do this, change your client area password now and contact us.
+
+                [See your service]({{ service.url }})
+
+                {{ company.name }}
+                MD,
+            ],
+            'service.dedicated_ready' => [
+                'Dedicated server ready',
+                'Your server {{ service.product }} is ready',
+                <<<'MD'
+                Hi {{ client.first_name }},
+
+                Your dedicated server **{{ service.product }}** is ready.
+
+                - IP address: {{ machine.ip }}
+                - All IP addresses: {{ machine.ips }}
+                - Login name: {{ machine.username }}
+                - Hostname: {{ machine.hostname }}
+                - Location: {{ machine.location }}
+
+                Your password is in your client area. Change it after your first sign-in.
+
+                [Open your server]({{ service.url }})
+
+                {{ company.name }}
+                MD,
+            ],
             'domain.registered' => [
                 'Domain registered',
                 'Your domain {{ domain.name }} is registered',
@@ -442,6 +498,67 @@ class DefaultDataSeeder extends Seeder
                 Invoice {{ invoice.number }} was created for it.
 
                 [Open the quote]({{ admin_url }})
+                MD,
+            ],
+            'admin.resources_failed' => [
+                'Staff: resources not set',
+                'Resources not set on service #{{ service.id }}',
+                <<<'MD'
+                The server did not take the new resources of **{{ service.product }}** (service #{{ service.id }}) for {{ client.name }}. The client paid for them.
+
+                What failed: {{ error }}
+
+                Open the service and press **Try again**. Or set the resources on the server by hand, then press **Mark done**.
+
+                [Open the service]({{ admin_url }})
+                MD,
+            ],
+            'admin.resources_by_hand' => [
+                'Staff: set resources by hand',
+                'Set resources by hand on service #{{ service.id }}',
+                <<<'MD'
+                {{ client.name }} changed the resources of **{{ service.product }}** (service #{{ service.id }}). No server module sets them for this service, so set them on the server by hand:
+
+                {{ resources.list }}
+
+                Then press **Mark done** on the service page.
+
+                [Open the service]({{ admin_url }})
+                MD,
+            ],
+            'admin.machine_install' => [
+                'Staff: install a dedicated server',
+                'Install the OS on {{ machine.name }} for {{ client.name }}',
+                <<<'MD'
+                {{ client.name }} paid for **{{ service.product }}** (service #{{ service.id }}).
+
+                - Machine: {{ machine.name }}
+                - Location: {{ machine.location }}, rack {{ machine.rack }} {{ machine.rack_unit }}
+                - System: {{ machine.default_os }}
+
+                Install the system, then press **Server is ready** on the service page. The client gets an email then.
+
+                [Open the service]({{ admin_url }})
+                MD,
+            ],
+            'admin.machine_wipe' => [
+                'Staff: wipe a machine',
+                'Wipe {{ machine.name }} before you sell it again',
+                <<<'MD'
+                Service #{{ service.id }} ended, so **{{ machine.name }}** ({{ machine.location }}) is powered off and waits for a wipe.
+
+                Erase all its disks, then press **Confirm wipe**. Until then the machine is never sold again.
+
+                [Open the machine]({{ admin_url }})
+                MD,
+            ],
+            'admin.machine_alert' => [
+                'Staff: dedicated server alert',
+                '{{ machine.name }}: {{ alert.title }}',
+                <<<'MD'
+                {{ alert.message }}
+
+                [Open the machine]({{ admin_url }})
                 MD,
             ],
             'affiliate.commission' => [

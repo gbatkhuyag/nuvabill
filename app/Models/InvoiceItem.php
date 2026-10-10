@@ -30,6 +30,18 @@ class InvoiceItem extends Model
      */
     public const TYPE_PLAN_CHANGE = 'plan_change';
 
+    /**
+     * Extras (resource options) of a service on an order or renewal invoice, and their setup fees.
+     * service_resource_option_id says which of the service's rows the line pays for.
+     */
+    public const TYPE_RESOURCE = 'resource';
+
+    /**
+     * The price difference for changing a service's extras for the rest of its period. A credit for
+     * removed extras is a negative line.
+     */
+    public const TYPE_RESOURCE_CHANGE = 'resource_change';
+
     public const TYPE_DOMAIN_REGISTER = 'domain_register';
 
     public const TYPE_DOMAIN_TRANSFER = 'domain_transfer';
@@ -43,7 +55,7 @@ class InvoiceItem extends Model
      */
     public const DOMAIN_TYPES = [self::TYPE_DOMAIN_REGISTER, self::TYPE_DOMAIN_TRANSFER, self::TYPE_DOMAIN_RENEW];
 
-    protected $fillable = ['invoice_id', 'service_id', 'domain_id', 'type', 'description', 'amount', 'taxed', 'period_start', 'period_end', 'billing_key'];
+    protected $fillable = ['invoice_id', 'service_id', 'domain_id', 'type', 'description', 'amount', 'taxed', 'period_start', 'period_end', 'billing_key', 'service_resource_option_id'];
 
     protected function casts(): array
     {
@@ -77,5 +89,15 @@ class InvoiceItem extends Model
     public function domain(): BelongsTo
     {
         return $this->belongsTo(Domain::class);
+    }
+
+    /**
+     * The service's resource row a "resource" or "resource_change" line pays for.
+     *
+     * @return BelongsTo<ServiceResourceOption, $this>
+     */
+    public function resourceRow(): BelongsTo
+    {
+        return $this->belongsTo(ServiceResourceOption::class, 'service_resource_option_id');
     }
 }

@@ -14,6 +14,12 @@ class ServiceAddon extends Model
 
     public const STATUS_CANCELLED = 'cancelled';
 
+    /**
+     * Moved to resource options: the add-on became a resource row of the service (with the same
+     * price), so it no longer bills on its own. Staff see it as "Moved to resource options".
+     */
+    public const STATUS_CONVERTED = 'converted';
+
     protected $fillable = ['service_id', 'product_addon_id', 'name', 'recurring_amount', 'status', 'cancelled_at'];
 
     protected function casts(): array
