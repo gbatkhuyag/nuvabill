@@ -3,16 +3,20 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Ai\Claude;
+use App\Contracts\HasPanelSections;
+use App\Contracts\UsesMachineInventory;
 use App\Enums\AutoSetup;
 use App\Enums\BillingCycle;
 use App\Enums\ProductType;
 use App\Extensions\ExtensionManager;
+use App\Extensions\Servers\Panel\PanelSection;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ProductRequest;
 use App\Models\PlanChange;
 use App\Models\Product;
 use App\Models\ProductGroup;
 use App\Models\Server;
+use App\Provisioning\Provisioner;
 use App\Seo\SeoText;
 use App\Seo\SiteAddress;
 use App\Support\Activity;
@@ -21,6 +25,8 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
+use RuntimeException;
+use Throwable;
 
 class ProductController extends Controller
 {
@@ -99,6 +105,8 @@ class ProductController extends Controller
             'groups' => ProductGroup::query()->orderBy('sort_order')->pluck('name', 'id')->all(),
             'modules' => $modules->all(),
             'moduleFields' => $modules->keys()->mapWithKeys(fn (string $slug): array => [$slug => $extensions->serverModule($slug)->productFields()])->all(),
+            // Modules whose services run on machines from Admin → Hardware: no stock field and no server.
+            'inventoryModules' => $modules->keys()->filter(fn (string $slug): bool => $extensions->serverModule($slug) instanceof UsesMachineInventory)->values()->all(),
             'servers' => Server::query()->orderBy('name')->get(['id', 'name', 'module']),
             'otherProducts' => Product::query()->with('group')->whereKeyNot($product->id ?? 0)->orderBy('product_group_id')->orderBy('sort_order')->get(['id', 'name', 'product_group_id', 'server_module']),
             'currency' => setting('billing.currency'),
@@ -118,7 +126,7 @@ class ProductController extends Controller
      */
     private function attributes(ProductRequest $request): array
     {
-        $data = $request->safe()->except('prices');
+        $data = $request->safe()->except('prices', 'panel_sections');
         $data['module_config'] = $data['server_module'] ? array_filter($data['module_config'] ?? [], fn ($value) => $value !== null) : null;
         $data['server_id'] = $data['server_module'] ? ($data['server_id'] ?? null) : null;
         $data['sort_order'] = $data['sort_order'] ?? 0;
@@ -129,7 +137,65 @@ class ProductController extends Controller
             ->where(fn ($query) => $data['server_module'] ? $query->where('server_module', $data['server_module']) : $query->whereNull('server_module'))
             ->pluck('id')->all();
 
+        // A saved flag, so stock counts and checkouts never need the extension manager. Such a product's
+        // stock is its free machines, and its services run on a machine, not on a server record.
+        $data['uses_machines'] = $data['server_module'] !== null
+            && app(Provisioner::class)->productSupports(new Product(['server_module' => $data['server_module']]), UsesMachineInventory::class);
+
+        if ($data['uses_machines']) {
+            $data['stock'] = null;
+            $data['server_id'] = null;
+        }
+
+        $data['panel_sections'] = $this->panelSections($request, $data);
+
         return $data;
+    }
+
+    /**
+     * The client panel switches to save: true or false for each section the chosen module declares
+     * for the product, and nothing else. A declared section that was not posted keeps its saved
+     * switch, or the module's default. Null for a module without panel sections. When the module
+     * cannot list its sections, the saved switches stay as they are.
+     *
+     * @param  array<string, mixed>  $data  The product attributes about to be saved.
+     * @return array<string, bool>|null
+     */
+    private function panelSections(ProductRequest $request, array $data): ?array
+    {
+        $saved = $request->route('product');
+        $saved = $saved instanceof Product ? $saved : null;
+        $slug = (string) ($data['server_module'] ?? '');
+
+        if ($slug === '' || ! app(Provisioner::class)->productSupports(new Product(['server_module' => $slug]), HasPanelSections::class)) {
+            return null;
+        }
+
+        try {
+            /** @var HasPanelSections $module */
+            $module = app(ExtensionManager::class)->serverModule($slug);
+            $declared = $module->panelSections($saved !== null ? (clone $saved)->fill($data) : new Product($data));
+        } catch (Throwable $exception) {
+            // Module errors can hold server addresses with keys, so only the class name is reported.
+            report(new RuntimeException("Panel sections of {$slug}: ".class_basename($exception)));
+
+            return $saved?->panel_sections;
+        }
+
+        $posted = (array) $request->validated('panel_sections', []);
+        $sections = [];
+
+        foreach ($declared as $section) {
+            if (! $section instanceof PanelSection) {
+                continue;
+            }
+
+            $sections[$section->key] = array_key_exists($section->key, $posted)
+                ? (bool) $posted[$section->key]
+                : ($saved?->panelSectionEnabled($section->key, $section->enabledByDefault) ?? $section->enabledByDefault);
+        }
+
+        return $sections;
     }
 
     /**

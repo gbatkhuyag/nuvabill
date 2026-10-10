@@ -19,7 +19,10 @@ use App\Http\Controllers\Client\PaymentMethodController;
 use App\Http\Controllers\Client\PlanChangeController;
 use App\Http\Controllers\Client\PrivacyController;
 use App\Http\Controllers\Client\QuoteController;
+use App\Http\Controllers\Client\ResourceChangeController;
+use App\Http\Controllers\Client\ServiceConsoleController;
 use App\Http\Controllers\Client\ServiceController;
+use App\Http\Controllers\Client\ServicePanelController;
 use App\Http\Controllers\Client\TicketController;
 use App\Http\Controllers\Client\TwoFactorController;
 use App\Http\Controllers\Client\WalletController;
@@ -148,6 +151,29 @@ Route::middleware(['auth:web', 'auth.session', 'client.active', 'client.two-fact
     Route::delete('services/{service}/change-plan', [PlanChangeController::class, 'destroy'])->name('services.change-plan.destroy');
     Route::post('services/{service}/panel/{action}', [ServiceController::class, 'panel'])->where('action', '[a-z0-9-]+')->middleware('throttle:20,1')->name('services.panel');
     Route::get('services/{service}/panel-status', [ServiceController::class, 'panelStatus'])->middleware('throttle:30,1')->name('services.panel-status');
+
+    // Extras (resource options) in the middle of a billing period. A quote is maths only.
+    Route::get('services/{service}/resources', [ResourceChangeController::class, 'show'])->name('services.resources');
+    Route::post('services/{service}/resources/quote', [ResourceChangeController::class, 'quote'])->middleware('throttle:60,1')->name('services.resources.quote');
+    Route::post('services/{service}/resources', [ResourceChangeController::class, 'store'])->middleware('throttle:10,1')->name('services.resources.store');
+    Route::delete('services/{service}/resources', [ResourceChangeController::class, 'destroy'])->middleware('throttle:10,1')->name('services.resources.destroy');
+
+    // Server panel tabs. Each client shares one limit over all services; the panel gate adds a
+    // limit per service and section or action.
+    Route::get('services/{service}/sections/{section}', [ServicePanelController::class, 'show'])
+        ->where('section', '[a-z0-9-]{1,32}')
+        ->middleware('throttle:panel-reads')
+        ->name('services.sections.show');
+    Route::post('services/{service}/sections/{section}/{action}', [ServicePanelController::class, 'action'])
+        ->where(['section' => '[a-z0-9-]{1,32}', 'action' => '[a-z0-9-]{1,32}'])
+        ->middleware('throttle:panel-actions')
+        ->name('services.sections.action');
+
+    // Browser console: open makes a single-use ticket, the page shows no secret, redeem hands the
+    // connection details out once.
+    Route::post('services/{service}/console', [ServiceConsoleController::class, 'open'])->middleware('throttle:10,1')->name('services.console.open');
+    Route::get('services/{service}/console', [ServiceConsoleController::class, 'show'])->middleware('throttle:30,1')->name('services.console');
+    Route::post('services/{service}/console/redeem', [ServiceConsoleController::class, 'redeem'])->middleware('throttle:20,1')->name('services.console.redeem');
 
     Route::get('domains', [DomainController::class, 'index'])->name('domains.index');
     Route::get('domains/{domain}', [DomainController::class, 'show'])->name('domains.show');

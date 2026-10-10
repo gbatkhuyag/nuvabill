@@ -1,0 +1,7 @@
+/*
+ * The client server panel: tabs, stat tiles, charts, the secret box and loading skeletons.
+ * Imported by components.css, so the admin area can reuse these classes. Use only tokens from
+ * tokens.css, so light and dark mode work, and only logical directions, so right-to-left pages work.
+ *
+ * Empty for now; the server panel screens add their classes here.
+ */

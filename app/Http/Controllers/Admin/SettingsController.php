@@ -71,7 +71,11 @@ class SettingsController extends Controller
             'renewal_days_before' => ['required', 'integer', 'between:0,60'],
             'payment_terms_days' => ['required', 'integer', 'between:0,90'],
             'plan_changes' => ['boolean'],
+            'resource_changes' => ['boolean'],
             'downgrade' => ['nullable', Rule::in(['credit', 'renewal'])],
+            'panel_console' => ['boolean'],
+            'panel_live_seconds' => ['nullable', 'integer', 'between:5,60'],
+            'panel_change_emails' => ['boolean'],
             'automation_enabled' => ['boolean'],
             'reminder_days' => ['nullable', 'string', 'max:40', 'regex:/^[\d,\s]*$/'],
             'suspend_days' => ['required', 'integer', 'between:0,90'],
@@ -97,7 +101,12 @@ class SettingsController extends Controller
             'billing.renewal_days_before' => (int) $data['renewal_days_before'],
             'billing.payment_terms_days' => (int) $data['payment_terms_days'],
             'billing.plan_changes' => (bool) ($data['plan_changes'] ?? false),
+            // The form always sends these; a request without them keeps the saved choice.
+            'billing.resource_changes' => $request->has('resource_changes') ? $request->boolean('resource_changes') : (bool) setting('billing.resource_changes'),
             'billing.downgrade' => $data['downgrade'] ?? setting('billing.downgrade'),
+            'services.panel_console' => $request->has('panel_console') ? $request->boolean('panel_console') : (bool) setting('services.panel_console'),
+            'services.panel_live_seconds' => (int) ($data['panel_live_seconds'] ?? setting('services.panel_live_seconds')),
+            'services.panel_change_emails' => $request->has('panel_change_emails') ? $request->boolean('panel_change_emails') : (bool) setting('services.panel_change_emails'),
             'automation.enabled' => $request->boolean('automation_enabled'),
             'automation.reminder_days' => collect(explode(',', (string) ($data['reminder_days'] ?? '')))
                 ->map(fn (string $day): int => (int) trim($day))

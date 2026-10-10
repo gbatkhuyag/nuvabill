@@ -5,7 +5,9 @@
 <x-layouts.admin :title="$editing ? __('Edit :name', ['name' => $product->name]) : __('New product')">
     <div class="page-head"><div><h1>{{ $editing ? __('Edit product') : __('New product') }}</h1>@if ($editing)<p>{{ $product->name }}</p>@endif</div></div>
 
-    <form method="POST" action="{{ $editing ? route('admin.products.update', $product) : route('admin.products.store') }}" style="display:grid;gap:14px" x-data="{ module: @js($selectedModule) }">
+    @include('admin.products.partials.resource-tabs')
+
+    <form method="POST" action="{{ $editing ? route('admin.products.update', $product) : route('admin.products.store') }}" style="display:grid;gap:14px" x-data="{ module: @js($selectedModule), inventory: @js($inventoryModules) }">
         @csrf
         @if ($editing) @method('PUT') @endif
 
@@ -86,24 +88,33 @@
                 @foreach ($moduleFields as $slug => $fields)
                     <template x-if="module === @js($slug)">
                         <div class="form-grid span-2">
-                            <div class="field">
-                                <label for="f-server_id-{{ $slug }}">{{ __('Server') }}</label>
-                                <select id="f-server_id-{{ $slug }}" name="server_id" class="select">
-                                    <option value="">{{ __('Any server with free space') }}</option>
-                                    @foreach ($servers->where('module', $slug) as $server)
-                                        <option value="{{ $server->id }}" @selected((string) old('server_id', $product->server_id) === (string) $server->id)>{{ $server->name }}</option>
-                                    @endforeach
-                                </select>
-                            </div>
+                            {{-- Services of a hardware module run on machines from Admin → Hardware, not on a server. --}}
+                            @unless (in_array($slug, $inventoryModules, true))
+                                <div class="field">
+                                    <label for="f-server_id-{{ $slug }}">{{ __('Server') }}</label>
+                                    <select id="f-server_id-{{ $slug }}" name="server_id" class="select">
+                                        <option value="">{{ __('Any server with free space') }}</option>
+                                        @foreach ($servers->where('module', $slug) as $server)
+                                            <option value="{{ $server->id }}" @selected((string) old('server_id', $product->server_id) === (string) $server->id)>{{ $server->name }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                            @endunless
                             <x-extension-fields :fields="$fields" :values="old('module_config', $product->module_config ?? [])" prefix="module_config" />
                         </div>
                     </template>
                 @endforeach
 
-                <x-input name="stock" type="number" min="0" :label="__('Stock')" :value="$product->stock" :help="__('Leave empty for unlimited.')" />
+                {{-- The stock of a hardware product is its free machines. --}}
+                <div x-show="! inventory.includes(module)">
+                    <x-input name="stock" type="number" min="0" :label="__('Stock')" :value="$product->stock" :help="__('Leave empty for unlimited.')" />
+                </div>
+                @include('admin.products.partials.machine-stock')
                 <x-input name="sort_order" type="number" min="0" :label="__('Order in group')" :value="$product->sort_order ?? 0" />
             </div>
         </section>
+
+        @include('admin.products.partials.panel-sections')
 
         <section class="card" style="display:grid;gap:1rem">
             <div class="card-header" style="margin:0"><h2>{{ __('Upgrades and downgrades') }}</h2></div>

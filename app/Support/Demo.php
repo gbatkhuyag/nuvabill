@@ -102,6 +102,28 @@ class Demo
         'client.services.panel',
         'client.domains.nameservers',
         'client.invoices.pay',
+        // Resource options, the client server panel and dedicated hardware. The two quote routes stay
+        // open: they only work out a price.
+        'client.services.resources.store',
+        'client.services.resources.destroy',
+        'client.services.sections.action',
+        'client.services.console.open',
+        'client.services.console.redeem',
+        'admin.products.resources.store',
+        'admin.products.resources.update',
+        'admin.products.resources.destroy',
+        'admin.products.resources.order',
+        'admin.products.resources.base',
+        'admin.services.resources.change',
+        'admin.services.resources.cancel',
+        'admin.services.resources.apply',
+        'admin.services.resources.check',
+        'admin.services.resources.retry',
+        'admin.services.resources.done',
+        'admin.services.access-check',
+        'admin.services.link',
+        'admin.machines.*',
+        'admin.services.machine.*',
     ];
 
     public static function isEnabled(): bool

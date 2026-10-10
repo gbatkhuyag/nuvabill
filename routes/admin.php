@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\PowerAction;
 use App\Extensions\ExtensionManager;
 use App\Http\Controllers\Admin\ActivityController;
 use App\Http\Controllers\Admin\AffiliateController;
@@ -30,6 +31,9 @@ use App\Http\Controllers\Admin\HealthController;
 use App\Http\Controllers\Admin\ImportController;
 use App\Http\Controllers\Admin\InvoiceController;
 use App\Http\Controllers\Admin\KnowledgebaseController;
+use App\Http\Controllers\Admin\MachineBmcController;
+use App\Http\Controllers\Admin\MachineController;
+use App\Http\Controllers\Admin\MachinePowerController;
 use App\Http\Controllers\Admin\MarketplaceController;
 use App\Http\Controllers\Admin\NetworkStatusController;
 use App\Http\Controllers\Admin\OrderController;
@@ -42,11 +46,15 @@ use App\Http\Controllers\Admin\ProductGroupController;
 use App\Http\Controllers\Admin\ProfileController;
 use App\Http\Controllers\Admin\QuoteController;
 use App\Http\Controllers\Admin\RegistrarController;
+use App\Http\Controllers\Admin\ResourceOptionController;
 use App\Http\Controllers\Admin\RoleController;
 use App\Http\Controllers\Admin\SecurityController;
 use App\Http\Controllers\Admin\SeoSettingsController;
 use App\Http\Controllers\Admin\ServerController;
+use App\Http\Controllers\Admin\ServiceAccessController;
 use App\Http\Controllers\Admin\ServiceController;
+use App\Http\Controllers\Admin\ServiceMachineController;
+use App\Http\Controllers\Admin\ServiceResourceController;
 use App\Http\Controllers\Admin\SettingsController;
 use App\Http\Controllers\Admin\SocialLoginController;
 use App\Http\Controllers\Admin\StaffController;
@@ -149,6 +157,50 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
         Route::post('services/{service}/module/{action}', [ServiceController::class, 'module'])
             ->whereIn('action', ['create', 'suspend', 'unsuspend', 'terminate', 'change-package'])
             ->name('services.module');
+
+        // The service's extras (resource options). A quote is maths only.
+        Route::post('services/{service}/resources/quote', [ServiceResourceController::class, 'quote'])->middleware('throttle:60,1')->name('services.resources.quote');
+        Route::post('services/{service}/resources', [ServiceResourceController::class, 'change'])->middleware('throttle:10,1')->name('services.resources.change');
+        Route::delete('services/{service}/resources', [ServiceResourceController::class, 'cancel'])->name('services.resources.cancel');
+        Route::post('services/{service}/resources/apply', [ServiceResourceController::class, 'apply'])->middleware('throttle:6,1')->name('services.resources.apply');
+        Route::post('services/{service}/resources/check', [ServiceResourceController::class, 'check'])->middleware('throttle:6,1')->name('services.resources.check');
+        Route::post('services/{service}/resources/retry', [ServiceResourceController::class, 'retry'])->middleware('throttle:6,1')->name('services.resources.retry');
+        Route::post('services/{service}/resources/done', [ServiceResourceController::class, 'done'])->name('services.resources.done');
+
+        // Client access: test the panel sign-in, and link an account that already exists on the server.
+        Route::post('services/{service}/access-check', [ServiceAccessController::class, 'check'])->middleware('throttle:10,1')->name('services.access-check');
+        Route::post('services/{service}/link', [ServiceAccessController::class, 'link'])->middleware('throttle:10,1')->name('services.link');
+
+        // Dedicated servers from Admin → Hardware.
+        Route::post('services/{service}/machine', [ServiceMachineController::class, 'assign'])->middleware('throttle:20,1')->name('services.machine.assign');
+        Route::post('services/{service}/machine/ready', [ServiceMachineController::class, 'ready'])->middleware('throttle:10,1')->name('services.machine.ready');
+        Route::post('services/{service}/machine/replace', [ServiceMachineController::class, 'replace'])->middleware(['admin.can:hardware.manage', 'throttle:10,1'])->name('services.machine.replace');
+    });
+
+    // Dedicated servers in your own rack. Seeing them and switching their power is one permission;
+    // adding, editing and their BMC logins is another.
+    Route::middleware('admin.can:hardware.power')->prefix('hardware')->name('machines.')->group(function (): void {
+        Route::get('/', [MachineController::class, 'index'])->name('index');
+        Route::get('{machine}', [MachineController::class, 'show'])->whereNumber('machine')->name('show');
+        Route::get('{machine}/power', [MachinePowerController::class, 'show'])->whereNumber('machine')->middleware('throttle:30,1')->name('power.show');
+        Route::post('{machine}/power/{action}', [MachinePowerController::class, 'run'])
+            ->whereNumber('machine')
+            ->whereIn('action', array_column(PowerAction::cases(), 'value'))
+            ->middleware('throttle:20,1')
+            ->name('power');
+    });
+
+    Route::middleware('admin.can:hardware.manage')->prefix('hardware')->name('machines.')->group(function (): void {
+        Route::get('create', [MachineController::class, 'create'])->name('create');
+        Route::post('/', [MachineController::class, 'store'])->middleware('throttle:20,1')->name('store');
+        Route::get('{machine}/edit', [MachineController::class, 'edit'])->whereNumber('machine')->name('edit');
+        Route::put('{machine}', [MachineController::class, 'update'])->whereNumber('machine')->middleware('throttle:20,1')->name('update');
+        Route::delete('{machine}', [MachineController::class, 'destroy'])->whereNumber('machine')->name('destroy');
+        Route::post('{machine}/test', [MachineBmcController::class, 'test'])->whereNumber('machine')->middleware('throttle:10,1')->name('test');
+        Route::post('{machine}/trust', [MachineBmcController::class, 'trust'])->whereNumber('machine')->middleware('throttle:10,1')->name('trust');
+        Route::post('{machine}/status', [MachineController::class, 'status'])->whereNumber('machine')->middleware('throttle:20,1')->name('status');
+        Route::post('{machine}/wiped', [MachineController::class, 'wiped'])->whereNumber('machine')->middleware('throttle:20,1')->name('wiped');
+        Route::put('settings', [MachineController::class, 'settings'])->middleware('admin.can:settings.manage')->name('settings');
     });
 
     Route::middleware('admin.can:domains.manage')->group(function (): void {
@@ -246,6 +298,20 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
     Route::middleware('admin.can:products.manage')->group(function (): void {
         Route::post('products/ai/write', [ProductAiController::class, 'write'])->middleware(['admin.can:ai.use', 'throttle:30,1'])->name('products.ai.write');
         Route::resource('products', ProductController::class)->except('show');
+
+        // A product's resource options (sliders). An option is only found inside its own product.
+        Route::prefix('products/{product}/resources')->name('products.resources.')->group(function (): void {
+            Route::get('/', [ResourceOptionController::class, 'index'])->name('index');
+            Route::get('create', [ResourceOptionController::class, 'create'])->name('create');
+            Route::post('/', [ResourceOptionController::class, 'store'])->middleware('throttle:30,1')->name('store');
+            Route::post('order', [ResourceOptionController::class, 'order'])->name('order');
+            // Reads the plan from the server.
+            Route::post('base', [ResourceOptionController::class, 'base'])->middleware('throttle:10,1')->name('base');
+            Route::get('{resourceOption}/edit', [ResourceOptionController::class, 'edit'])->whereNumber('resourceOption')->scopeBindings()->name('edit');
+            Route::put('{resourceOption}', [ResourceOptionController::class, 'update'])->whereNumber('resourceOption')->scopeBindings()->middleware('throttle:30,1')->name('update');
+            Route::delete('{resourceOption}', [ResourceOptionController::class, 'destroy'])->whereNumber('resourceOption')->scopeBindings()->name('destroy');
+        });
+
         Route::resource('product-addons', ProductAddonController::class)->except('show')->parameters(['product-addons' => 'productAddon']);
         Route::resource('product-groups', ProductGroupController::class)->except(['index', 'show'])->parameters(['product-groups' => 'productGroup']);
         Route::resource('servers', ServerController::class)->except('show');

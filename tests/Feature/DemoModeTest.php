@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Role;
+use App\Models\Service;
 use App\Providers\AppServiceProvider;
 use App\Support\Demo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -68,6 +69,27 @@ class DemoModeTest extends TestCase
         ])->assertSessionHas('error');
 
         $this->assertTrue(password_verify('password', $client->fresh()->password));
+    }
+
+    public function test_server_panel_resource_and_hardware_changes_are_turned_away_in_the_demo(): void
+    {
+        $this->enableDemo();
+        $client = Client::factory()->create(['first_name' => 'Mer', 'last_name' => 'Las', 'email' => Demo::CLIENT_EMAIL]);
+        $service = Service::factory()->create(['client_id' => $client->id]);
+        $page = route('client.services.show', $service);
+        $this->actingAs($client, 'web');
+
+        // Without JavaScript the forms go back to the page with the demo message.
+        $this->from($page)->post(route('client.services.sections.action', [$service, 'power', 'restart']))
+            ->assertRedirect($page)
+            ->assertSessionHas('error', __('This is turned off in the demo, so it keeps working for every visitor.'));
+        $this->from($page)->post(route('client.services.console.open', $service))->assertRedirect($page)->assertSessionHas('error');
+        $this->from($page)->post(route('client.services.resources.store', $service), ['steps' => ['ram' => 2]])->assertRedirect($page)->assertSessionHas('error');
+
+        $this->signInAdmin(Admin::factory()->create(['name' => 'Raz']));
+        $this->from(route('admin.services.show', $service))->post(route('admin.services.machine.assign', $service), ['machine_id' => 1])->assertSessionHas('error');
+        $this->post(route('admin.machines.store'), ['name' => 'DS-101'])->assertSessionHas('error');
+        $this->assertDatabaseCount('machines', 0);
     }
 
     public function test_the_sign_in_page_offers_the_demo_account(): void

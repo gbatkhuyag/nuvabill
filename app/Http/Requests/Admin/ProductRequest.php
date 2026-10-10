@@ -6,7 +6,9 @@ use App\Enums\AutoSetup;
 use App\Enums\BillingCycle;
 use App\Enums\ProductType;
 use App\Extensions\ExtensionManager;
+use App\Models\Machine;
 use App\Models\Product;
+use App\Models\Service;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -57,6 +59,9 @@ class ProductRequest extends FormRequest
             'seo_hidden' => ['boolean'],
             'upgrade_product_ids' => ['nullable', 'array'],
             'upgrade_product_ids.*' => ['integer', 'exists:products,id'],
+            // Client panel switches by section key. Only the sections the module declares are kept.
+            'panel_sections' => ['nullable', 'array', 'max:64'],
+            'panel_sections.*' => ['boolean'],
             'prices' => ['required', 'array'],
             'prices.*.enabled' => ['boolean'],
             'prices.*.price' => ['nullable', 'numeric', 'min:0', 'max:1000000'],
@@ -83,7 +88,28 @@ class ProductRequest extends FormRequest
                         $validator->errors()->add("prices.{$cycle}.price", __('Enter a price for :cycle.', ['cycle' => BillingCycle::from($cycle)->label()]));
                     }
                 }
+
+                if ($this->changesModuleOfHeldMachines()) {
+                    $validator->errors()->add('server_module', __('This product has servers in use, so its module cannot change.'));
+                }
             },
         ];
+    }
+
+    /**
+     * Whether the form moves a product to another server module while some of its services hold a
+     * machine from Admin → Hardware. Those services would lose the module that runs their machine.
+     */
+    private function changesModuleOfHeldMachines(): bool
+    {
+        $product = $this->route('product');
+
+        if (! $product instanceof Product || (string) $product->server_module === (string) $this->input('server_module')) {
+            return false;
+        }
+
+        return Machine::query()
+            ->whereIn('service_id', Service::query()->select('id')->where('product_id', $product->id))
+            ->exists();
     }
 }

@@ -27,7 +27,18 @@
                     <x-input name="renewal_days_before" type="number" min="0" max="60" :label="__('Create renewal invoices this many days before the due date')" :value="$settings['billing.renewal_days_before']" required />
                     <x-input name="payment_terms_days" type="number" min="0" max="90" :label="__('Days to pay manual invoices')" :value="$settings['billing.payment_terms_days']" required />
                     <x-checkbox name="plan_changes" :label="__('Clients can upgrade and downgrade')" :help="__('Clients move to the plans you pick on each product, and pay only the difference for the days left.')" :checked="$settings['billing.plan_changes']" />
+                    <x-checkbox name="resource_changes" :label="__('Clients can add and remove resources')" :help="__('Clients change the sliders on their services and pay only for the days left. Removing extras follows the downgrade setting below.')" :checked="$settings['billing.resource_changes']" />
                     <x-select name="downgrade" :label="__('When a client moves to a cheaper plan')" :options="['credit' => __('Change now and add the unused amount to their wallet'), 'renewal' => __('Change on the next renewal date')]" :value="$settings['billing.downgrade']" required />
+                </div>
+            </section>
+
+            <section class="card" style="display:grid;gap:1.1rem" id="server-panel">
+                <div class="card-header" style="margin:0"><h2>{{ __('Client server panel') }}</h2></div>
+                <p class="muted" style="margin:0">{{ __('What clients see on the page of a server they rent. You can turn features off for each product too.') }}</p>
+                <div class="form-grid">
+                    <x-checkbox name="panel_console" :label="__('In-browser console')" :help="__('Clients see the screen of their server in the browser, where the server module offers it.')" :checked="$settings['services.panel_console']" />
+                    <x-input name="panel_live_seconds" type="number" min="5" max="60" :label="__('Refresh live figures every (seconds)')" :value="$settings['services.panel_live_seconds']" required :help="__('From 5 to 60. A longer time puts less load on your servers.')" />
+                    <x-checkbox name="panel_change_emails" :label="__('Email clients when their server changes')" :help="__('For example when the root password or the reverse DNS changes.')" :checked="$settings['services.panel_change_emails']" />
                 </div>
             </section>
 

@@ -4,8 +4,12 @@ import { aiMessage, productAi, ticketAi } from './ai-help';
 import { whatsappConnect } from './chat-apps';
 import { showCopied } from './copy-button';
 import { kbSuggest } from './kb-suggest';
+import { machinePower } from './machine-power';
 import { passkeySubmitButton } from './passkey-form';
 import { phoneApp, registerAdminApp } from './phone-app';
+import { priceGrid, resourceOptionEditor } from './resource-option-editor';
+import { resourceQuote, resourceSlider } from './resource-sliders';
+import { liveStats, panelSection, serverPanel } from './server-panel';
 import { vpsPanel } from './vps-panel';
 
 /**
@@ -223,6 +227,14 @@ Alpine.data('whatsappConnect', whatsappConnect);
 Alpine.data('phoneApp', phoneApp);
 Alpine.data('kbSuggest', kbSuggest);
 Alpine.data('vpsPanel', vpsPanel);
+Alpine.data('resourceSlider', resourceSlider);
+Alpine.data('resourceQuote', resourceQuote);
+Alpine.data('priceGrid', priceGrid);
+Alpine.data('resourceOptionEditor', resourceOptionEditor);
+Alpine.data('serverPanel', serverPanel);
+Alpine.data('panelSection', panelSection);
+Alpine.data('liveStats', liveStats);
+Alpine.data('machinePower', machinePower);
 
 // Admin pages: the service worker that shows phone alerts, and the install button.
 if (document.body) {

@@ -3,6 +3,7 @@
 @section('title', $service->domain ?: $service->product->name)
 
 @section('content')
+    @php $service->loadMissing('resources.option'); @endphp
     <div class="page-title">
         <div>
             <p class="eyebrow"><bdi>{{ $service->product->name }}</bdi></p>
@@ -23,7 +24,8 @@
     @endif
 
     @if ($panel)
-        @include($panel['view'], ['service' => $service, 'panel' => $panel['data'], 'actions' => $panel['actions'], 'result' => session('panel_result')])
+        {{-- serverPanel is the whole panel array; older panel views read panel, actions and result. --}}
+        @include($panel['view'], ['service' => $service, 'panel' => $panel['data'], 'actions' => $panel['actions'], 'result' => session('panel_result'), 'serverPanel' => $panel])
     @endif
 
     @foreach (app(\App\Support\ServicePanels::class)->for($service) as $extra)
@@ -51,11 +53,14 @@
                         <dt>{{ __('Nameservers') }}</dt><dd class="mono">{!! collect($service->server->nameservers)->map(fn ($ns) => e($ns))->implode('<br>') !!}</dd>
                     @endif
                 @endif
-                <dt>{{ __('Billing') }}</dt><dd>{{ money($service->recurring_amount ?: $service->first_payment_amount, $service->currency) }} · {{ $service->billing_cycle->label() }}</dd>
+                <dt>{{ __('Billing') }}</dt><dd>{{ money($service->renewalTotal() ?: $service->first_payment_amount, $service->currency) }} · {{ $service->billing_cycle->label() }}</dd>
                 <dt>{{ __('Next payment') }}</dt><dd>{{ $service->next_due_date?->translatedFormat('d M Y') ?? '—' }}</dd>
                 <dt>{{ __('Since') }}</dt><dd>{{ $service->registration_date->translatedFormat('d M Y') }}</dd>
                 @foreach ($service->addons->where('status', \App\Models\ServiceAddon::STATUS_ACTIVE) as $addon)
                     <dt>{{ __('Add-on') }}</dt><dd>{{ $addon->name }}@if ($addon->recurring_amount) · {{ money($addon->recurring_amount, $service->currency) }}@endif</dd>
+                @endforeach
+                @foreach ($service->resources->filter(fn (\App\Models\ServiceResourceOption $resource): bool => $resource->isActive()) as $resource)
+                    <dt>{{ __('Extra') }}</dt><dd><bdi>{{ $resource->describe() }}</bdi>@if ($resource->recurring_amount) · {{ money($resource->recurring_amount, $service->currency) }}@endif</dd>
                 @endforeach
                 @if ($service->coupon)
                     <dt>{{ __('Coupon') }}</dt><dd><span class="mono">{{ $service->coupon->code }}</span> · {{ $service->coupon->describe() }}@if ($service->coupon_payments_left !== null) · {{ trans_choice(':count more payment|:count more payments', $service->coupon_payments_left, ['count' => $service->coupon_payments_left]) }}@endif</dd>

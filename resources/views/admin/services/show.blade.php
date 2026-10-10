@@ -2,6 +2,7 @@
     @php
         $status = $service->status;
         $hasModule = filled($service->product->server_module);
+        $extrasTotal = (int) $service->resources->filter(fn (\App\Models\ServiceResourceOption $row): bool => $row->isActive())->sum('recurring_amount');
     @endphp
 
     <div class="page-head">
@@ -46,6 +47,10 @@
         </div>
     </section>
 
+    @if ($service->product->uses_machines)
+        @include('admin.services.partials.machine')
+    @endif
+
     <div class="grid-2">
         <form method="POST" action="{{ route('admin.services.update', $service) }}" class="card" style="display:grid;gap:1.1rem">
             @csrf
@@ -57,7 +62,8 @@
                 <x-input name="username" :label="__('Username')" :value="$service->username" autocomplete="off" />
                 <x-input name="password" type="password" :label="__('Password')" :help="$service->password ? __('Saved. Leave empty to keep it.') : null" autocomplete="new-password" />
                 <x-select name="billing_cycle" :label="__('Billing cycle')" :options="collect(\App\Enums\BillingCycle::cases())->mapWithKeys(fn ($c) => [$c->value => $c->label()])->all()" :value="$service->billing_cycle" required />
-                <x-input name="recurring_amount" type="number" step="0.01" min="0" :label="__('Renewal price (:currency)', ['currency' => $service->currency])" :value="\App\Support\Money::toDecimal($service->recurring_amount)" required />
+                <x-input name="recurring_amount" type="number" step="0.01" min="0" :label="__('Plan renewal price (:currency)', ['currency' => $service->currency])" :value="\App\Support\Money::toDecimal($service->recurring_amount)" required
+                    :help="$extrasTotal > 0 ? __('Extras are billed on their own lines: :amount.', ['amount' => money($extrasTotal, $service->currency)]) : null" />
                 <x-input name="next_due_date" type="date" :label="__('Next due date')" :value="$service->next_due_date?->toDateString()" />
                 <x-select name="status" :label="__('Status')" :options="collect(\App\Enums\ServiceStatus::cases())->mapWithKeys(fn ($s) => [$s->value => $s->label()])->all()" :value="$status" :help="__('Changing this only updates Nuvabill, not the server.')" required />
             </div>
@@ -81,6 +87,10 @@
                     @endif
                 </dl>
             </section>
+
+            @include('admin.services.partials.client-access')
+
+            @include('admin.services.partials.resources')
 
             <section class="card" style="display:grid;gap:.8rem">
                 <div class="card-header" style="margin:0"><h2>{{ __('Change plan') }}</h2></div>

@@ -2,6 +2,9 @@
  * Shared building blocks for the admin area and client themes.
  * Theme authors can reuse these classes or replace them.
  */
+@import './components/resources.css';
+@import './components/server-panel.css';
+
 @layer base {
     html {
         -webkit-text-size-adjust: 100%;

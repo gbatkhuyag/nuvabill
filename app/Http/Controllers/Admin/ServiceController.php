@@ -10,6 +10,7 @@ use App\Models\PlanChange;
 use App\Models\Product;
 use App\Models\Server;
 use App\Models\Service;
+use App\Models\ServiceResourceOption;
 use App\Provisioning\Provisioner;
 use App\Support\Activity;
 use App\Support\Money;
@@ -41,7 +42,7 @@ class ServiceController extends Controller
 
     public function show(Service $service): View
     {
-        $service->load('client', 'product', 'server', 'order', 'invoiceItems.invoice', 'addons', 'coupon');
+        $service->load('client', 'product', 'server', 'order', 'invoiceItems.invoice', 'addons', 'coupon', 'resources');
 
         $changes = app(PlanChanges::class);
         $blocked = $changes->blockedReason($service);
@@ -76,14 +77,23 @@ class ServiceController extends Controller
 
         $data['recurring_amount'] = Money::toMinor($data['recurring_amount']);
 
-        if (blank($data['password'])) {
+        if (blank($data['password'] ?? null)) {
             unset($data['password']);
         }
+
+        $cycleChanged = $service->billing_cycle !== BillingCycle::from($data['billing_cycle']);
 
         $service->update($data);
         Activity::log('service.updated', "Service #{$service->id} details changed by staff", $service);
 
-        return back()->with('status', __('Service saved. Only the billing record changed; use the buttons above to change the account on the server.'));
+        $response = back()->with('status', __('Service saved. Only the billing record changed; use the buttons above to change the account on the server.'));
+
+        // The extras keep the price they were sold at, which was for the old cycle.
+        if ($cycleChanged && $service->resources()->where('status', ServiceResourceOption::STATUS_ACTIVE)->where('steps', '>', 0)->exists()) {
+            $response->with('warning', __('Check the resource prices of this service: they are for the old billing cycle.'));
+        }
+
+        return $response;
     }
 
     /**

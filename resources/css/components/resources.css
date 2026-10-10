@@ -1,0 +1,8 @@
+/*
+ * Resource sliders (extra RAM, disk, IP addresses and so on): the store product page, the
+ * resources card on a client's service page, and the admin option editor and price grid.
+ * Imported by components.css. Use only tokens from tokens.css, so light and dark mode work, and
+ * only logical directions (margin-inline, inset-inline), so right-to-left pages work.
+ *
+ * Empty for now; the resource option screens add their classes here.
+ */
