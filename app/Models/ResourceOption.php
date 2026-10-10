@@ -212,8 +212,9 @@ class ResourceOption extends Model
 
     /**
      * An amount of a kind as people read it: RAM in GB from 1024 MB up (1536 MB is "1.5 GB"), traffic
-     * and disk in TB at whole thousands of GB, and other units as a plain number with the unit. A
-     * ladder shows the name of the step.
+     * and disk in TB at whole thousands of GB, and other units as a plain number with the unit. Cores,
+     * IP addresses and plain counts are just the number, as the kind's name says what is counted
+     * ("CPU cores +2"). A ladder shows the name of the step.
      *
      * @param  list<string>|null  $ladder
      */
@@ -228,7 +229,7 @@ class ResourceOption extends Model
         return match (true) {
             $unit === 'MB' && $units >= 1024 => $number($units / 1024).' GB',
             $unit === 'GB' && $units >= 1000 && $units % 1000 === 0 => $number(intdiv($units, 1000)).' TB',
-            $unit === '' => $number($units),
+            in_array($unit, ['', 'core', 'IP'], true) => $number($units),
             default => $number($units).' '.$unit,
         };
     }
