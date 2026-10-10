@@ -2,10 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\Machine;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule as ScheduleFacade;
+use Illuminate\Support\Facades\Schema;
 use ReflectionClass;
 use Tests\TestCase;
 
@@ -14,6 +17,8 @@ use Tests\TestCase;
  */
 class ScheduleTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_a_crash_never_stops_the_every_minute_jobs_for_a_day(): void
     {
         $worker = $this->event($this->schedule(demo: false), 'queue:work');
@@ -54,6 +59,26 @@ class ScheduleTest extends TestCase
         } finally {
             Artisan::call('up');
         }
+    }
+
+    public function test_dedicated_servers_are_checked_every_five_minutes_outside_the_demo(): void
+    {
+        $hardware = $this->event($this->schedule(demo: false), 'nuvabill:hardware');
+
+        $this->assertSame('*/5 * * * *', $hardware->expression);
+        $this->assertTrue($hardware->withoutOverlapping);
+        $this->assertLessThanOrEqual(10, $hardware->expiresAt);
+        $this->assertFalse(collect($this->schedule(demo: true)->events())->contains(fn (Event $event): bool => str_contains((string) $event->command, 'nuvabill:hardware')));
+
+        // Nothing runs until a machine exists, nor while an update has not made the table yet.
+        $this->assertFalse($hardware->filtersPass($this->app));
+        Machine::factory()->create(['name' => 'DS-101']);
+        $this->assertTrue($hardware->filtersPass($this->app));
+
+        Schema::drop('machine_ips');
+        Schema::drop('machine_product');
+        Schema::drop('machines');
+        $this->assertFalse($hardware->filtersPass($this->app));
     }
 
     /**

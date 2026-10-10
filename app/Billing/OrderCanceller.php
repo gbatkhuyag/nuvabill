@@ -8,6 +8,7 @@ use App\Enums\OrderStatus;
 use App\Enums\ServiceStatus;
 use App\Models\Invoice;
 use App\Models\Order;
+use App\Provisioning\Hardware\MachineInventory;
 use App\Provisioning\Provisioner;
 use App\Support\Activity;
 use Carbon\CarbonImmutable;
@@ -82,12 +83,14 @@ class OrderCanceller
 
     /**
      * Cancel the order's services and domains that were not set up yet, its invoice when unpaid,
-     * and the order itself.
+     * and the order itself. Dedicated server machines held by those services are freed first,
+     * because the mass update below skips model events.
      */
     public function cancel(Order $order, string $note = ''): void
     {
         DB::transaction(function () use ($order, $note): void {
             $order->domains()->where('status', DomainStatus::Pending)->update(['status' => DomainStatus::Cancelled]);
+            app(MachineInventory::class)->releaseForOrder($order);
             $order->services()
                 ->where('status', ServiceStatus::Pending)
                 ->update(['status' => ServiceStatus::Cancelled, 'cancelled_at' => now(), 'next_due_date' => null]);
