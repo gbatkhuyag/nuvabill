@@ -250,6 +250,9 @@ class TemplateMailer
     }
 
     /**
+     * The service placeholders. "service.amount" is the plan price; "service.renewal_amount" is what
+     * each renewal costs with the active add-ons and extras.
+     *
      * @return array<string, mixed>
      */
     public static function serviceContext(Service $service): array
@@ -264,6 +267,7 @@ class TemplateMailer
                 'server' => $service->server?->hostname,
                 'next_due_date' => $service->next_due_date?->translatedFormat('d M Y'),
                 'amount' => money($service->recurring_amount, $service->currency),
+                'renewal_amount' => money($service->renewalTotal(), $service->currency),
                 'url' => route('client.services.show', $service),
             ],
         ]);

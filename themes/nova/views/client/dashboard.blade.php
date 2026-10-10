@@ -54,10 +54,12 @@
                     <div class="table-wrap"><table class="table">
                         <thead><tr><th>{{ __('Product') }}</th><th>{{ __('Price') }}</th><th>{{ __('Next due') }}</th><th>{{ __('Status') }}</th><th><span class="sr-only">{{ __('Actions') }}</span></th></tr></thead>
                         <tbody>
+                        {{-- The price column is the renewal total: plan, add-ons and extras. --}}
+                        @php $services->loadMissing(['addons', 'resources']); @endphp
                         @foreach ($services as $service)
                             <tr>
                                 <td><a class="row-link" href="{{ route('client.services.show', $service) }}">{{ $service->product->name }}</a>@if ($service->domain)<div class="muted" style="font-size:.84rem">{{ $service->domain }}</div>@endif</td>
-                                <td class="num">{{ money($service->billing_cycle->isRecurring() ? $service->recurring_amount : $service->first_payment_amount, $service->currency) }} <span class="muted">· {{ $service->billing_cycle->label() }}</span></td>
+                                <td class="num">{{ money($service->billing_cycle->isRecurring() ? $service->renewalTotal() : $service->first_payment_amount, $service->currency) }} <span class="muted">· {{ $service->billing_cycle->label() }}</span></td>
                                 <td class="num">{{ $service->next_due_date?->translatedFormat('d M Y') ?? '—' }}</td>
                                 <td><x-status :value="$service->status" /></td>
                                 <td class="end"><a class="btn btn-sm" href="{{ route('client.services.show', $service) }}">{{ __('Manage') }}</a></td>

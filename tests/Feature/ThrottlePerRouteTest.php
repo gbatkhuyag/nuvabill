@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Product;
+use App\Models\ResourceOption;
+use App\Models\ServiceResourceOption;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -29,6 +31,22 @@ class ThrottlePerRouteTest extends TestCase
         ])->assertRedirect();
 
         $this->assertTrue(Client::query()->where('email', 'raz@example.test')->exists());
+    }
+
+    public function test_price_checks_with_extras_do_not_use_up_the_order_limit(): void
+    {
+        $product = Product::factory()->priced(999)->create(['requires_domain' => false]);
+        ResourceOption::factory()->priced(200)->create(['product_id' => $product->id]);
+        $client = Client::factory()->create(['first_name' => 'Mer', 'last_name' => 'Las', 'currency' => 'USD']);
+        $this->actingAs($client, 'web');
+
+        for ($steps = 0; $steps < 10; $steps++) {
+            $this->postJson(route('store.api.quote'), ['product_id' => $product->id, 'billing_cycle' => 'monthly', 'resources' => ['ram' => $steps % 9]])->assertOk();
+        }
+
+        $this->post(route('order.store'), ['product_id' => $product->id, 'billing_cycle' => 'monthly', 'resources' => ['ram' => 2]])->assertRedirect();
+
+        $this->assertSame(2, ServiceResourceOption::query()->sole()->steps);
     }
 
     public function test_a_clients_requests_do_not_throttle_the_staff_member_with_the_same_id(): void

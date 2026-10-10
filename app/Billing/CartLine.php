@@ -12,14 +12,15 @@ use App\Models\TldPrice;
  */
 final readonly class CartLine
 {
-    /**
-     * @param  list<array{id: int, name: string, price: int, setup_fee: int}>  $addons  Product add-ons chosen with the product, priced for its cycle.
-     * @param  int  $discount  Coupon discount on this line, in minor units.
-     */
     public const KIND_PRODUCT = 'product';
 
     public const KIND_DOMAIN = 'domain';
 
+    /**
+     * @param  list<array{id: int, name: string, price: int, setup_fee: int}>  $addons  Product add-ons chosen with the product, priced for its cycle.
+     * @param  int  $discount  Coupon discount on this line, in minor units. It only ever comes off the product price.
+     * @param  list<array{kind: string, option_id: int, label: string, steps: int, step_size: int, unit: string, units: int, text: string, price: int, setup_fee: int}>  $resources  Extras chosen with the product (see ResourceOptions::cartLines()), priced for its cycle: price and setup_fee are for all the steps together.
+     */
     public function __construct(
         public int $index,
         public ?Product $product,
@@ -34,6 +35,7 @@ final readonly class CartLine
         public ?TldPrice $tldPrice = null,
         public array $addons = [],
         public int $discount = 0,
+        public array $resources = [],
     ) {}
 
     public static function forDomain(int $index, string $domain, string $action, int $years, TldPrice $tldPrice, ?string $eppCode = null): self
@@ -58,11 +60,11 @@ final readonly class CartLine
     }
 
     /**
-     * What the line costs today before any coupon: price, setup fee and add-ons.
+     * What the line costs today before any coupon: price, setup fee, add-ons and extras.
      */
     public function subtotal(): int
     {
-        return $this->price + $this->setupFee + $this->addonsTotal();
+        return $this->price + $this->setupFee + $this->addonsTotal() + $this->resourcesTotal();
     }
 
     public function dueToday(): int
@@ -75,11 +77,34 @@ final readonly class CartLine
         return array_sum(array_map(fn (array $addon): int => $addon['price'] + $addon['setup_fee'], $this->addons));
     }
 
+    /**
+     * What the extras cost today: their price for the first period and their setup fees.
+     */
+    public function resourcesTotal(): int
+    {
+        return array_sum(array_map(fn (array $resource): int => $resource['price'] + $resource['setup_fee'], $this->resources));
+    }
+
+    /**
+     * What the line costs each renewal, without coupons: the plan, its add-ons and its extras. 0
+     * for a cycle that does not renew.
+     */
+    public function renewalAmount(): int
+    {
+        if ($this->isDomain() || $this->cycle === null || ! $this->cycle->isRecurring()) {
+            return 0;
+        }
+
+        return $this->price
+            + array_sum(array_column($this->addons, 'price'))
+            + array_sum(array_column($this->resources, 'price'));
+    }
+
     public function withDiscount(int $discount): self
     {
         return new self(
             $this->index, $this->product, $this->cycle, $this->domain, $this->price, $this->setupFee, $this->kind,
-            $this->domainAction, $this->years, $this->eppCode, $this->tldPrice, $this->addons, max(0, $discount),
+            $this->domainAction, $this->years, $this->eppCode, $this->tldPrice, $this->addons, max(0, $discount), $this->resources,
         );
     }
 

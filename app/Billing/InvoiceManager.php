@@ -22,7 +22,7 @@ class InvoiceManager
     /**
      * Tax follows the client's tax rule at the time of the invoice; each line can set "taxed" itself.
      *
-     * @param  list<array{type?: string, description: string, amount: int, taxed?: bool, service_id?: int|null, domain_id?: int|null, period_start?: CarbonInterface|string|null, period_end?: CarbonInterface|string|null, billing_key?: string|null}>  $items
+     * @param  list<array{type?: string, description: string, amount: int, taxed?: bool, service_id?: int|null, domain_id?: int|null, service_resource_option_id?: int|null, period_start?: CarbonInterface|string|null, period_end?: CarbonInterface|string|null, billing_key?: string|null}>  $items  service_resource_option_id says which of the service's extras a resource line pays for.
      *
      * @throws UniqueConstraintViolationException When a line's billing period is already invoiced.
      */
@@ -58,6 +58,7 @@ class InvoiceManager
                     'taxed' => $rule !== null && $this->taxes->isTaxable($item),
                     'service_id' => $item['service_id'] ?? null,
                     'domain_id' => $item['domain_id'] ?? null,
+                    'service_resource_option_id' => $item['service_resource_option_id'] ?? null,
                     'period_start' => $item['period_start'] ?? null,
                     'period_end' => $item['period_end'] ?? null,
                     // Unique in the database: a second invoice for the same period fails and is rolled back.

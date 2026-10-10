@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Store;
 
+use App\Billing\ResourceOptions;
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductAddon;
@@ -62,6 +63,8 @@ class StoreController extends Controller
             'currency' => $this->currency(),
             'inStock' => $product->isInStock(),
             'addons' => ProductAddon::offeredFor($product, $this->currency()),
+            // Read from the database only: a store page never asks a server module.
+            'resources' => app(ResourceOptions::class)->forStore($product, $this->currency()),
             'sellsDomains' => TldPrice::query()->enabled($this->currency())->exists(),
         ]);
     }

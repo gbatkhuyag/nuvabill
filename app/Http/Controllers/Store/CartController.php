@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Store;
 
 use App\Billing\Cart;
+use App\Billing\ResourceOptions;
 use App\Billing\Taxes;
 use App\Domains\AvailabilityChecker;
 use App\Domains\DomainName;
@@ -38,7 +39,7 @@ class CartController extends Controller
         ]);
     }
 
-    public function store(Request $request, Cart $cart, AvailabilityChecker $checker): RedirectResponse
+    public function store(Request $request, Cart $cart, AvailabilityChecker $checker, ResourceOptions $catalog): RedirectResponse
     {
         $request->merge(['domain' => DomainName::normalize((string) $request->input('domain')) ?? (filled($request->input('domain')) ? '!' : null)]);
 
@@ -49,6 +50,8 @@ class CartController extends Controller
             'register_domain' => ['sometimes', 'boolean'],
             'addons' => ['sometimes', 'array', 'max:20'],
             'addons.*' => ['integer'],
+            // kind => steps; ResourceOptions::validateForOrder() checks the kinds and ranges.
+            'resources' => ['sometimes', 'array'],
         ], ['domain.not_in' => __('Enter a domain like example.com.')]);
 
         $product = Product::query()->with('prices')->findOrFail($data['product_id']);
@@ -72,13 +75,14 @@ class CartController extends Controller
             throw ValidationException::withMessages(['domain' => __('Enter the domain name for this service.')]);
         }
 
+        $resources = $catalog->validateForOrder($product, $cycle, $this->currency(), (array) ($data['resources'] ?? []));
         $domain = $product->requires_domain ? $data['domain'] : null;
 
         if ($domain !== null && $request->boolean('register_domain')) {
             $this->addRegistration($cart, $checker, $domain, 1);
         }
 
-        $cart->add($product, $cycle, $domain, array_map('intval', $data['addons'] ?? []));
+        $cart->addProduct($product, $cycle, $domain, array_map('intval', $data['addons'] ?? []), $resources);
 
         return redirect()->route('cart.show')->with('status', __(':product added to your cart.', ['product' => $product->name]));
     }

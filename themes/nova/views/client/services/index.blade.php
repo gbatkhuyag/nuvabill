@@ -12,6 +12,14 @@
         <div class="card empty"><strong>{{ __('No services yet') }}</strong>{{ __('When you order hosting, it appears here.') }}</div>
     @else
         <div class="service-grid">
+            @php
+                // Each card shows the renewal total: plan, add-ons and extras.
+                $cards = $services instanceof \Illuminate\Pagination\AbstractPaginator ? $services->getCollection() : $services;
+
+                if ($cards instanceof \Illuminate\Database\Eloquent\Collection) {
+                    $cards->loadMissing(['addons', 'resources']);
+                }
+            @endphp
             @foreach ($services as $service)
                 @include('theme::client.services.card', ['service' => $service])
             @endforeach

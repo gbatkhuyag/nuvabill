@@ -11,8 +11,10 @@ use App\Models\Client;
 use App\Models\Domain;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Models\ResourceChange;
 use App\Models\Service;
 use App\Models\ServiceAddon;
+use App\Models\ServiceResourceOption;
 use App\Models\TldPrice;
 use App\Support\Activity;
 use Carbon\CarbonImmutable;
@@ -30,6 +32,13 @@ use Throwable;
  */
 class RenewalGenerator
 {
+    /**
+     * What a due service is loaded with: everything its renewal lines read.
+     *
+     * @var list<string>
+     */
+    private const SERVICE_RELATIONS = ['product', 'client', 'addons', 'coupon', 'resources.option'];
+
     public function __construct(
         private InvoiceManager $invoices,
         private TemplateMailer $mailer,
@@ -65,14 +74,29 @@ class RenewalGenerator
             // before the next period is billed, or is applied first when it was just paid.
             try {
                 if ($planChanges->settleBeforeRenewal($service)) {
-                    $service = $service->fresh(['product', 'client', 'addons', 'coupon']);
+                    $service = $service->fresh(self::SERVICE_RELATIONS);
                 }
             } catch (Throwable $exception) {
                 // One upgrade that cannot be settled never stops the run: it stays waiting, staff see
                 // why, and the service renews on the plan it is on now.
                 report($exception);
                 rescue(fn () => Activity::log('service.plan_change_failed', "Pending plan change for service #{$service->id} could not be settled before the renewal: ".self::reason($exception), $service, $service->client));
-                $service = $service->fresh(['product', 'client', 'addons', 'coupon']) ?? $service;
+                $service = $service->fresh(self::SERVICE_RELATIONS) ?? $service;
+            }
+
+            // The same for a change of extras still waiting: it stops, or is applied when just paid.
+            try {
+                if ($service !== null && $this->hasPendingResourceChange($service) && app(ResourceChanges::class)->settleBeforeRenewal($service)) {
+                    $service = $service->fresh(self::SERVICE_RELATIONS);
+                }
+            } catch (Throwable $exception) {
+                report($exception);
+                rescue(fn () => Activity::log('service.resource_change_failed', "Pending resource change for service #{$service->id} could not be settled before the renewal: ".self::reason($exception), $service, $service->client));
+                $service = $service->fresh(self::SERVICE_RELATIONS) ?? $service;
+            }
+
+            if ($service === null) {
+                continue;
             }
 
             foreach ($this->serviceItems($service) as $item) {
@@ -148,7 +172,8 @@ class RenewalGenerator
     }
 
     /**
-     * The service's renewal line, its active add-ons, and its coupon discount if it still has one.
+     * The service's renewal line, its active add-ons, its extras, and its coupon discount if it
+     * still has one. A coupon only ever takes money off the plan price.
      *
      * @return list<array<string, mixed>>
      */
@@ -174,6 +199,8 @@ class RenewalGenerator
             }
         }
 
+        $items = [...$items, ...$this->resourceItems($service, $start)];
+
         $coupon = $service->coupon;
 
         if ($coupon !== null && ($service->coupon_payments_left === null || $service->coupon_payments_left > 0)) {
@@ -185,6 +212,80 @@ class RenewalGenerator
         }
 
         return $items;
+    }
+
+    /**
+     * One line per extra the service keeps for the next period, at the price the service pays for
+     * it. A change of extras planned for this renewal is billed as it will be: its rows at their new
+     * steps and price, and kinds it adds at their new price. Rows that are cancelled, at 0 steps or
+     * free are not billed. These lines need no billing key: the service line's key already makes the
+     * whole renewal unique.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function resourceItems(Service $service, CarbonImmutable $start): array
+    {
+        $planned = $this->scheduledResources($service, $start)?->items->keyBy('kind') ?? collect();
+        $items = [];
+        // In the order the store shows the options; rows whose option is gone come last.
+        $rows = $service->resources->sortBy([
+            fn (ServiceResourceOption $a, ServiceResourceOption $b): int => ($a->option?->sort_order ?? PHP_INT_MAX) <=> ($b->option?->sort_order ?? PHP_INT_MAX),
+            fn (ServiceResourceOption $a, ServiceResourceOption $b): int => $a->id <=> $b->id,
+        ]);
+
+        foreach ($rows as $row) {
+            $change = $planned->pull($row->kind);
+            $steps = $change?->to_steps ?? ($row->isActive() ? $row->steps : 0);
+            $amount = $change?->new_amount ?? $row->recurring_amount;
+
+            if ($steps > 0 && $amount > 0) {
+                $items[] = LineItems::resourcePeriod($service, $row, $start, $amount, $steps);
+            }
+        }
+
+        foreach ($planned as $change) {
+            if ($change->to_steps > 0 && $change->new_amount > 0) {
+                // A kind the service gets on this day: described from the change, not saved yet.
+                $row = (new ServiceResourceOption([
+                    'kind' => $change->kind,
+                    'unit' => $change->unit,
+                    'step_size' => $change->step_size,
+                    'steps' => $change->to_steps,
+                ]))->setRelation('option', $change->option);
+
+                $items[] = LineItems::resourcePeriod($service, $row, $start, $change->new_amount);
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * The change of extras planned for the period that starts on this date (one that waits for the
+     * renewal), so the renewal bills the new steps.
+     */
+    private function scheduledResources(Service $service, CarbonInterface $periodStart): ?ResourceChange
+    {
+        return ResourceChange::query()->with('items.option')
+            ->where('service_id', $service->id)
+            ->where('status', ResourceChange::STATUS_PENDING)
+            ->where('mode', ResourceChange::MODE_RENEWAL)
+            ->whereDate('apply_on', $periodStart)
+            ->latest('id')
+            ->first();
+    }
+
+    /**
+     * Whether a change of the service's extras still waits for payment, so it is settled before the
+     * service renews (see ResourceChanges::settleBeforeRenewal()).
+     */
+    private function hasPendingResourceChange(Service $service): bool
+    {
+        return ResourceChange::query()
+            ->where('service_id', $service->id)
+            ->where('status', ResourceChange::STATUS_PENDING)
+            ->where('mode', ResourceChange::MODE_INVOICE)
+            ->exists();
     }
 
     private function useRenewalCoupon(Service $service, Invoice $invoice, int $amount): void
@@ -305,15 +406,16 @@ class RenewalGenerator
     private function dueServices(CarbonImmutable $today): iterable
     {
         return Service::query()
-            ->with('product', 'client', 'addons', 'coupon')
+            ->with(self::SERVICE_RELATIONS)
             ->whereIn('status', [ServiceStatus::Active, ServiceStatus::Suspended])
             ->whereNotIn('billing_cycle', [BillingCycle::OneTime, BillingCycle::Free])
             ->whereNotNull('next_due_date')
             ->whereDate('next_due_date', '<=', $today->addDays((int) setting('billing.renewal_days_before')))
-            // A free plan still renews when it has a paid add-on.
+            // A free plan still renews when it has a paid add-on or paid extras.
             ->where(fn (Builder $query) => $query
                 ->where('recurring_amount', '>', 0)
-                ->orWhereHas('addons', fn (Builder $query) => $query->where('status', ServiceAddon::STATUS_ACTIVE)->where('recurring_amount', '>', 0)))
+                ->orWhereHas('addons', fn (Builder $query) => $query->where('status', ServiceAddon::STATUS_ACTIVE)->where('recurring_amount', '>', 0))
+                ->orWhereHas('resources', fn (Builder $query) => $query->where('status', ServiceResourceOption::STATUS_ACTIVE)->where('steps', '>', 0)->where('recurring_amount', '>', 0)))
             ->get()
             ->reject(fn (Service $service): bool => $this->alreadyInvoiced('service_id', $service->id, InvoiceItem::TYPE_SERVICE, $service->next_due_date));
     }

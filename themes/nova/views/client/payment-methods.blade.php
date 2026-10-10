@@ -91,10 +91,16 @@
                             <b class="num">{{ money($row['invoice']->balance(), $row['invoice']->currency) }}</b>
                         </div>
                     @endforeach
+                    @php
+                        // Each amount is the renewal total: plan, add-ons and extras.
+                        if ($services instanceof \Illuminate\Database\Eloquent\Collection) {
+                            $services->loadMissing(['addons', 'resources']);
+                        }
+                    @endphp
                     @foreach ($services as $service)
                         <div class="summary-row">
                             <span>{{ $service->label() }}<span class="muted" style="display:block;font-size:.82rem">{{ __('renews :date', ['date' => $service->next_due_date->translatedFormat('d M Y')]) }}</span></span>
-                            <b class="num">{{ money($service->recurring_amount, $service->currency) }}</b>
+                            <b class="num">{{ money($service->renewalTotal(), $service->currency) }}</b>
                         </div>
                     @endforeach
                     @if ($invoices->isEmpty() && $services->isEmpty())

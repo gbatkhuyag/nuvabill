@@ -39,6 +39,8 @@
                 @error('billing_cycle')<p class="error" style="color:var(--nb-crit);font-size:.85rem;margin:0">{{ $message }}</p>@enderror
             </fieldset>
 
+            @include('theme::store.partials.resources', ['resources' => $resources ?? []])
+
             @if ($product->requires_domain)
                 <x-input name="domain" :label="__('Your domain name')" placeholder="example.com" :help="__('The website address this hosting is for. You can use a domain you already own.')" required autocomplete="off" />
                 @if ($sellsDomains)
