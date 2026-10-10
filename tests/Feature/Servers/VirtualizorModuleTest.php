@@ -50,11 +50,9 @@ class VirtualizorModuleTest extends TestCase
         $page->assertSee('Unknown')->assertSee('Refresh status');
 
         foreach (['start', 'restart', 'stop', 'poweroff'] as $action) {
-            $page->assertSee('formaction="'.route('client.services.panel', [$service, $action]).'"', false);
+            $page->assertSee('formaction="'.route('client.services.sections.action', [$service, 'power', $action]).'"', false);
             $this->assertDoesNotMatchRegularExpression('/data-action="'.$action.'"[^>]*style="display: none"/s', $page->getContent());
         }
-
-        $page->assertSee('needs ACPI support');
     }
 
     public function test_a_running_vps_hides_start_and_a_stopped_one_shows_only_start(): void
@@ -96,25 +94,28 @@ class VirtualizorModuleTest extends TestCase
         $this->assertSame('GET', $api->calls[0]['method']);
     }
 
-    public function test_without_javascript_the_page_after_a_power_action_waits_for_the_new_state(): void
+    public function test_without_javascript_a_power_action_comes_back_with_its_message_and_the_live_state(): void
     {
         $this->fakeVirtualizor([
             'power' => ['done' => true, 'vsop' => ['action' => 'start', 'id' => '77', 'status' => ['77' => 0]]],
             'status' => ['status' => ['77' => ['status' => 0]]],
         ]);
         $service = $this->service();
+        $page = route('client.services.show', $service);
         $this->actingAs($service->client, 'web');
 
-        $this->from(route('client.services.show', $service))->post(route('client.services.panel', [$service, 'start']))->assertRedirect(route('client.services.show', $service));
-        $this->assertMatchesRegularExpression('#class="pill"\s+data-tone="info"\s+:data-tone="tone" x-text="label">Starting…</span>#u', $this->get(route('client.services.show', $service))->getContent());
+        $this->from($page)->post(route('client.services.sections.action', [$service, 'power', 'start']))
+            ->assertRedirect($page.'#panel-power')
+            ->assertSessionHas('status', 'The VPS is starting.');
+        $this->assertMatchesRegularExpression('#class="pill"\s+data-tone="crit"\s+:data-tone="tone" x-text="label">Stopped</span>#u', $this->get($page)->getContent());
 
-        // Once the server got there, nothing waits.
+        // Once the server got there, the page shows it.
         $this->fakeVirtualizor([
             'power' => ['done' => true, 'vsop' => ['action' => 'start', 'id' => '77', 'status' => ['77' => 1]]],
             'status' => ['status' => ['77' => ['status' => 1]]],
         ]);
-        $this->post(route('client.services.panel', [$service, 'start']));
-        $this->assertMatchesRegularExpression('#class="pill"\s+data-tone="good"\s+:data-tone="tone" x-text="label">Running</span>#u', $this->get(route('client.services.show', $service))->getContent());
+        $this->from($page)->post(route('client.services.panel', [$service, 'start']))->assertRedirect($page)->assertSessionHas('panel_result', ['pending' => 'start']);
+        $this->assertMatchesRegularExpression('#class="pill"\s+data-tone="good"\s+:data-tone="tone" x-text="label">Running</span>#u', $this->get($page)->getContent());
     }
 
     public function test_a_failed_power_action_answers_json_without_details_of_the_server(): void
@@ -122,8 +123,13 @@ class VirtualizorModuleTest extends TestCase
         $this->fakeVirtualizor(['power' => ['error' => ['The VPS is locked']]]);
         $service = $this->service();
 
+        // A forced power off needs its confirm box.
         $this->actingAs($service->client, 'web')
             ->postJson(route('client.services.panel', [$service, 'poweroff']))
+            ->assertStatus(422)
+            ->assertJson(['ok' => false, 'message' => 'The confirm field must be accepted.']);
+
+        $this->postJson(route('client.services.panel', [$service, 'poweroff']), ['confirm' => '1'])
             ->assertStatus(422)
             ->assertExactJson(['ok' => false, 'message' => 'Virtualizor: The VPS is locked', 'pending' => null, 'state' => null]);
     }
@@ -284,8 +290,8 @@ class VirtualizorModuleTest extends TestCase
 
         $this->actingAs($service->client, 'web')
             ->postJson(route('client.services.panel', [$service, 'start']))
-            ->assertStatus(422)
-            ->assertJson(['ok' => false, 'message' => 'This service is busy on the server. Try again in a minute.']);
+            ->assertStatus(409)
+            ->assertJson(['ok' => false, 'message' => 'Another change is running on this server. Try again in a moment.']);
 
         $this->assertSame([], $api->calls);
         $this->assertFalse(ActivityLog::query()->where('action', 'service.client_action')->exists());
@@ -417,8 +423,8 @@ class VirtualizorModuleTest extends TestCase
 
         $this->get(route('client.services.show', $service))->assertSee('Run the setup script of your plan again');
 
-        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '100', 'password' => 'Secret12345', 'recipe' => '99'])->assertSessionHas('status');
-        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '100', 'password' => 'Secret12345', 'run_recipe' => '1'])->assertSessionHas('status');
+        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '100', 'password' => 'Secret12345', 'recipe' => '99', 'confirm' => '1'])->assertSessionHas('status');
+        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '100', 'password' => 'Secret12345', 'run_recipe' => '1', 'confirm' => '1'])->assertSessionHas('status');
 
         $rebuilds = collect($api->calls)->where('kind', 'rebuild')->values();
         $this->assertArrayNotHasKey('recipe', $rebuilds[0]['data']);
@@ -457,7 +463,14 @@ class VirtualizorModuleTest extends TestCase
         $this->actingAs($service->client, 'web');
 
         $this->get(route('client.services.show', $service))->assertSee('Show VNC details')->assertDontSee('Open Virtualizor panel');
-        $this->post(route('client.services.panel', [$service, 'vnc']))->assertSessionHas('panel_result.vnc.port', '5901');
+
+        // The details are shown once to the page's script, never through the session.
+        $this->post(route('client.services.panel', [$service, 'vnc']))->assertSessionHas('error', 'Turn on JavaScript to do this.')->assertSessionMissing('panel_result.vnc');
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'act=vnc'));
+        $this->postJson(route('client.services.sections.action', [$service, 'console', 'details']))
+            ->assertOk()
+            ->assertJsonPath('secret', [['label' => 'IP address', 'value' => '198.51.100.2'], ['label' => 'Port', 'value' => '5901'], ['label' => 'Password', 'value' => 'vncpass1']]);
+        $this->assertStringNotContainsString('vncpass1', (string) json_encode(session()->all()));
 
         $this->post(route('client.services.login', $service))->assertSessionHas('error');
         Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'act=sso'));
@@ -474,7 +487,7 @@ class VirtualizorModuleTest extends TestCase
         $this->get(route('client.services.show', $service))
             ->assertSee('Open Virtualizor panel')
             ->assertSee('rel="noopener noreferrer"', false)
-            ->assertDontSee('Show VNC details')
+            ->assertSee(route('client.services.console.open', $service), false)
             ->assertDontSee('Open control panel');
 
         $api->calls = [];
@@ -496,13 +509,13 @@ class VirtualizorModuleTest extends TestCase
 
         // The owner is checked live before the link is made, and the link itself is never logged.
         $this->assertSame(['vps', 'users', 'byuser', 'sso'], array_column($api->calls, 'kind'));
-        $this->assertSame(['act' => 'vs', 'search' => '1', 'vpsid' => '77', 'page' => '1', 'reslen' => '1'], $this->withoutCredentials($api->calls[0]['query']));
+        $this->assertSame(['act' => 'vs', 'search' => '1', 'vpsid' => '77', 'page' => '1', 'reslen' => '50'], $this->withoutCredentials($api->calls[0]['query']));
         $this->assertSame(['act' => 'vs', 'search' => '1', 'user' => self::VIRTUALIZOR_USER, 'page' => '1', 'reslen' => '100'], $this->withoutCredentials($api->calls[2]['query']));
         $this->assertFalse(ActivityLog::query()->where('description', 'like', '%sessvkD9MBpOg0aFkHfD%')->exists());
         $this->assertFalse(ActivityLog::query()->where('description', 'like', '%efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18%')->exists());
         $this->assertTrue(ActivityLog::query()->where('action', 'service.panel_login')->exists());
 
-        $this->post(route('client.services.panel', [$service, 'vnc']))->assertSessionHas('error', 'Open the Virtualizor panel to use the console in your browser.');
+        $this->post(route('client.services.panel', [$service, 'vnc']))->assertSessionHas('error', 'Turn on JavaScript to do this.');
         Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'act=vnc'));
 
         $this->assertContains('throttle:10,1', app('router')->getRoutes()->getByName('client.services.login')->gatherMiddleware());
@@ -633,7 +646,7 @@ class VirtualizorModuleTest extends TestCase
         }
 
         foreach ([$plain, $moved] as $service) {
-            $this->post(route('client.services.panel', [$service, 'vnc']))->assertSessionHas('panel_result.vnc.port', '5901');
+            $this->postJson(route('client.services.sections.action', [$service, 'console', 'details']))->assertOk()->assertJsonPath('secret.1', ['label' => 'Port', 'value' => '5901']);
         }
     }
 

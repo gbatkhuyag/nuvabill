@@ -60,7 +60,7 @@ class ServerModulesTest extends TestCase
                 ['act' => 'ostemplates'] => Http::response(['ostemplates' => ['100' => ['osid' => 100, 'type' => 'kvm', 'name' => 'Ubuntu 24.04'], '200' => ['osid' => 200, 'type' => 'openvz', 'name' => 'CentOS 7']]]),
                 ['act' => 'vs', 'vs_status' => '77'] => Http::response(['status' => ['77' => ['status' => 1, 'used_cpu' => 12.5, 'used_ram' => 512, 'ram' => 2048, 'used_disk' => 8, 'disk' => 40, 'used_bandwidth' => 3, 'bandwidth' => 1000, 'net_in' => 2048, 'net_out' => 512]]]),
                 ['act' => 'vs', 'action' => 'restart', 'vpsid' => '77'] => Http::response(['done' => true, 'done_msg' => 'Restarted', 'vsop' => ['action' => 'restart', 'id' => '77', 'status' => ['77' => 1]]]),
-                ['act' => 'vs', 'search' => '1', 'vpsid' => '77', 'page' => '1', 'reslen' => '1'] => Http::response(['vs' => ['77' => ['vpsid' => '77', 'uid' => '58', 'hostname' => 'vps1.example.com', 'os_name' => 'Ubuntu 24.04', 'virt' => 'kvm', 'suspended' => '0', 'ips' => ['2' => '203.0.113.7', '3' => '2001:db8::7']]]]),
+                ['act' => 'vs', 'search' => '1', 'vpsid' => '77', 'page' => '1', 'reslen' => '50'] => Http::response(['vs' => ['77' => ['vpsid' => '77', 'uid' => '58', 'hostname' => 'vps1.example.com', 'os_name' => 'Ubuntu 24.04', 'virt' => 'kvm', 'suspended' => '0', 'ips' => ['2' => '203.0.113.7', '3' => '2001:db8::7']]]]),
                 ['act' => 'rebuild'] => Http::response(['done' => 1]),
                 default => Http::response(['error' => ['Unexpected request']]),
             };
@@ -80,22 +80,28 @@ class ServerModulesTest extends TestCase
             ->assertSee('Show VNC details')
             ->assertDontSee('CentOS 7')
             ->assertDontSee('Open control panel')
-            ->assertDontSee('Open Virtualizor panel')
-            ->assertDontSee('Run the setup script of your plan again');
+            ->assertDontSee('Open Virtualizor panel');
         Http::assertSent(fn (Request $request): bool => str_starts_with($request->url(), 'https://vz.example.test:4085/index.php?act=vs&vs_status=77&api=json&'));
-        Http::assertSent(fn (Request $request): bool => str_starts_with($request->url(), 'https://vz.example.test:4085/index.php?act=vs&search=1&vpsid=77&page=1&reslen=1&api=json&'));
+        Http::assertSent(fn (Request $request): bool => str_starts_with($request->url(), 'https://vz.example.test:4085/index.php?act=vs&search=1&vpsid=77&page=1&reslen=50&api=json&'));
         Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'vs_status%5B'));
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'act=ostemplates'));
+
+        // The reinstall tab reads the templates of the product's virtualization type only.
+        $this->getJson(route('client.services.sections.show', [$service, 'reinstall']))
+            ->assertOk()
+            ->assertJsonPath('data.templates', [['id' => '100', 'name' => 'Ubuntu 24.04', 'group' => 'Ubuntu']])
+            ->assertJsonPath('data.recipe', false);
 
         $this->from(route('client.services.show', $service))
             ->post(route('client.services.panel', [$service, 'restart']))
             ->assertRedirect(route('client.services.show', $service))
             ->assertSessionHas('status', 'The VPS is restarting.')
-            ->assertSessionHas('panel_result', ['pending' => 'restart', 'state' => 'running']);
+            ->assertSessionHas('panel_result', ['pending' => 'restart']);
         Http::assertSent(fn (Request $request): bool => str_starts_with($request->url(), 'https://vz.example.test:4085/index.php?act=vs&action=restart&vpsid=77&api=json&') && $request->method() === 'GET');
 
-        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '200', 'password' => 'Secret12345'])
+        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '200', 'password' => 'Secret12345', 'confirm' => '1'])
             ->assertSessionHas('error', 'Choose an operating system from the list.');
-        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '100', 'password' => 'Secret12345'])
+        $this->post(route('client.services.panel', [$service, 'reinstall']), ['os_id' => '100', 'password' => 'Secret12345', 'confirm' => '1'])
             ->assertSessionHas('status');
         Http::assertSent(fn (Request $request): bool => str_contains($request->url(), 'act=rebuild') && $request['osid'] === '100' && $request['reos'] === 1);
         $this->assertSame('Secret12345', $service->fresh()->password);
@@ -116,7 +122,7 @@ class ServerModulesTest extends TestCase
         $service->update(['status' => ServiceStatus::Suspended]);
         $this->actingAs($service->client, 'web')
             ->post(route('client.services.panel', [$service, 'restart']))
-            ->assertSessionHas('error', 'This action is not available.');
+            ->assertSessionHas('error', 'This service is suspended.');
 
         Http::assertNothingSent();
     }

@@ -2,53 +2,40 @@
 
 namespace Nuvabill\Extensions\Virtualizor;
 
+use App\Contracts\ChecksClientAccess;
 use App\Contracts\HasClientPanel;
+use App\Contracts\HasConsole;
+use App\Contracts\HasPanelSections;
 use App\Contracts\HasPanelState;
+use App\Contracts\HasResourceOptions;
 use App\Contracts\KeepsCreateServer;
+use App\Contracts\LinksExistingAccount;
+use App\Contracts\SignsInWithContext;
 use App\Contracts\WaitsForPayment;
-use App\Enums\ServiceStatus;
 use App\Extensions\Servers\Module;
 use App\Extensions\Servers\ModuleResult;
+use App\Extensions\Servers\Panel\ClientContext;
+use App\Extensions\Servers\Panel\ConsoleSession;
+use App\Extensions\Servers\Panel\PanelResult;
+use App\Extensions\Servers\Resources\ResourceCheck;
+use App\Extensions\Servers\Resources\ResourceExtras;
+use App\Models\Product;
 use App\Models\Server;
 use App\Models\Service;
-use App\Models\ServiceAddon;
-use App\Support\Activity;
-use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use RuntimeException;
-use Throwable;
 
 /**
- * Virtualizor through its Admin API. Clients manage their VPS in the Nuvabill client area:
- * power, usage, IP addresses, OS reinstall, hostname and root password. A product can also let
- * clients open their own VPS in Virtualizor's end-user panel with one click.
+ * Virtualizor VPS. Staff tasks (create, suspend, remove, plan changes) use the Admin API. Clients
+ * manage their VPS in the tabbed server panel of the client area, open its console in the
+ * browser, and can open their own VPS in Virtualizor's end-user panel with one click.
+ *
+ * The work is split over helpers: AdminApi (the Admin API), EnduserApi (the end-user panel),
+ * Panel (the client server panel and console), SignIn (sign-in and the staff access tools) and
+ * ResourceTotals (extra resources). This class keeps the module contracts and the safe create.
  */
-class VirtualizorModule extends Module implements HasClientPanel, HasPanelState, KeepsCreateServer, WaitsForPayment
+class VirtualizorModule extends Module implements ChecksClientAccess, HasClientPanel, HasConsole, HasPanelSections, HasPanelState, HasResourceOptions, KeepsCreateServer, LinksExistingAccount, SignsInWithContext, WaitsForPayment
 {
-    /**
-     * Exception code: Virtualizor answered and refused the request, so it did nothing. Any other
-     * failure (no connection, no clear answer) leaves it open whether the request ran.
-     */
-    private const REFUSED = 1;
-
-    /**
-     * Virtualizor's end-user panel port with SSL.
-     */
-    private const PANEL_PORT = 4083;
-
-    /**
-     * Virtualizor's other panel ports: the admin panel (4084, 4085) and plain HTTP (4081, 4082).
-     * Panel sign-in never goes there: a sign-in call on an admin port could open the admin panel.
-     */
-    private const NOT_PANEL_PORTS = [4081, 4082, 4084, 4085];
-
-    /**
-     * The most VPS of one Virtualizor user that a panel sign-in checks. A user with more is refused.
-     */
-    private const USER_VPS_LIMIT = 100;
-
     /**
      * Control panels Virtualizor installs on a new VPS, by Virtualizor's own names.
      */
@@ -76,10 +63,15 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
         'slave_server' => [0, 'Virtualizor server ID'],
     ];
 
-    /**
-     * Where a resource is in Virtualizor's VPS details.
-     */
-    private const RESOURCE_FIELDS = ['cores' => 'cores', 'ram' => 'ram', 'disk' => 'space', 'num_ips' => 'ips', 'bandwidth' => 'bandwidth'];
+    private ?AdminApi $adminApi = null;
+
+    private ?EnduserApi $enduserApi = null;
+
+    private ?SignIn $signInHelper = null;
+
+    private ?Panel $panelHelper = null;
+
+    private ?ResourceTotals $resourceTotals = null;
 
     public function productFields(): array
     {
@@ -126,29 +118,34 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
             'server_group' => ['label' => 'Virtualizor server group ID', 'type' => 'text', 'help' => 'Optional. New VPS go to a server in this group.'],
             'slave_server' => ['label' => 'Virtualizor server ID', 'type' => 'text', 'help' => 'Optional. New VPS go to this server (0 = the master). It wins over the server group.'],
             'osreinstall_limit' => ['label' => 'OS reinstalls a month', 'type' => 'text', 'help' => 'Optional. 0 = no limit.'],
+            'reinstall_os_ids' => [
+                'label' => 'OS templates clients may choose',
+                'type' => 'text',
+                'help' => 'Optional. Comma-separated OS IDs. Empty allows every template of this virtualization type.',
+            ],
+            'ipv4_pool_id' => [
+                'label' => 'IP pool for extra IPv4',
+                'type' => 'text',
+                'help' => 'Optional. Extra IPv4 addresses must come from this Virtualizor IP pool. They are checked after each change.',
+            ],
             'client_login' => [
                 'label' => 'Client panel sign-in',
                 'type' => 'select',
                 'options' => ['' => 'Off', '1' => 'On'],
-                'help' => 'Clients get an "Open Virtualizor panel" button that signs them in to their own VPS, with its browser console. First turn off panel features that skip billing in Virtualizor (Configuration → Enduser settings).',
+                'help' => 'Clients get an "Open Virtualizor panel" button that signs them in to their own VPS. It needs: Use SSL on, a valid SSL certificate on port 4083, and port 4083 open. Each client should have their own Virtualizor user. First turn off panel features that skip billing in Virtualizor (Configuration → Enduser settings), such as creating VPS or changing resources. To find problems, open a service in Admin and use Test panel sign-in.',
             ],
             'panel_port' => ['label' => 'Client panel port', 'type' => 'text', 'help' => 'Default 4083, Virtualizor\'s end-user port. Never the admin port (4085) or the server\'s API port: sign-in stays off with those. It needs a valid SSL certificate.'],
-            'resource_addons' => [
-                'label' => 'Resource add-ons (JSON)',
-                'type' => 'textarea',
-                'help' => 'Optional. Add-ons that give a VPS more resources, as compact JSON: {"version":1,"ids":{"cpu":5,"ram":6,"disk":7,"ipv4":8}} with your add-on IDs. Each adds 1 core, 2048 MB RAM, 40 GB disk or 1 IPv4; "steps":{"ram":1024} changes an amount. Other add-ons are left alone. A new VPS gets its extras only when its order invoice is paid, so with setup "as soon as the order is placed" such a VPS is made once that invoice is paid.',
-            ],
         ];
     }
 
     public function serverHelp(): string
     {
-        return 'Hostname: the Virtualizor master server. Put the Admin API key in "API token" and the API password in "Password" (Virtualizor admin → Configuration → Server Info), and allow this server\'s IP there. Keep "Use SSL" on: port 4085 needs a valid SSL certificate. Without SSL the API key and password travel unencrypted, so only turn it off on a private network. Client panel sign-in always uses SSL and Virtualizor\'s end-user port 4083, unless the product sets another end-user port. It never uses the admin port.';
+        return 'Hostname: the Virtualizor master, as a name with a valid SSL certificate (for example vz.example.com). Put the Admin API key in "API token" and the API password in "Password" (Virtualizor → Configuration → Server Info), and allow this server\'s IP there. Keep "Use SSL" on: without it the API key and password travel unencrypted. Nuvabill uses port 4085 for staff tasks and port 4083 for the client panel, console and sign-in. Clients\' browsers also connect to port 4083, so it must be open and have a valid certificate. Behind Cloudflare, set this hostname to "DNS only". If you use a key from API Credentials, allow these acts: vs, addvs, managevps, rebuild, vnc, users, plans, ostemplates, ips, sso, listvs, and the end-user acts of the panel.';
     }
 
     public function defaultPort(): int
     {
-        return 4085;
+        return AdminApi::DEFAULT_PORT;
     }
 
     /**
@@ -160,15 +157,25 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
         return false;
     }
 
+    /**
+     * The Admin API answers, plus a line about the end-user port when there is one to add.
+     */
     public function testConnection(Server $server): ModuleResult
     {
         return $this->attempt(function () use ($server): ModuleResult {
-            $response = $this->call($server, ['act' => 'vs', 'reslen' => 1]);
+            $response = $this->admin()->call($server, ['act' => 'vs', 'reslen' => 1]);
+            $message = __('Connected to Virtualizor. :count VPS found.', ['count' => (int) ($response['counts']['vs'] ?? count((array) ($response['vs'] ?? [])))]);
+            $note = $this->enduser()->connectionNote($server);
 
-            return ModuleResult::ok(__('Connected to Virtualizor. :count VPS found.', ['count' => (int) ($response['counts']['vs'] ?? count((array) ($response['vs'] ?? [])))]));
+            return ModuleResult::ok($note !== null && $note !== '' ? $message.' '.$note : $message);
         });
     }
 
+    /**
+     * Make the VPS: the create guard (SignIn), then the totals with any extras (ResourceTotals),
+     * then the safe create. A create with extras is noted before it is sent, so a request without
+     * a clear answer is never sent twice.
+     */
     public function create(Service $service): ModuleResult
     {
         return $this->attempt(function () use ($service): ModuleResult {
@@ -176,12 +183,18 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
             ResourceAddons::stopWaiting($service);
             $record = ResourceAddons::record($service);
 
+            $refusal = $this->signIn()->guardCreate($service, $record);
+
+            if ($refusal !== null) {
+                return $refusal;
+            }
+
             // The VPS of an earlier create request is only looked for on the server it was sent to.
             if ($record !== null && $record['server_id'] !== null && $record['server_id'] !== (int) $service->server_id) {
                 return ModuleResult::fail(__('The create request for this VPS was sent to server #:id, so a VPS it made is only looked for there. Move the service back to that server and try again. No VPS is made on another server.', ['id' => $record['server_id']]));
             }
 
-            // A create with resource add-ons was sent before: never send another one for this service.
+            // A create with extras was sent before: never send another one for this service.
             if ($record !== null && $record['state'] === ResourceAddons::REQUESTED) {
                 $record = $this->reconcile($service, $record);
 
@@ -223,7 +236,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
             }
 
             try {
-                $resources = $this->resources($service, forCreate: true);
+                $resources = $this->totals()->totalsForCreate($service);
             } catch (RuntimeException $exception) {
                 if ($exception->getCode() === ResourceAddons::UNPAID) {
                     ResourceAddons::waitForPayment($service);
@@ -236,7 +249,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
                 return $this->createWithResources($service, $post, $resources, $hostname, $rootPassword);
             }
 
-            $response = $this->call($service->server, ['act' => 'addvs'], $post, timeout: 180);
+            $response = $this->admin()->call($service->server, ['act' => 'addvs'], $post, timeout: 180);
             $vpsId = $response['vs_info']['vpsid'] ?? $response['newvs']['vpsid'] ?? null;
 
             if (blank($vpsId)) {
@@ -249,15 +262,15 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
                 'module_data' => array_filter([
                     'vpsid' => (string) $vpsId,
                     'ips' => array_values((array) ($response['vs_info']['ips'] ?? [])),
-                    'uid' => $this->userId($response['vs_info']['uid'] ?? null),
+                    'uid' => AdminApi::userId($response['vs_info']['uid'] ?? null),
                 ], fn (mixed $value): bool => $value !== null),
             ]);
         });
     }
 
     /**
-     * A create with add-on extras that was sent stays on its server: the VPS it may have made is
-     * looked for there, also when that server was turned off or is full since.
+     * A create with extras that was sent stays on its server: the VPS it may have made is looked
+     * for there, also when that server was turned off or is full since.
      */
     public function keepsServer(Service $service): bool
     {
@@ -265,9 +278,9 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     }
 
     /**
-     * Only a VPS with add-on extras whose last create was refused because its order invoice was not
-     * paid yet. A create that was sent, also one without a clear answer, is never tried again by
-     * itself: it may have made a VPS.
+     * Only a VPS whose last create was refused because its order invoice with the add-on extras
+     * was not paid yet (the flag from before 2.0). A create that was sent, also one without a
+     * clear answer, is never tried again by itself: it may have made a VPS.
      */
     public function waitsForPayment(Service $service): bool
     {
@@ -290,8 +303,8 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     }
 
     /**
-     * Applies the product's plan. A VPS with resource add-ons then gets its extras back on top of
-     * the new plan, and the result is checked.
+     * Applies the product's plan. A VPS with extras then gets them back on top of the new plan
+     * (ResourceTotals), and the result is checked.
      */
     public function changePackage(Service $service): ModuleResult
     {
@@ -302,64 +315,106 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
         }
 
         return $this->attempt(function () use ($service, $planId): ModuleResult {
-            $resources = $this->resources($service, forCreate: false);
+            $totals = $this->totals()->totalsForPlanChange($service);
 
-            if ($resources === null) {
+            if ($totals === null) {
                 return $this->simple($service, ['act' => 'managevps', 'vpsid' => $this->vpsId($service)], ['editvps' => 1, 'plid' => $planId, 'apply_plan' => 1], __('Plan applied to the VPS.'));
             }
 
-            return $this->changePackageWithResources($service, $planId, $resources['totals']);
+            return $this->totals()->changePlan($service, $planId, $totals);
         });
     }
 
     /**
-     * A one-time sign-in link to Virtualizor's end-user panel for the client's own VPS. It is made
-     * on every click, after checking again that the Virtualizor user behind the VPS has no VPS
-     * except this client's. The link is never stored or logged.
+     * The sign-in link without a client context. Core asks signInUrl() for the client's button.
      */
     public function loginUrl(Service $service): ?string
     {
-        $server = $service->server;
-
-        if ($service->status !== ServiceStatus::Active || $server === null || ! $this->signInPossible($service)) {
-            return null;
-        }
-
-        $port = (int) $this->panelPort($service);
-
-        try {
-            $vpsId = $this->vpsId($service);
-
-            if (! $this->ownedByClient($service, $vpsId)) {
-                return null;
-            }
-
-            $response = $this->panelCall($server, $port, ['act' => 'sso', 'svs' => $vpsId]);
-        } catch (RuntimeException $exception) {
-            Activity::log('service.module_failed', "Panel sign-in for service #{$service->id} ({$service->label()}) failed: {$exception->getMessage()}", $service);
-
-            return null;
-        }
-
-        $token = (string) ($response['token_key'] ?? '');
-        $session = (string) ($response['sid'] ?? '');
-
-        if (! preg_match('/\A[A-Za-z0-9_-]{8,128}\z/', $token) || ! preg_match('/\A[A-Za-z0-9_-]{8,256}\z/', $session)) {
-            Activity::log('service.module_failed', "Panel sign-in for service #{$service->id} ({$service->label()}) failed: Virtualizor did not return a sign-in session.", $service);
-
-            return null;
-        }
-
-        Activity::log('service.panel_login', "Client opened the Virtualizor panel of service #{$service->id} ({$service->label()})", $service);
-
-        return $this->baseUrl($server, $port, true).'/'.$token.'/?'.http_build_query(['as' => $session, 'svs' => $vpsId], '', '&', PHP_QUERY_RFC3986);
+        return $this->signIn()->signInUrl($service, null);
     }
 
+    public function signInUrl(Service $service, ClientContext $context): ?string
+    {
+        return $this->signIn()->signInUrl($service, $context);
+    }
+
+    public function checkClientAccess(Service $service): array
+    {
+        return $this->signIn()->checks($service);
+    }
+
+    public function linkFields(): array
+    {
+        return $this->signIn()->linkFields();
+    }
+
+    public function linkExistingAccount(Service $service, array $input): ModuleResult
+    {
+        return $this->signIn()->link($service, $input);
+    }
+
+    public function panelSections(Product $product): array
+    {
+        return $this->panel()->sections($product);
+    }
+
+    public function availablePanelSections(Service $service, ClientContext $context): ?array
+    {
+        return $this->panel()->available($service, $context);
+    }
+
+    public function readPanelSection(Service $service, string $section, array $input, ClientContext $context): PanelResult
+    {
+        return $this->panel()->read($service, $section, $input, $context);
+    }
+
+    public function runPanelAction(Service $service, string $section, string $action, array $input, ClientContext $context): PanelResult
+    {
+        return $this->panel()->run($service, $section, $action, $input, $context);
+    }
+
+    public function consoleSession(Service $service, ClientContext $context): ConsoleSession
+    {
+        return $this->panel()->consoleSession($service, $context);
+    }
+
+    public function resourceKinds(Product $product): array
+    {
+        return $this->totals()->kinds($product);
+    }
+
+    public function baseResources(Product $product, ?Server $server): array
+    {
+        return $this->totals()->base($product, $server);
+    }
+
+    public function resourceLimits(Service $service): array
+    {
+        return $this->totals()->limits($service);
+    }
+
+    public function applyResources(Service $service, ResourceExtras $extras): ModuleResult
+    {
+        return $this->totals()->apply($service, $extras);
+    }
+
+    public function checkResources(Service $service, ResourceExtras $extras): ResourceCheck
+    {
+        return $this->totals()->check($service, $extras);
+    }
+
+    /**
+     * The tabbed server panel. Core uses it for every module with panel sections.
+     */
     public function clientPanelView(): string
     {
-        return 'theme::client.services.vps-panel';
+        return 'theme::client.services.server-panel';
     }
 
+    /**
+     * The old client panel actions. Core maps the old panel route to the panel sections, so these
+     * are only for direct calls. VNC details are shown once in the console tab, never through them.
+     */
     public function clientActions(): array
     {
         return [
@@ -370,18 +425,41 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
             'hostname' => __('Change hostname'),
             'password' => __('Change root password'),
             'reinstall' => __('Reinstall OS'),
-            'vnc' => __('Show VNC details'),
         ];
     }
 
+    /**
+     * The first paint of the server panel: the VPS, its state and usage, and whether the client
+     * gets the "Open Virtualizor panel" button. The button is worked out first and on its own, so a
+     * failed status or VPS read never hides it. Only when both reads fail does the panel show that
+     * the server did not answer.
+     */
     public function clientPanel(Service $service): array
     {
+        $server = $service->server;
         $vpsId = $this->vpsId($service);
-        $info = $this->vpsInfo($service->server, $vpsId);
-        $status = (array) ($this->call($service->server, ['act' => 'vs', 'vs_status' => $vpsId])['status'][$vpsId] ?? []);
-        $state = $this->stateFrom($status['status'] ?? null);
-        // The panel's console replaces VNC details only when the sign-in button really shows.
-        $signIn = $this->signInPossible($service) && $this->mayOfferSignIn($service, $info);
+        $failed = null;
+
+        try {
+            $info = $this->admin()->vpsInfo($server, $vpsId);
+        } catch (RuntimeException $exception) {
+            $info = [];
+            $failed = $exception;
+        }
+
+        $login = $this->signIn()->offersSignIn($service, $info) ? __('Open Virtualizor panel') : null;
+
+        try {
+            $status = $this->admin()->vpsStatus($server, $vpsId);
+        } catch (RuntimeException $exception) {
+            if ($failed !== null) {
+                throw $failed;
+            }
+
+            $status = [];
+        }
+
+        $state = AdminApi::state($status['status'] ?? null);
 
         if ($state === 'unknown' && (int) ($info['suspended'] ?? 0) === 1) {
             $state = 'suspended';
@@ -393,7 +471,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
         return [
             'hostname' => $info['hostname'] ?? $service->domain,
             'os' => $info['os_name'] ?? null,
-            'ips' => $this->addresses($info !== [] ? $info : ['ips' => $this->moduleValue($service, 'ips', [])]),
+            'ips' => AdminApi::addresses($info !== [] ? $info : ['ips' => $this->moduleValue($service, 'ips', [])]),
             'state' => $state,
             'cpu' => isset($status['used_cpu']) && is_numeric($status['used_cpu']) ? (float) $status['used_cpu'] : null,
             'ram' => $live ? ['used' => (float) ($status['used_ram'] ?? 0), 'total' => (float) ($status['ram'] ?? $info['ram'] ?? 0), 'unit' => 'MB'] : null,
@@ -402,10 +480,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
             'network' => isset($status['net_in']) || isset($status['net_out'])
                 ? ['in' => max(0, (float) ($status['net_in'] ?? 0)), 'out' => max(0, (float) ($status['net_out'] ?? 0))]
                 : null,
-            'templates' => $this->templates($service->server, (string) ($info['virt'] ?? $this->productSetting($service, 'virt', 'kvm'))),
-            'recipe' => $this->productRecipe($service) !== null,
-            'login' => $signIn ? __('Open Virtualizor panel') : null,
-            'console' => $signIn ? 'panel' : 'vnc',
+            'login' => $login,
         ];
     }
 
@@ -416,10 +491,9 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     public function clientPanelState(Service $service): string
     {
         $vpsId = $this->vpsId($service);
-        $status = (array) ($this->call($service->server, ['act' => 'vs', 'vs_status' => $vpsId])['status'][$vpsId] ?? []);
-        $state = $this->stateFrom($status['status'] ?? null);
+        $state = AdminApi::state($this->admin()->vpsStatus($service->server, $vpsId)['status'] ?? null);
 
-        if ($state === 'unknown' && (int) ($this->vpsInfo($service->server, $vpsId)['suspended'] ?? 0) === 1) {
+        if ($state === 'unknown' && (int) ($this->admin()->vpsInfo($service->server, $vpsId)['suspended'] ?? 0) === 1) {
             $state = 'suspended';
         }
 
@@ -428,110 +502,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
 
     public function clientAction(Service $service, string $action, array $input): ModuleResult
     {
-        return match ($action) {
-            'start', 'stop', 'restart', 'poweroff' => $this->power($service, $action),
-            'hostname' => $this->changeHostname($service, (string) ($input['hostname'] ?? '')),
-            'password' => $this->changePassword($service, (string) ($input['password'] ?? '')),
-            'reinstall' => $this->reinstall($service, (string) ($input['os_id'] ?? ''), (string) ($input['password'] ?? ''), filter_var($input['run_recipe'] ?? false, FILTER_VALIDATE_BOOLEAN)),
-            'vnc' => $this->signInAvailable($service)
-                ? ModuleResult::fail(__('Open the Virtualizor panel to use the console in your browser.'))
-                : $this->vnc($service),
-            default => ModuleResult::fail(__('This action is not available.')),
-        };
-    }
-
-    /**
-     * Start, stop (a shutdown signal), restart or power off (a hard stop). The new state comes from
-     * Virtualizor's answer, so the panel can show it at once or wait for it.
-     */
-    private function power(Service $service, string $action): ModuleResult
-    {
-        return $this->attempt(function () use ($service, $action): ModuleResult {
-            $vpsId = $this->vpsId($service);
-            $response = $this->call($service->server, ['act' => 'vs', 'action' => $action, 'vpsid' => $vpsId]);
-
-            if (empty($response['done']) && empty($response['vsop'])) {
-                return ModuleResult::fail(__('Virtualizor did not confirm the action.'));
-            }
-
-            return ModuleResult::ok(match ($action) {
-                'start' => __('The VPS is starting.'),
-                'stop' => __('A shutdown signal was sent. The VPS stops once its system has shut down. If it does not stop, use Power off.'),
-                'restart' => __('The VPS is restarting.'),
-                default => __('The VPS is powered off.'),
-            }, ['pending' => $action, 'state' => $this->stateFrom($response['vsop']['status'][$vpsId] ?? null)]);
-        });
-    }
-
-    private function vnc(Service $service): ModuleResult
-    {
-        return $this->attempt(function () use ($service): ModuleResult {
-            $info = (array) ($this->call($service->server, ['act' => 'vnc'], ['novnc' => $this->vpsId($service)])['info'] ?? []);
-
-            return filled($info['port'] ?? null)
-                ? ModuleResult::ok(__('VNC details are shown below.'), ['vnc' => ['ip' => (string) ($info['ip'] ?? ''), 'port' => (string) $info['port'], 'password' => (string) ($info['password'] ?? '')]])
-                : ModuleResult::fail(__('VNC is not turned on for this VPS.'));
-        });
-    }
-
-    private function changeHostname(Service $service, string $hostname): ModuleResult
-    {
-        $hostname = strtolower(trim($hostname));
-
-        if (! preg_match('/^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/', $hostname)) {
-            return ModuleResult::fail(__('Enter a hostname like server.example.com.'));
-        }
-
-        return $this->simple($service, ['act' => 'managevps', 'vpsid' => $this->vpsId($service)], ['editvps' => 1, 'hostname' => $hostname], __('Hostname changed. It takes effect after a restart.'));
-    }
-
-    private function changePassword(Service $service, string $password): ModuleResult
-    {
-        if (! $this->strongPassword($password)) {
-            return ModuleResult::fail(__('Use at least 10 characters with letters and numbers.'));
-        }
-
-        $result = $this->simple($service, ['act' => 'managevps', 'vpsid' => $this->vpsId($service)], ['editvps' => 1, 'rootpass' => $password], __('Root password changed. It takes effect after a restart.'));
-
-        if ($result->success) {
-            $service->update(['password' => $password]);
-        }
-
-        return $result;
-    }
-
-    private function reinstall(Service $service, string $osId, string $password, bool $runRecipe): ModuleResult
-    {
-        if (! array_key_exists($osId, $this->templates($service->server, (string) $this->productSetting($service, 'virt', 'kvm')))) {
-            return ModuleResult::fail(__('Choose an operating system from the list.'));
-        }
-
-        if (! $this->strongPassword($password)) {
-            return ModuleResult::fail(__('Use at least 10 characters with letters and numbers.'));
-        }
-
-        // Only the product's own recipe, set by staff, can run again.
-        $recipe = $runRecipe ? $this->productRecipe($service) : null;
-
-        $result = $this->simple($service, ['act' => 'rebuild'], array_filter([
-            'vpsid' => $this->vpsId($service),
-            'osid' => $osId,
-            'newpass' => $password,
-            'conf' => $password,
-            'reos' => 1,
-            'recipe' => $recipe,
-        ], fn (mixed $value): bool => $value !== null), __('The reinstall has started. All data on the VPS is being erased.'));
-
-        if ($result->success) {
-            $service->update(['password' => $password]);
-        }
-
-        return $result;
-    }
-
-    private function strongPassword(string $password): bool
-    {
-        return strlen($password) >= 10 && preg_match('/[a-z]/i', $password) && preg_match('/\d/', $password);
+        return $this->panel()->clientAction($service, $action, $input);
     }
 
     /**
@@ -594,18 +565,6 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     }
 
     /**
-     * The product's recipe, or null when it has none or an invalid one.
-     */
-    private function productRecipe(Service $service): ?int
-    {
-        try {
-            return $this->productNumber($service, 'recipe_id', 1, 'Recipe ID');
-        } catch (RuntimeException) {
-            return null;
-        }
-    }
-
-    /**
      * The hostname for a VPS that gets a control panel: the order's own domain, which must be a
      * real server name. cPanel has stricter rules.
      */
@@ -635,176 +594,15 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     }
 
     /**
-     * The extra resources the service's add-ons give under its product's policy, with the totals
-     * to set on the VPS. Null when there are none: a service without add-ons, without a policy or
-     * with only other add-ons works as before. Throws when the extras cannot be worked out safely.
-     *
-     * @return array{totals: array<string, int>, addons: list<int>, pool: int|null}|null
-     */
-    private function resources(Service $service, bool $forCreate): ?array
-    {
-        $record = ResourceAddons::record($service);
-
-        if ($record === null && ! $service->addons()->where('status', ServiceAddon::STATUS_ACTIVE)->exists()) {
-            return null;
-        }
-
-        $policy = ResourceAddons::policy($service);
-        $extras = $policy === null ? ['add' => [], 'addons' => [], 'rows' => []] : ResourceAddons::extras($service, $policy);
-
-        // On a plan change, add-ons that gave this VPS extras when it was made must still count.
-        if (! $forCreate && $record !== null && $record['state'] === ResourceAddons::VERIFIED) {
-            $active = $service->addons()->where('status', ServiceAddon::STATUS_ACTIVE)->pluck('product_addon_id')->map(fn (mixed $id): int => (int) $id)->all();
-
-            if (array_diff(array_intersect($record['addons'], $active), $extras['addons']) !== []) {
-                throw new RuntimeException(__('This VPS has extra resources from add-ons that the new plan\'s add-on policy does not cover, so the plan was not applied on the server. Set its resources in Virtualizor by hand.'));
-            }
-        }
-
-        if ($policy === null || $extras['add'] === []) {
-            return null;
-        }
-
-        if ($policy['server_id'] !== null && $policy['server_id'] !== (int) $service->server_id) {
-            throw new RuntimeException(__('The resource add-on policy of this product is for another server, so nothing was changed. Check the product.'));
-        }
-
-        if ($policy['plan_id'] !== null && $policy['plan_id'] !== (int) $this->productSetting($service, 'plan_id', 0)) {
-            throw new RuntimeException(__('The resource add-on policy of this product names another plan than the product, so nothing was changed. Check the product.'));
-        }
-
-        if ($forCreate) {
-            ResourceAddons::assertPaid($service, $extras['rows']);
-        }
-
-        return ['totals' => $this->resourceTotals($service, $policy, $extras['add']), 'addons' => $extras['addons'], 'pool' => $policy['public_pool_id']];
-    }
-
-    /**
-     * The totals for the resources that add-ons raise: the product's base plus the extras. The
-     * base comes from the policy, the product settings or the Virtualizor plan, in that order.
-     *
-     * @param  array<string, mixed>  $policy
-     * @param  array<string, int>  $add
-     * @return array<string, int>
-     */
-    private function resourceTotals(Service $service, array $policy, array $add): array
-    {
-        $planId = (int) $this->productSetting($service, 'plan_id', 0);
-        $plan = null;
-
-        // A policy that lists the plan's base or an IP pool is checked against the live plan.
-        if ($planId > 0 && ($policy['base'] !== [] || $policy['public_pool_id'] !== null)) {
-            $plan = $this->plan($service->server, $planId);
-            $this->checkPlan($service, $policy, $plan);
-        }
-
-        $totals = [];
-
-        foreach ($add as $field => $extra) {
-            $base = $policy['base'][$field] ?? $this->productBase($service, $field);
-
-            if ($base === null && $planId > 0) {
-                $plan ??= $this->plan($service->server, $planId);
-                $value = filter_var($plan[self::RESOURCE_FIELDS[$field]] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-                $base = $value === false ? null : $value;
-            }
-
-            if ($base === null) {
-                throw new RuntimeException(__('The base :resource of this product is not known, so the add-on extras cannot be added. Set it in the product\'s add-on policy ("base"). Nothing was changed.', ['resource' => $this->resourceName($field)]));
-            }
-
-            $totals[$field] = $base + $extra;
-
-            if ($totals[$field] > $policy['max'][$field]) {
-                throw new RuntimeException(__('With its add-ons this VPS would get more :resource than the product\'s add-on policy allows ("max"). Nothing was changed.', ['resource' => $this->resourceName($field)]));
-            }
-        }
-
-        return $totals;
-    }
-
-    /**
-     * The base of a resource from the product settings, or null when the plan sets it.
-     */
-    private function productBase(Service $service, string $field): ?int
-    {
-        if ($field === 'num_ips') {
-            return (int) $this->productSetting($service, 'num_ips', 1) ?: 1;
-        }
-
-        $value = (int) $this->productSetting($service, $field, 0);
-
-        return $value > 0 ? $value : null;
-    }
-
-    /**
-     * @param  array<string, mixed>  $policy
-     * @param  array<string, mixed>  $plan
-     */
-    private function checkPlan(Service $service, array $policy, array $plan): void
-    {
-        $virt = (string) $this->productSetting($service, 'virt', '');
-
-        if ($virt !== '' && isset($plan['virt']) && (string) $plan['virt'] !== $virt) {
-            throw new RuntimeException(__('The Virtualizor plan is for another virtualization type than the product, so nothing was changed. Check the product.'));
-        }
-
-        foreach ($policy['base'] as $field => $value) {
-            if (filter_var($plan[self::RESOURCE_FIELDS[$field]] ?? null, FILTER_VALIDATE_INT) !== $value) {
-                throw new RuntimeException(__('The Virtualizor plan no longer matches the base in the product\'s add-on policy. Update one of them; nothing was changed.'));
-            }
-        }
-
-        if ($policy['public_pool_id'] !== null && $this->poolIds($plan['ippoolid'] ?? null) !== [$policy['public_pool_id']]) {
-            throw new RuntimeException(__('The Virtualizor plan does not use exactly the IP pool in the product\'s add-on policy, so nothing was changed.'));
-        }
-    }
-
-    /**
-     * IP pool IDs from a plan. Virtualizor keeps them as a PHP-serialized list; they are read with a
-     * pattern, never unserialized.
-     *
-     * @return list<int>
-     */
-    private function poolIds(mixed $value): array
-    {
-        if (is_string($value) && preg_match('/\Aa:\d+:\{(.*)\}\z/s', $value, $match)) {
-            preg_match_all('/i:\d+;(?:i:(\d+)|s:\d+:"(\d+)");/', $match[1], $pairs, PREG_SET_ORDER);
-            $value = array_map(fn (array $pair): string => $pair[2] ?? $pair[1], $pairs);
-        } elseif (is_string($value) || is_int($value)) {
-            $value = [$value];
-        }
-
-        return array_values(array_map('intval', array_filter((array) $value, fn (mixed $id): bool => (is_int($id) || is_string($id)) && ctype_digit((string) $id) && (int) $id > 0)));
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function plan(Server $server, int $planId): array
-    {
-        $plan = $this->call($server, ['act' => 'plans', 'reslen' => 500])['plans'][$planId] ?? null;
-
-        if (! is_array($plan) || (int) ($plan['plid'] ?? $planId) !== $planId) {
-            throw new RuntimeException(__('Virtualizor did not list plan :id, so the add-on extras cannot be worked out. Nothing was changed.', ['id' => $planId]));
-        }
-
-        return $plan;
-    }
-
-    /**
-     * Create a VPS with add-on extras. The request is noted before it is sent, so a request without
-     * a clear answer is never sent again: the next try looks for the VPS it may have made.
+     * Create a VPS with extras. The request is noted before it is sent, so a request without a
+     * clear answer is never sent again: the next try looks for the VPS it may have made.
      *
      * @param  array<string, mixed>  $post
-     * @param  array{totals: array<string, int>, addons: list<int>, pool: int|null}  $resources
+     * @param  array{totals: array<string, int>, pool: int|null}  $resources  From ResourceTotals; everything besides the totals goes into the note.
      */
     private function createWithResources(Service $service, array $post, array $resources, string $hostname, string $rootPassword): ModuleResult
     {
-        foreach ($resources['totals'] as $field => $total) {
-            $post[$field === 'disk' ? 'space' : $field] = $field === 'disk' ? [['size' => $total]] : $total;
-        }
+        $post = $this->totals()->createFields($resources['totals']) + $post;
 
         // The root password stays encrypted in the note until the VPS is checked, so a pending
         // service never shows it. The email is the one Virtualizor files the VPS under.
@@ -814,16 +612,13 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
             'server_id' => (int) $service->server_id,
             'hostname' => $hostname,
             'email' => strtolower((string) $post['user_email']),
-            'totals' => $resources['totals'],
-            'addons' => $resources['addons'],
-            'pool' => $resources['pool'],
             'requested_at' => now()->getTimestamp(),
-        ], $rootPassword);
+        ] + $resources, $rootPassword);
 
         try {
-            $response = $this->call($service->server, ['act' => 'addvs'], $post, timeout: 180);
+            $response = $this->admin()->call($service->server, ['act' => 'addvs'], $post, timeout: 180);
         } catch (RuntimeException $exception) {
-            if ($exception->getCode() === self::REFUSED) {
+            if ($exception->getCode() === AdminApi::REFUSED) {
                 ResourceAddons::forget($service);
 
                 return ModuleResult::fail(__('Virtualizor refused to create the VPS, so none was made. Check the plan, the OS template and free IP addresses in Virtualizor, then try again.'));
@@ -864,7 +659,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
         $reslen = 50;
         $listed = [];
 
-        foreach ((array) ($this->call($service->server, ['act' => 'vs', 'search' => 1, 'vpshostname' => $hostname, 'page' => 1, 'reslen' => $reslen])['vs'] ?? []) as $key => $vps) {
+        foreach ((array) ($this->admin()->call($service->server, ['act' => 'vs', 'search' => 1, 'vpshostname' => $hostname, 'page' => 1, 'reslen' => $reslen])['vs'] ?? []) as $key => $vps) {
             $vpsId = is_array($vps) ? (string) ($vps['vpsid'] ?? $key) : '';
 
             if (! ctype_digit($vpsId)) {
@@ -928,8 +723,9 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     }
 
     /**
-     * Check a VPS made with add-on extras before the service is activated: its name, resources and
-     * IP addresses must match what was paid. A VPS that does not match stays pending for staff.
+     * Check a VPS made with extras before the service is activated: its name, resources and IP
+     * addresses must match what was paid (ResourceTotals). A VPS that does not match stays pending
+     * for staff.
      *
      * @param  array<string, mixed>  $record
      */
@@ -938,17 +734,8 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
         $vpsId = (string) $record['vpsid'];
 
         try {
-            $info = $this->vpsInfo($service->server, $vpsId);
-            $problems = $this->mismatches($service, $record, $info);
-
-            if ($problems === [] && $record['pool'] !== null) {
-                foreach ($this->addresses($info, FILTER_FLAG_IPV4) as $ip) {
-                    if (! $this->inPool($service->server, $ip, $vpsId, (int) $record['pool'])) {
-                        $problems[] = __('IP pool');
-                        break;
-                    }
-                }
-            }
+            $info = $this->admin()->vpsInfo($service->server, $vpsId);
+            $problems = $this->totals()->problems($service, $record, $info);
         } catch (RuntimeException) {
             return ModuleResult::fail(__('VPS #:id was made but could not be checked yet. Try again; no second VPS is made. If you cancel the order instead, delete VPS #:id in Virtualizor.', ['id' => $vpsId]));
         }
@@ -957,7 +744,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
             return ModuleResult::fail(__('VPS #:id does not match the paid add-on resources (:problems). It stays pending: fix it in Virtualizor, then try again. No second VPS is made. If you cancel the order instead, delete VPS #:id in Virtualizor.', ['id' => $vpsId, 'problems' => implode(', ', $problems)]));
         }
 
-        $uid = $this->userId($info['uid'] ?? null);
+        $uid = AdminApi::userId($info['uid'] ?? null);
         // Notes from before 1.1.0 left the root password on the service itself.
         $password = ResourceAddons::password($service) ?? (filled($service->password) ? (string) $service->password : null);
         ResourceAddons::remember($service, ['state' => ResourceAddons::VERIFIED] + $record);
@@ -965,424 +752,8 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
         return ModuleResult::ok(__('VPS #:id created with its add-on resources.', ['id' => $vpsId]), array_filter([
             'username' => 'root',
             'password' => $password,
-            'module_data' => array_filter(['vpsid' => $vpsId, 'ips' => $this->addresses($info), 'uid' => $uid], fn (mixed $value): bool => $value !== null),
+            'module_data' => array_filter(['vpsid' => $vpsId, 'ips' => AdminApi::addresses($info), 'uid' => $uid], fn (mixed $value): bool => $value !== null),
         ], fn (mixed $value): bool => $value !== null));
-    }
-
-    /**
-     * What on the VPS differs from the record, as names for staff.
-     *
-     * @param  array<string, mixed>  $record
-     * @param  array<string, mixed>  $info
-     * @return list<string>
-     */
-    private function mismatches(Service $service, array $record, array $info): array
-    {
-        if ($info === []) {
-            return [__('VPS not found')];
-        }
-
-        $problems = [];
-
-        if (filled($record['hostname'] ?? null) && strtolower((string) ($info['hostname'] ?? '')) !== strtolower((string) $record['hostname'])) {
-            $problems[] = __('hostname');
-        }
-
-        $virt = (string) $this->productSetting($service, 'virt', '');
-
-        if ($virt !== '' && isset($info['virt']) && (string) $info['virt'] !== $virt) {
-            $problems[] = __('virtualization');
-        }
-
-        foreach ((array) $record['totals'] as $field => $total) {
-            if (array_key_exists($field, self::RESOURCE_FIELDS) && $this->resourceOf($info, $field) !== (float) $total) {
-                $problems[] = $this->resourceName($field);
-            }
-        }
-
-        return $problems;
-    }
-
-    /**
-     * @param  array<string, mixed>  $info
-     */
-    private function resourceOf(array $info, string $field): ?float
-    {
-        if ($field === 'num_ips') {
-            return (float) count($this->addresses($info, FILTER_FLAG_IPV4));
-        }
-
-        $value = $info[self::RESOURCE_FIELDS[$field]] ?? null;
-
-        return is_numeric($value) ? (float) $value : null;
-    }
-
-    private function resourceName(string $field): string
-    {
-        return match ($field) {
-            'cores' => __('CPU cores'),
-            'ram' => __('RAM'),
-            'disk' => __('disk space'),
-            'num_ips' => __('IPv4 addresses'),
-            default => __('bandwidth'),
-        };
-    }
-
-    /**
-     * Whether Virtualizor's IP list shows the address as this VPS's public IPv4 from the pool.
-     */
-    private function inPool(Server $server, string $ip, string $vpsId, int $pool): bool
-    {
-        $rows = array_values(array_filter((array) ($this->call($server, ['act' => 'ips', 'ipsearch' => $ip, 'ippid' => $pool, 'page' => 1, 'reslen' => 50])['ips'] ?? []), fn (mixed $row): bool => is_array($row) && ($row['ip'] ?? null) === $ip));
-
-        return count($rows) === 1
-            && (int) ($rows[0]['ippid'] ?? 0) === $pool
-            && (string) ($rows[0]['vpsid'] ?? '') === $vpsId
-            && (int) ($rows[0]['ipv6'] ?? 1) === 0
-            && (int) ($rows[0]['internal'] ?? 1) === 0
-            && (int) ($rows[0]['nat'] ?? 1) === 0;
-    }
-
-    /**
-     * Apply the new plan, then set the add-on extras on top again and check the result.
-     *
-     * @param  array<string, int>  $totals
-     */
-    private function changePackageWithResources(Service $service, int $planId, array $totals): ModuleResult
-    {
-        $server = $service->server;
-        $vpsId = $this->vpsId($service);
-        $before = $this->vpsInfo($server, $vpsId);
-        $response = $this->call($server, ['act' => 'managevps', 'vpsid' => $vpsId], ['editvps' => 1, 'plid' => $planId, 'apply_plan' => 1]);
-
-        if (empty($response['done']) && empty($response['vs_info'])) {
-            return ModuleResult::fail(__('Virtualizor did not confirm the action.'));
-        }
-
-        try {
-            $after = $this->vpsInfo($server, $vpsId);
-            [$post, $problems] = $this->resourceEdits($totals, $before, $after, (array) ($response['vs_info']['disks'] ?? []));
-
-            if ($post !== []) {
-                $this->call($server, ['act' => 'managevps', 'vpsid' => $vpsId], ['editvps' => 1] + $post);
-                $after = $this->vpsInfo($server, $vpsId);
-            }
-
-            $problems = array_values(array_unique([...$problems, ...$this->mismatches($service, ['totals' => $totals], $after)]));
-        } catch (RuntimeException) {
-            $problems = [__('no clear answer from Virtualizor')];
-        }
-
-        if ($problems === []) {
-            return ModuleResult::ok(__('Plan applied to the VPS, with its add-on extras.'));
-        }
-
-        return ModuleResult::fail(__('The new plan is applied, but its add-on extras could not all be set again (:problems). Set them in Virtualizor by hand: :totals.', [
-            'problems' => implode(', ', $problems),
-            'totals' => collect($totals)->map(fn (int $total, string $field): string => $this->resourceName($field).' '.$total)->implode(', '),
-        ]));
-    }
-
-    /**
-     * The changes that bring the VPS back to the totals, and what cannot be set safely.
-     *
-     * @param  array<string, int>  $totals
-     * @param  array<string, mixed>  $before
-     * @param  array<string, mixed>  $after
-     * @param  array<int|string, mixed>  $disks
-     * @return array{0: array<string, mixed>, 1: list<string>}
-     */
-    private function resourceEdits(array $totals, array $before, array $after, array $disks): array
-    {
-        $post = [];
-        $problems = [];
-
-        foreach ($totals as $field => $total) {
-            if ($this->resourceOf($after, $field) === (float) $total) {
-                continue;
-            }
-
-            if ($field === 'num_ips') {
-                // Keep the addresses the VPS had, so clients do not get new ones.
-                $kept = array_slice($this->addresses($before, FILTER_FLAG_IPV4), 0, $total);
-                $post['num_ips'] = $total;
-
-                if (count($kept) === $total) {
-                    $post['ips'] = $kept;
-                }
-            } elseif ($field === 'disk') {
-                $disks = array_values(array_filter($disks, 'is_array'));
-
-                if (count($disks) !== 1 || blank($disks[0]['st_uuid'] ?? null)) {
-                    $problems[] = $this->resourceName('disk');
-
-                    continue;
-                }
-
-                $post['space'] = [array_filter(['size' => $total, 'st_uuid' => (string) $disks[0]['st_uuid'], 'disk_uuid' => isset($disks[0]['disk_uuid']) ? (string) $disks[0]['disk_uuid'] : null], fn (mixed $value): bool => $value !== null)];
-            } else {
-                $post[$field] = $total;
-            }
-        }
-
-        return [$post, $problems];
-    }
-
-    /**
-     * Whether the Virtualizor user behind the VPS has only this client's VPS on this server, so a
-     * panel sign-in shows nothing else. Checked live on every click; a refusal is logged for staff.
-     * Services from before 1.1.0 have no stored user yet: it is stored once the check passes.
-     */
-    private function ownedByClient(Service $service, string $vpsId): bool
-    {
-        $server = $service->server;
-        $info = $this->vpsInfo($server, $vpsId);
-        $uid = $this->userId($info['uid'] ?? null);
-        $stored = $this->userId($this->moduleValue($service, 'uid'));
-        $refuse = function (string $reason) use ($service): bool {
-            Activity::log('service.panel_login_refused', "Panel sign-in for service #{$service->id} ({$service->label()}) refused: {$reason}", $service);
-
-            return false;
-        };
-
-        if ($uid === null) {
-            return $refuse('Virtualizor did not list the VPS with its user.');
-        }
-
-        if ((int) ($info['suspended'] ?? 0) !== 0) {
-            return $refuse('the VPS is suspended in Virtualizor.');
-        }
-
-        if ($stored !== null && $stored !== $uid) {
-            return $refuse("the VPS now belongs to Virtualizor user {$uid}, not {$stored}.");
-        }
-
-        $user = $this->call($server, ['act' => 'users', 'uid' => $uid], ['uid' => $uid])['users'][$uid] ?? null;
-        $count = is_array($user) ? filter_var($user['numvps'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
-
-        if (! is_array($user) || $this->userId($user['uid'] ?? null) !== $uid || (string) ($user['type'] ?? '') !== '0' || $count === false) {
-            return $refuse("Virtualizor user {$uid} is not a normal end user with a known number of VPS.");
-        }
-
-        // The user's VPS, listed one by one: the list must hold this VPS and agree with the count.
-        $listed = $this->userVps($server, $user, $uid);
-
-        if ($listed === null || ! in_array($vpsId, $listed, true) || count($listed) !== $count) {
-            return $refuse("Virtualizor's list of the VPS of user {$uid} could not be checked or does not match its VPS count.");
-        }
-
-        // Every VPS of that user must be one of this client's live VPS on this server.
-        $own = Service::query()
-            ->where('client_id', $service->client_id)
-            ->where('server_id', $server->id)
-            ->whereIn('status', [ServiceStatus::Active, ServiceStatus::Suspended])
-            ->whereHas('product', fn ($query) => $query->where('server_module', $this->slug()))
-            ->get()
-            ->map(fn (Service $other): string => (string) ($other->module_data['vpsid'] ?? ''))
-            ->filter(fn (string $id): bool => ctype_digit($id))
-            ->push($vpsId)
-            ->all();
-
-        if (array_diff($listed, $own) !== []) {
-            return $refuse("Virtualizor user {$uid} has VPS that are not this client's.");
-        }
-
-        if ($stored === null) {
-            $service->forceFill(['module_data' => array_merge((array) $service->module_data, ['uid' => $uid])])->save();
-        }
-
-        return true;
-    }
-
-    /**
-     * The IDs of all VPS of a Virtualizor user: searched by the user's email and, when that finds
-     * none, by the user ID. Null when the list cannot be trusted: a VPS of another user or without
-     * its user is in it (the search did not work), or it may be cut short.
-     *
-     * @param  array<string, mixed>  $user
-     * @return list<string>|null
-     */
-    private function userVps(Server $server, array $user, string $uid): ?array
-    {
-        $email = is_string($user['email'] ?? null) && filter_var($user['email'], FILTER_VALIDATE_EMAIL) !== false ? $user['email'] : null;
-
-        foreach (array_filter([$email, $uid]) as $search) {
-            $rows = (array) ($this->call($server, ['act' => 'vs', 'search' => 1, 'user' => $search, 'page' => 1, 'reslen' => self::USER_VPS_LIMIT])['vs'] ?? []);
-
-            if ($rows === []) {
-                continue;
-            }
-
-            if (count($rows) >= self::USER_VPS_LIMIT) {
-                return null;
-            }
-
-            $ids = [];
-
-            foreach ($rows as $key => $row) {
-                $id = is_array($row) ? (string) ($row['vpsid'] ?? $key) : '';
-
-                if (! ctype_digit($id) || $this->userId($row['uid'] ?? null) !== $uid) {
-                    return null;
-                }
-
-                $ids[] = $id;
-            }
-
-            return array_values(array_unique($ids));
-        }
-
-        return [];
-    }
-
-    /**
-     * A quick check for showing the sign-in button; the full check runs on the click.
-     *
-     * @param  array<string, mixed>  $info
-     */
-    private function mayOfferSignIn(Service $service, array $info): bool
-    {
-        $stored = $this->userId($this->moduleValue($service, 'uid'));
-        $uid = $this->userId($info['uid'] ?? null);
-
-        return $uid !== null
-            && (int) ($info['suspended'] ?? 0) === 0
-            && ($stored === null || $stored === $uid);
-    }
-
-    private function signInEnabled(Service $service): bool
-    {
-        return (string) $this->productSetting($service, 'client_login', '') === '1';
-    }
-
-    /**
-     * Whether panel sign-in can work at all, before asking Virtualizor: it is on for the product,
-     * the server uses SSL and has its API password, and the panel port is an end-user port.
-     */
-    private function signInPossible(Service $service): bool
-    {
-        $server = $service->server;
-
-        return $this->signInEnabled($service)
-            && $server !== null
-            && $server->use_ssl === true
-            && filled($server->password)
-            && $this->panelPort($service) !== null;
-    }
-
-    /**
-     * Whether the client can open the panel now, so its console replaces the VNC details.
-     */
-    private function signInAvailable(Service $service): bool
-    {
-        if (! $this->signInPossible($service)) {
-            return false;
-        }
-
-        try {
-            return $this->mayOfferSignIn($service, $this->vpsInfo($service->server, $this->vpsId($service)));
-        } catch (RuntimeException) {
-            return false;
-        }
-    }
-
-    /**
-     * The end-user panel port, or null when the product sets an invalid one or a port of the admin
-     * panel or the API: a sign-in there could open Virtualizor's admin panel. Staff see why once a day.
-     */
-    private function panelPort(Service $service): ?int
-    {
-        $value = $this->productSetting($service, 'panel_port');
-
-        if ($value === null || (is_string($value) && trim($value) === '')) {
-            $port = self::PANEL_PORT;
-        } else {
-            $port = is_int($value) || is_string($value) ? filter_var(trim((string) $value), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]) : false;
-
-            if ($port === false) {
-                return null;
-            }
-        }
-
-        if (in_array($port, self::NOT_PANEL_PORTS, true) || $port === (int) ($service->server?->port ?: $this->defaultPort())) {
-            if (Cache::add('nuvabill.virtualizor.admin-panel-port.'.$service->product_id.'.'.$port, true, 86400)) {
-                Activity::log('service.module_failed', "Client panel sign-in is off for the product of service #{$service->id} ({$service->label()}): its client panel port {$port} is an admin or API port of Virtualizor. Set Virtualizor's end-user port (4083) as the client panel port.", $service);
-            }
-
-            return null;
-        }
-
-        return $port;
-    }
-
-    private function userId(mixed $value): ?string
-    {
-        return (is_int($value) || is_string($value)) && preg_match('/\A[1-9][0-9]{0,18}\z/', (string) $value) ? (string) $value : null;
-    }
-
-    /**
-     * One VPS from Virtualizor's list, found by its ID, or an empty array when it is not listed.
-     *
-     * @return array<string, mixed>
-     */
-    private function vpsInfo(Server $server, string $vpsId): array
-    {
-        $info = $this->call($server, ['act' => 'vs', 'search' => 1, 'vpsid' => $vpsId, 'page' => 1, 'reslen' => 1])['vs'][$vpsId] ?? null;
-
-        return is_array($info) && (string) ($info['vpsid'] ?? $vpsId) === $vpsId ? $info : [];
-    }
-
-    /**
-     * The VPS's IP addresses, IPv4 first, or only one kind with a FILTER_FLAG_IPV4/IPV6 flag.
-     *
-     * @param  array<string, mixed>  $info
-     * @return list<string>
-     */
-    private function addresses(array $info, int $flag = 0): array
-    {
-        $all = array_filter([...array_values((array) ($info['ips'] ?? [])), ...array_values((array) ($info['ips6'] ?? []))], 'is_string');
-        $v4 = array_filter($all, fn (string $ip): bool => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false);
-        $v6 = array_filter($all, fn (string $ip): bool => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false);
-
-        return array_values(array_unique(match ($flag) {
-            FILTER_FLAG_IPV4 => $v4,
-            FILTER_FLAG_IPV6 => $v6,
-            default => [...$v4, ...$v6],
-        }));
-    }
-
-    private function stateFrom(mixed $status): string
-    {
-        return match (is_numeric($status) ? (int) $status : null) {
-            1 => 'running',
-            0 => 'stopped',
-            2 => 'suspended',
-            default => 'unknown',
-        };
-    }
-
-    /**
-     * OS templates for the virtualization type, as ID => name. Kept for an hour.
-     *
-     * @return array<string, string>
-     */
-    private function templates(Server $server, string $virt): array
-    {
-        return Cache::remember('nuvabill.virtualizor.templates.'.$server->id.'.'.$virt, 3600, function () use ($server, $virt): array {
-            $templates = [];
-
-            foreach ((array) ($this->call($server, ['act' => 'ostemplates'])['ostemplates'] ?? []) as $id => $template) {
-                $template = (array) $template;
-
-                if (($template['type'] ?? $virt) === $virt) {
-                    $templates[(string) ($template['osid'] ?? $id)] = (string) ($template['name'] ?? $template['filename'] ?? $id);
-                }
-            }
-
-            asort($templates);
-
-            return $templates;
-        });
     }
 
     /**
@@ -1392,7 +763,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     private function simple(Service $service, array $query, array $post, string $message): ModuleResult
     {
         return $this->attempt(function () use ($service, $query, $post, $message): ModuleResult {
-            $response = $this->call($service->server, $query, $post);
+            $response = $this->admin()->call($service->server, $query, $post);
 
             return empty($response['done']) && empty($response['vsop']) && empty($response['vs_info'])
                 ? ModuleResult::fail(__('Virtualizor did not confirm the action.'))
@@ -1402,13 +773,7 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
 
     private function vpsId(Service $service): string
     {
-        $id = (string) $this->moduleValue($service, 'vpsid', '');
-
-        if (! ctype_digit($id)) {
-            throw new RuntimeException(__('This service has no Virtualizor VPS ID yet.'));
-        }
-
-        return $id;
+        return AdminApi::vpsId($service);
     }
 
     private function hostnameFor(Service $service): string
@@ -1436,98 +801,42 @@ class VirtualizorModule extends Module implements HasClientPanel, HasPanelState,
     }
 
     /**
-     * The address of the server's API or end-user panel, from the server's own hostname only.
+     * The Admin API client of this module.
      */
-    private function baseUrl(Server $server, int $port, bool $https): string
+    private function admin(): AdminApi
     {
-        $host = strtolower(trim((string) $server->hostname));
-        $ip = filter_var($host, FILTER_VALIDATE_IP) !== false;
-
-        if (! $ip && filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
-            throw new RuntimeException(__('Check the hostname of the Virtualizor server.'));
-        }
-
-        return ($https ? 'https' : 'http').'://'.($ip && str_contains($host, ':') ? '['.$host.']' : $host).':'.$port;
+        return $this->adminApi ??= new AdminApi;
     }
 
     /**
-     * One Admin API call. The key and password go in the query string, as Virtualizor's own SDK
-     * sends them, so they never go into a message: a failed connection names only the host, and
-     * an error from Virtualizor is cleaned of them. Plain HTTP only when the server has SSL off.
-     *
-     * @param  array<string, mixed>  $query
-     * @param  array<string, mixed>  $post
-     * @return array<string, mixed>
+     * The end-user panel client of this module.
      */
-    private function call(?Server $server, array $query, array $post = [], int $timeout = 30): array
+    private function enduser(): EnduserApi
     {
-        if ($server === null) {
-            throw new RuntimeException(__('No server is assigned.'));
-        }
-
-        $url = $this->baseUrl($server, (int) ($server->port ?: $this->defaultPort()), $server->use_ssl !== false).'/index.php';
-        $query += ['api' => 'json', 'adminapikey' => (string) $server->api_token, 'adminapipass' => (string) $server->password];
-
-        try {
-            $request = Http::timeout($timeout)->acceptJson()->asForm()->withoutRedirecting();
-            $response = $post === [] ? $request->get($url, $query) : $request->post($url.'?'.http_build_query($query), $post);
-        } catch (Throwable) {
-            throw new RuntimeException(__('Could not connect to :host.', ['host' => $server->hostname]));
-        }
-
-        return $this->answer($server, $response->json(), $response->status());
+        return $this->enduserApi ??= new EnduserApi($this->admin());
     }
 
     /**
-     * One call to the end-user panel, signed with the admin API password the way Virtualizor's SDK
-     * does it for admins: a random prefix and a hash, so the password itself is never sent.
-     *
-     * @param  array<string, mixed>  $query
-     * @return array<string, mixed>
+     * Sign-in and the staff access tools.
      */
-    private function panelCall(Server $server, int $port, array $query): array
+    private function signIn(): SignIn
     {
-        $salt = strtolower(Str::random(8));
-        $query += ['api' => 'json', 'apikey' => $salt.md5((string) $server->password.$salt)];
-
-        try {
-            $response = Http::timeout(20)->acceptJson()->withoutRedirecting()->get($this->baseUrl($server, $port, true).'/index.php', $query);
-        } catch (Throwable) {
-            throw new RuntimeException(__('Could not connect to :host.', ['host' => $server->hostname]));
-        }
-
-        return $this->answer($server, $response->json(), $response->status());
+        return $this->signInHelper ??= new SignIn($this->admin(), $this->enduser(), $this->slug());
     }
 
     /**
-     * @return array<string, mixed>
+     * The client server panel and console.
      */
-    private function answer(Server $server, mixed $data, int $status): array
+    private function panel(): Panel
     {
-        if (! is_array($data)) {
-            throw new RuntimeException(__('Virtualizor returned HTTP :status. Check the API key, password and allowed IPs.', ['status' => $status]));
-        }
-
-        if (! empty($data['error'])) {
-            $errors = array_filter(Arr::flatten((array) $data['error']), fn (mixed $error): bool => is_scalar($error));
-
-            throw new RuntimeException('Virtualizor: '.$this->clean($server, implode(' ', array_map('strval', $errors))), self::REFUSED);
-        }
-
-        return $data;
+        return $this->panelHelper ??= new Panel($this->admin(), $this->enduser(), $this->signIn());
     }
 
     /**
-     * A message from Virtualizor, without the API key or password, tags or line breaks.
+     * Extra resources on top of the plan.
      */
-    private function clean(Server $server, string $message): string
+    private function totals(): ResourceTotals
     {
-        foreach (array_filter([(string) $server->api_token, (string) $server->password], fn (string $secret): bool => strlen($secret) >= 4) as $secret) {
-            $message = str_ireplace([$secret, rawurlencode($secret), urlencode($secret)], '[hidden]', $message);
-        }
-
-        $message = (string) preg_replace('/\b(adminapikey|adminapipass|apikey|apipass)=[^&\s]*/i', '$1=[hidden]', $message);
-
-        return Str::limit(trim((string) preg_replace('/\s+/', ' ', strip_tags($message))), 300);
+        return $this->resourceTotals ??= new ResourceTotals($this->admin());
     }
 }
