@@ -422,6 +422,12 @@ export function resourceSlider(option, config = {}) {
  * the server for a quote, 250 ms after the last move, ignores answers to older questions, and keeps
  * "expected" from the last good quote for the form that confirms the change.
  *
+ * On a service's card it can also:
+ * - skip the question while the sliders are back at what the service has ("initial");
+ * - post staff fields with the steps ("fields", such as a renewal price per kind; refresh() asks again);
+ * - follow the server while it takes the last change ("status": the JSON of
+ *   client.services.resources), every 10 seconds for at most 10 minutes.
+ *
  * @param {{
  *   url?: string,
  *   csrf?: string,
@@ -430,6 +436,9 @@ export function resourceSlider(option, config = {}) {
  *   locale?: string,
  *   expected?: number|null,
  *   delay?: number,
+ *   initial?: Object<string, number>,
+ *   fields?: Object<string, *>,
+ *   status?: {url: string, state: string, text?: string, every?: number, limit?: number},
  *   text?: Object<string, *>,
  * }} config
  * @returns {Object}
@@ -449,9 +458,21 @@ export function resourceQuote(config = {}) {
         expected: config.expected ?? null,
         timer: null,
         asked: 0,
+        fields: config.fields ?? {},
+        serverState: config.status?.state ?? 'none',
+        serverText: config.status?.text ?? '',
+        polls: 0,
+        pollTimer: null,
+
+        init() {
+            if (config.status?.url && this.serverState === 'working') {
+                this.schedulePoll();
+            }
+        },
 
         destroy() {
             clearTimeout(this.timer);
+            clearTimeout(this.pollTimer);
         },
 
         activeCycle() {
@@ -469,9 +490,72 @@ export function resourceQuote(config = {}) {
                 [detail.kind]: { steps: Number(detail.steps) || 0, prices: detail.prices ?? {}, currency: detail.currency ?? null },
             };
 
+            if (!config.url) {
+                return;
+            }
+
+            clearTimeout(this.timer);
+
+            // Back at what the service has: nothing to price, and an answer on its way is ignored.
+            if (this.unchanged()) {
+                this.asked++;
+                this.quote = null;
+                this.error = '';
+                this.loading = false;
+
+                return;
+            }
+
+            this.timer = setTimeout(() => this.request(), delay);
+        },
+
+        /** Ask again, for example after a staff field changed. */
+        refresh() {
             if (config.url) {
                 clearTimeout(this.timer);
                 this.timer = setTimeout(() => this.request(), delay);
+            }
+        },
+
+        /** Whether every slider is at the steps the service has now (only with "initial", and no staff fields). */
+        unchanged() {
+            if (!config.initial || config.fields) {
+                return false;
+            }
+
+            return Object.entries(this.steps()).every(([kind, steps]) => Number(config.initial[kind] ?? 0) === steps);
+        },
+
+        schedulePoll() {
+            if (this.polls >= (config.status?.limit ?? 60)) {
+                return;
+            }
+
+            clearTimeout(this.pollTimer);
+            this.pollTimer = setTimeout(() => this.poll(), config.status?.every ?? 10000);
+        },
+
+        /** Read the server state of the last change; keep reading while the server works on it. */
+        async poll() {
+            this.polls++;
+
+            try {
+                const response = await fetch(config.status.url, {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' },
+                });
+                const body = response.ok ? await response.json().catch(() => null) : null;
+
+                if (body && typeof body.state === 'string') {
+                    this.serverState = body.state;
+                    this.serverText = typeof body.text === 'string' ? body.text : '';
+                }
+            } catch {
+                // A missed answer is asked again on the next tick.
+            }
+
+            if (this.serverState === 'working') {
+                this.schedulePoll();
             }
         },
 
@@ -520,7 +604,7 @@ export function resourceQuote(config = {}) {
                         'Content-Type': 'application/json',
                         'X-CSRF-TOKEN': config.csrf ?? '',
                     },
-                    body: JSON.stringify({ steps: this.steps() }),
+                    body: JSON.stringify({ ...this.fields, steps: this.steps() }),
                 });
                 const body = await response.json().catch(() => ({}));
 

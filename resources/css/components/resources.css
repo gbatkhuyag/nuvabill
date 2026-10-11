@@ -603,4 +603,119 @@
     .price-grid-rate {
         font-size: 0.8rem;
     }
+
+    /* The resources card on a client's service page, the review page, and the admin service card. */
+    .resource-panel {
+        display: grid;
+        gap: 1rem;
+    }
+
+    .resource-panel > .card-header {
+        margin-bottom: 0;
+    }
+
+    .resource-section {
+        display: grid;
+        gap: 0.5rem;
+    }
+
+    .resource-subtitle {
+        margin: 0;
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: var(--nb-muted);
+        text-transform: none;
+    }
+
+    /* Sliders, with the price box beside them on wide screens and under them on phones. */
+    .resource-upgrade {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+        gap: 1.25rem;
+        align-items: start;
+    }
+
+    .resource-upgrade-main {
+        display: grid;
+        gap: 1.1rem;
+        min-width: 0;
+    }
+
+    .resource-upgrade-side {
+        position: sticky;
+        top: 1rem;
+        min-width: 0;
+    }
+
+    @media (max-width: 760px) {
+        .resource-upgrade {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .resource-upgrade-side {
+            position: static;
+        }
+    }
+
+    .resource-control {
+        display: grid;
+        gap: 0.3rem;
+        min-width: 0;
+    }
+
+    .resource-control .error {
+        margin: 0;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--nb-crit);
+    }
+
+    .resource-control-note {
+        margin: 0;
+        font-size: 0.8rem;
+    }
+
+    /* An extra that is no longer sold: what the service has, and a checkbox to remove it. */
+    .resource-remove {
+        display: grid;
+        gap: 0.35rem;
+        padding: 0.7rem 0.85rem;
+        border: 1px dashed var(--nb-line-2);
+        border-radius: var(--nb-radius);
+    }
+
+    .quote-box .summary-row.is-strong {
+        font-weight: 700;
+        color: var(--nb-ink);
+    }
+
+    .quote-changes {
+        padding-bottom: 0.45rem;
+        border-bottom: 1px solid var(--nb-line);
+    }
+
+    .resource-warning {
+        margin: 0;
+        padding: 0.5rem 0.7rem;
+        border-inline-start: 3px solid var(--nb-warn);
+        border-radius: var(--nb-radius);
+        background: var(--nb-warn-soft);
+        font-size: 0.85rem;
+    }
+
+    .resource-state .btn {
+        margin-inline-start: auto;
+    }
+
+    /* Admin: the staff change form, one row per kind. */
+    .resource-staff-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 0.75rem;
+    }
+
+    .resource-check-table td.is-wrong {
+        color: var(--nb-crit);
+        font-weight: 700;
+    }
 }

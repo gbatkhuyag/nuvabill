@@ -152,6 +152,7 @@ class InvoiceManager
         if ($cancelled) {
             Activity::log('invoice.cancelled', "Cancelled invoice {$invoice->displayNumber()}", $invoice);
             app(PlanChanges::class)->cancelForInvoice($invoice);
+            app(ResourceChanges::class)->cancelForInvoice($invoice);
         }
 
         return $invoice;

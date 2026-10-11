@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\PlanChange;
 use App\Models\Product;
 use App\Models\Service;
+use App\Models\ServiceResourceOption;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -23,7 +24,7 @@ class PlanChangeController extends Controller
         $this->authorizeOwner($request, $service);
         abort_unless($changes->enabled(), 404);
 
-        $service->load('product', 'client');
+        $service->load('product', 'client', 'resources.option');
         $blocked = $changes->blockedReason($service);
         $options = $blocked === null ? $changes->targets($service)->map(fn (Product $product): array => [
             'product' => $product,
@@ -36,6 +37,8 @@ class PlanChangeController extends Controller
             'pending' => $changes->pendingFor($service),
             'options' => $options,
             'modeFor' => fn (int $difference): string => $changes->modeFor($difference, $service),
+            // The extras move with the service; the page says so.
+            'extras' => $service->resources->filter(fn (ServiceResourceOption $row): bool => $row->isActive())->values(),
         ]);
     }
 

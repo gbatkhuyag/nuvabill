@@ -53,6 +53,11 @@ class InvoicePaidHandler
             app(PlanChanges::class)->applyForInvoice($invoice);
         }
 
+        // A change of extras paid for the days left: the rows change now, and the server follows in a job.
+        if ($invoice->items->contains('type', InvoiceItem::TYPE_RESOURCE_CHANGE)) {
+            app(ResourceChanges::class)->applyForInvoice($invoice);
+        }
+
         Order::query()
             ->where('invoice_id', $invoice->id)
             ->where('status', OrderStatus::Pending)

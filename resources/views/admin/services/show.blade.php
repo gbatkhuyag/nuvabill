@@ -52,7 +52,7 @@
     @endif
 
     <div class="grid-2">
-        <form method="POST" action="{{ route('admin.services.update', $service) }}" class="card" style="display:grid;gap:1.1rem">
+        <form method="POST" action="{{ route('admin.services.update', $service) }}" class="card" style="display:grid;gap:1.1rem;align-self:start">
             @csrf
             @method('PUT')
             <div class="card-header" style="margin:0"><h2>{{ __('Details') }}</h2></div>

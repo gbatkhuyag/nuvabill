@@ -8,6 +8,7 @@ use App\Billing\InvoicePaidHandler;
 use App\Billing\OrderCanceller;
 use App\Billing\PlanChanges;
 use App\Billing\RenewalGenerator;
+use App\Billing\ResourceChanges;
 use App\Domains\DomainProvisioner;
 use App\Enums\DomainStatus;
 use App\Enums\InvoiceStatus;
@@ -81,13 +82,24 @@ class DailyAutomation
      */
     private function runSteps(CarbonImmutable $today): array
     {
-        // Downgrades planned for today's renewals first, so the server matches the new plan.
+        // Downgrades and changes of extras planned for today's renewals first, so the server matches the
+        // new plan and the renewal bills what the service has.
         app(PlanChanges::class)->applyScheduled($today);
+        $this->safely(function () use ($today): bool {
+            app(ResourceChanges::class)->applyScheduled($today);
+
+            return true;
+        });
 
         $invoices = $this->renewals->generate($today);
         // Upgrades kept open on an earlier night stop once their payment is no longer going through,
         // before suspensions, so a stale upgrade invoice never suspends a renewed service.
         app(PlanChanges::class)->settlePassed();
+        $this->safely(function (): bool {
+            app(ResourceChanges::class)->settlePassed();
+
+            return true;
+        });
         // Saved cards are charged before reminders and suspensions, so a paid renewal is never suspended.
         $autoPay = $this->autoPay->run($today);
         // New orders nobody paid for give back their stock and server room, after their card had its chance.
@@ -132,6 +144,12 @@ class DailyAutomation
 
         // Older suspensions the server module should finish, for example Proxmox VPSs that still start on boot.
         $this->provisioner->recheckSuspensions();
+        // Server jobs for changes of extras that were lost (a stopped queue worker, say) are sent again.
+        $this->safely(function (): bool {
+            app(ResourceChanges::class)->retryServer();
+
+            return true;
+        });
 
         return $summary;
     }

@@ -39,6 +39,9 @@
             <dt>{{ __('Price') }}</dt><dd>{{ money($service->recurring_amount, $service->currency) }} · {{ $service->billing_cycle->label() }}</dd>
             <dt>{{ __('Next payment') }}</dt><dd>{{ $service->next_due_date?->translatedFormat('d M Y') ?? '—' }}</dd>
         </dl>
+        @if ($extras->isNotEmpty())
+            <p class="muted" style="margin:0">{{ __('Your extras stay: :extras. You can lower them after the move.', ['extras' => $extras->map(fn (\App\Models\ServiceResourceOption $row): string => $row->describe().($row->recurring_amount > 0 ? ' ('.money($row->recurring_amount, $service->currency).$service->billing_cycle->suffix().')' : ''))->implode(', ')]) }}</p>
+        @endif
     </section>
 
     @if (! $blocked && ! $pending)
