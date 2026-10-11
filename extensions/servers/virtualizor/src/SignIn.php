@@ -231,10 +231,10 @@ final class SignIn
         }
 
         $serverProblems = array_filter([
-            $server->use_ssl !== true ? __('Turn on "Use SSL" on the server.') : null,
+            $server->use_ssl !== true ? __('Turn on "Connect with HTTPS" on the server.') : null,
             blank($server->password) ? __('Set the API password on the server.') : null,
         ]);
-        $row(__('Server settings'), $serverProblems === [] ? 'ok' : 'fail', $serverProblems === [] ? __('"Use SSL" is on and the API password is set.') : implode(' ', $serverProblems));
+        $row(__('Server settings'), $serverProblems === [] ? 'ok' : 'fail', $serverProblems === [] ? __('"Connect with HTTPS" is on and the API password is set.') : implode(' ', $serverProblems));
 
         $port = $this->enduser->port($service);
         $row(__('Client panel port'), $port !== null ? 'ok' : 'fail', $port !== null

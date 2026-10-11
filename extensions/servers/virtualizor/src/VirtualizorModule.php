@@ -132,7 +132,7 @@ class VirtualizorModule extends Module implements ChecksClientAccess, HasClientP
                 'label' => 'Client panel sign-in',
                 'type' => 'select',
                 'options' => ['' => 'Off', '1' => 'On'],
-                'help' => 'Clients get an "Open Virtualizor panel" button that signs them in to their own VPS. It needs: Use SSL on, a valid SSL certificate on port 4083, and port 4083 open. Each client should have their own Virtualizor user. First turn off panel features that skip billing in Virtualizor (Configuration → Enduser settings), such as creating VPS or changing resources. To find problems, open a service in Admin and use Test panel sign-in.',
+                'help' => 'Clients get an "Open Virtualizor panel" button that signs them in to their own VPS. It needs: "Connect with HTTPS" on for the server, a valid SSL certificate on port 4083, and port 4083 open. Each client should have their own Virtualizor user. First turn off panel features that skip billing in Virtualizor (Configuration → Enduser settings), such as creating VPS or changing resources. To find problems, open a service in Admin and use Test panel sign-in.',
             ],
             'panel_port' => ['label' => 'Client panel port', 'type' => 'text', 'help' => 'Default 4083, Virtualizor\'s end-user port. Never the admin port (4085) or the server\'s API port: sign-in stays off with those. It needs a valid SSL certificate.'],
         ];
@@ -140,7 +140,7 @@ class VirtualizorModule extends Module implements ChecksClientAccess, HasClientP
 
     public function serverHelp(): string
     {
-        return 'Hostname: the Virtualizor master, as a name with a valid SSL certificate (for example vz.example.com). Put the Admin API key in "API token" and the API password in "Password" (Virtualizor → Configuration → Server Info), and allow this server\'s IP there. Keep "Use SSL" on: without it the API key and password travel unencrypted. Nuvabill uses port 4085 for staff tasks and port 4083 for the client panel, console and sign-in. Clients\' browsers also connect to port 4083, so it must be open and have a valid certificate. Behind Cloudflare, set this hostname to "DNS only". If you use a key from API Credentials, allow these acts: vs, addvs, managevps, rebuild, vnc, users, plans, ostemplates, ips, sso, listvs, and the end-user acts of the panel.';
+        return 'Hostname: the Virtualizor master, as a name with a valid SSL certificate (for example vz.example.com). Put the Admin API key in "API token" and the API password in "Password" (Virtualizor → Configuration → Server Info), and allow this server\'s IP there. Keep "Connect with HTTPS" on: without it the API key and password travel unencrypted. Nuvabill uses port 4085 for staff tasks and port 4083 for the client panel, console and sign-in. Clients\' browsers also connect to port 4083, so it must be open and have a valid certificate. Behind Cloudflare, set this hostname to "DNS only". If you use a key from API Credentials, allow these acts: vs, addvs, managevps, rebuild, vnc, users, plans, ostemplates, ips, sso, listvs, and the end-user acts of the panel.';
     }
 
     public function defaultPort(): int

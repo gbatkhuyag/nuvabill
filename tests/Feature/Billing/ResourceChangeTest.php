@@ -416,6 +416,42 @@ class ResourceChangeTest extends TestCase
         $this->assertSame(4, app(ResourceChanges::class)->quote($this->service->fresh(), ['disk' => 4])['items'][0]['to'], 'It can grow.');
     }
 
+    public function test_staff_cannot_lower_disk_either_so_nothing_is_credited_for_a_disk_that_stays(): void
+    {
+        $disk = ResourceOption::factory()->kind('disk', 10)->priced(100)->create(['product_id' => $this->vps->id]);
+        $diskRow = $this->row($disk, 3, 300);
+        $ramRow = $this->row($this->ram, 2, 400);
+        $admin = Admin::factory()->create(['name' => 'Raz']);
+        $changes = app(ResourceChanges::class);
+
+        try {
+            $changes->quote($this->service->fresh(), ['disk' => 1], staff: true);
+            $this->fail('Staff lowered the disk.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['steps.disk' => ['Disk space cannot go below what you have now.']], $exception->errors());
+        }
+
+        // Neither with an invoice (the removal would credit the wallet) nor without charging.
+        foreach ([true, false] as $charge) {
+            try {
+                $changes->start($this->service->fresh(), ['disk' => 0], $admin, charge: $charge);
+                $this->fail('Staff removed the disk.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(['steps.disk' => ['Disk space cannot go below what you have now.']], $exception->errors());
+            }
+        }
+
+        $this->assertSame([3, 300], [$diskRow->fresh()->steps, $diskRow->fresh()->recurring_amount]);
+        $this->assertSame(0, $this->client->fresh()->credit);
+        $this->assertSame(0, ResourceChange::query()->count());
+
+        // Staff still lower what can shrink, below what clients may, and grow the disk.
+        $this->ram->update(['client_can_remove' => false]);
+        $this->assertSame(0, $changes->quote($this->service->fresh(), ['ram' => 0], staff: true)['items'][0]['to']);
+        $this->assertSame(5, $changes->quote($this->service->fresh(), ['disk' => 5], staff: true)['items'][0]['to']);
+        $this->assertSame(2, $ramRow->fresh()->steps);
+    }
+
     public function test_changes_are_blocked_while_a_plan_change_or_open_invoice_waits_and_the_other_way_round(): void
     {
         $changes = app(ResourceChanges::class);

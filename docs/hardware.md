@@ -108,8 +108,9 @@ Traffic is billing only: Nuvabill emails your team to set the new limit.
   - **Type**: **Redfish (HTTPS)** for iDRAC, iLO, Supermicro and most new servers; **IPMI** for older boards (only when
     it is turned on in **Hardware settings**); or **No power control**.
   - **BMC address**: an IP address or a host name only, without `https://` or a port. Private addresses are fine.
-    Nuvabill refuses addresses that point at itself, link-local and cloud metadata addresses, and checks every address a
-    host name points to each time it connects.
+    Nuvabill refuses loopback addresses (127.0.0.1, ::1, localhost), link-local and cloud metadata addresses, and
+    multicast and reserved ranges, and checks every address a host name points to each time it connects. It does not
+    refuse its own LAN or public address, or other hosts on its network, so enter only BMC addresses.
   - **BMC port**: empty uses 443 for Redfish and 623 for IPMI.
   - **BMC user name** and **BMC password**: the Operator user from above.
   - **Certificate check**: see the next step.
@@ -150,6 +151,9 @@ IPMI is older and less safe than Redfish. Use it only when a board has no Redfis
   server, and PHP must be allowed to run it (`proc_open`).
 - Nuvabill uses cipher suite 17 (or 3 for older boards), never 0. The password is handed to `ipmitool` privately, never
   on its command line.
+- The BMC user needs the **Operator** privilege on the BMC's LAN channel (on most boards the user's "IPMI LAN
+  privilege" or "Network privilege"). Nuvabill asks for an Operator session, which is enough to switch the power.
+  With a user whose LAN privilege is only User or No Access, Nuvabill cannot connect.
 - IPMI has no certificate to check, which is one more reason to keep it on a private network.
 
 ## Hardware settings

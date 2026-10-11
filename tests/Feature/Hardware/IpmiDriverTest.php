@@ -51,7 +51,7 @@ class IpmiDriverTest extends TestCase
             $this->assertIsArray($process->command, 'An argument list, so no shell reads it.');
             $this->assertSame([
                 '/usr/bin/ipmitool', '-I', 'lanplus', '-H', '10.20.0.12', '-p', '623', '-U', 'nuvabill-operator', '-E',
-                '-C', '17', '-N', '5', '-R', '1', 'chassis', 'power', 'status',
+                '-C', '17', '-L', 'OPERATOR', '-N', '5', '-R', '1', 'chassis', 'power', 'status',
             ], $process->command);
             $this->assertNotContains(self::PASSWORD, $process->command);
             $this->assertSame(['IPMI_PASSWORD' => self::PASSWORD], $process->environment);
@@ -63,6 +63,34 @@ class IpmiDriverTest extends TestCase
         $this->assertSame([PowerAction::On, PowerAction::Shutdown, PowerAction::Reset, PowerAction::Off], $power->actions($machine));
         $this->assertTrue($power->run($machine, PowerAction::Shutdown, Admin::factory()->create(['name' => 'Raz']))->ok);
         Process::assertRan(fn (PendingProcess $process): bool => array_slice($process->command, -3) === ['chassis', 'power', 'soft']);
+    }
+
+    public function test_every_call_asks_for_an_operator_session_so_an_operator_user_works(): void
+    {
+        Process::fake(['*' => Process::result('Chassis Power is on')]);
+        $machine = Machine::factory()->ipmi()->create(['name' => 'DS-204']);
+        $power = app(PowerControl::class);
+        $admin = Admin::factory()->create(['name' => 'Raz']);
+
+        $power->state($machine, fresh: true);
+
+        foreach ([PowerAction::On, PowerAction::Shutdown, PowerAction::Reset, PowerAction::Off] as $action) {
+            $this->travel(PowerControl::COOLDOWN_SECONDS + 1)->seconds();
+            $this->assertTrue($power->run($machine->fresh(), $action, $admin)->ok, "{$action->value} ran.");
+        }
+
+        // Without -L, ipmitool asks for an Administrator session, which the BMC refuses an Operator user.
+        $operator = function (array $command): bool {
+            $at = array_search('-L', $command, true);
+
+            return $at !== false && ($command[$at + 1] ?? null) === 'OPERATOR' && ! in_array('ADMINISTRATOR', $command, true);
+        };
+
+        foreach (['status', 'on', 'soft', 'reset', 'off'] as $verb) {
+            Process::assertRan(fn (PendingProcess $process): bool => end($process->command) === $verb && $operator($process->command));
+        }
+
+        Process::assertDidntRun(fn (PendingProcess $process): bool => ! $operator($process->command));
     }
 
     public function test_cipher_zero_is_never_used(): void

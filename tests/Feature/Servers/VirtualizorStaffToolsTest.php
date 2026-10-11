@@ -37,6 +37,8 @@ class VirtualizorStaffToolsTest extends TestCase
             array_column($rows, 'label'),
         );
         $this->assertSame(['ok', 'ok', 'ok', 'ok', 'ok', 'ok', 'ok', 'ok', 'ok', 'ok', 'ok', 'skip'], array_column($rows, 'status'));
+        // The setting is named as staff see it on the server form.
+        $this->assertSame('"Connect with HTTPS" is on and the API password is set.', $rows[1]['detail']);
         $this->assertSame([], $this->sent('sso'));
 
         $page = $this->get(route('admin.services.show', $service))->assertOk()->assertSee('Every VPS of this Virtualizor user belongs to this client.');
@@ -62,6 +64,16 @@ class VirtualizorStaffToolsTest extends TestCase
         $this->assertSame('fail', $rows['Virtualizor user']['status']);
         $this->assertStringContainsString('is an admin or cloud user', $rows['Virtualizor user']['detail']);
         $this->assertSame(['skip', 'skip', 'skip'], [$rows['End-user port']['status'], $rows['Ownership']['status'], $rows['Console']['status']]);
+    }
+
+    public function test_the_access_check_names_the_https_switch_as_the_server_form_does(): void
+    {
+        $this->fakeVirtualizor();
+        $service = $this->vpsService(['client_login' => '1'], server: $this->master(['use_ssl' => false]));
+
+        $rows = collect(app(Provisioner::class)->checkClientAccess($service))->keyBy('label');
+
+        $this->assertSame(['fail', 'Turn on "Connect with HTTPS" on the server.'], [$rows['Server settings']['status'], $rows['Server settings']['detail']]);
     }
 
     public function test_staff_link_a_vps_that_was_made_by_hand(): void

@@ -122,8 +122,8 @@ Virtualizor module 2.0 needs Nuvabill 0.7.0 or newer.
 - Or make an API credential under **Configuration → API Credentials**, limited to Nuvabill's server IP, that allows
   these acts: `vs`, `addvs`, `managevps`, `rebuild`, `vnc`, `users`, `plans`, `ostemplates`, `ips`, `sso`, `listvs`,
   and the end-user acts of the panel. If sign-in or the panel tabs fail with such a key, test with the Server Info key.
-- **Port** 4085, with **Connect with HTTPS** on (the module's help and checks call it "Use SSL"). Without it the API
-  key and password travel unencrypted, and the client panel sign-in stays off.
+- **Port** 4085, with **Connect with HTTPS** on. Without it the API key and password travel unencrypted, and the
+  client panel sign-in stays off.
 - Virtualizor's API takes the key in the address of each call, the same as Virtualizor's own billing module, so it can
   show in the master's web server logs. Keep those logs private.
 
@@ -410,12 +410,21 @@ Rules for every contract:
 | `readPanelSection(Service $service, string $section, array $input, ClientContext $context): PanelResult` | The data of one section. `$input` holds only the keys of the section's read rules. |
 | `runPanelAction(Service $service, string $section, string $action, array $input, ClientContext $context): PanelResult` | One action. `$input` holds only the keys of the action's rules. Refuse it again when your data said it is not allowed. |
 
-Declare sections with `PanelSection::standard($key, actions: [...], readRules: [...], cacheSeconds: 0,
+Declare standard sections with `PanelSection::standard($key, actions: [...], readRules: [...], cacheSeconds: 0,
 enabledByDefault: true, pollSeconds: null, staffHelp: null)`. The standard keys use the core views: `overview`,
 `console`, `graphs`, `reinstall`, `network`, `firewall`, `backups`, `snapshots`, `rescue`, `ssh-keys`, `media`,
-`settings`, `activity`, and `power` (the power buttons in the header, never a tab). Any other key needs its own view
-from your extension, named `ext-{your-slug}::{view}`. A section with `enabledByDefault: false` stays off until staff
-turn it on for the product; `staffHelp` is shown next to its switch.
+`settings`, `activity`, and `power` (the power buttons in the header, never a tab). A section with
+`enabledByDefault: false` stays off until staff turn it on for the product; `staffHelp` is shown next to its switch.
+
+Any other key needs its own view from your extension, so declare it with the constructor, not with `standard()`
+(which cannot set a view, so core skips the section and reports it):
+
+```php
+new PanelSection(key: 'notes', label: __('Notes'), icon: 'list', view: 'ext-{your-slug}::panel.notes', actions: [...])
+```
+
+The view lives in your extension's `views` folder (here `views/panel/notes.blade.php`). For a working example, see
+`customSection()` and `views/notes.blade.php` in the test fixture `tests/Fixtures/extensions/servers/panelfake`.
 
 Each action is a `PanelAction`:
 
@@ -518,8 +527,10 @@ and never stores or logs the link. If your panel ties the session to an IP addre
   `bandwidth` (GB) and `backups` (on or off). A built-in kind declared with another unit is skipped.
 - Your own kinds start with your slug, with `_` instead of `-`, for example `hetzner_cloud_size`. Keys match
   `^[a-z][a-z0-9_]{1,39}$`.
-- `ResourceKind` has `label`, `unit`, `minStep`, `stepMultiple`, `maxExtra`, `canShrink`, `restarts`, `note` (shown to
-  clients) and `ladder` (named sizes for your own kinds; step 0 is the plan itself).
+- `ResourceKind` has `key` (required, and the same as its key in the array you return; core skips a kind whose key
+  differs), `label`, `unit`, `minStep`, `stepMultiple`, `maxExtra`, `canShrink`, `restarts`, `note` (shown to clients)
+  and `ladder` (named sizes for your own kinds; step 0 is the plan itself). For example
+  `'ram' => new ResourceKind(key: 'ram', label: __('RAM'), unit: 'MB', minStep: 128)`.
 - Core handles the payment: a service with unpaid extras is not created until its order invoice is paid.
 
 ### Lifecycle contracts

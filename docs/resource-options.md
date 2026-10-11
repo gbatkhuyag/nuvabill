@@ -73,11 +73,12 @@ while no service uses it; hide it instead.
 ### Changes on a live service
 
 - **Adding steps.** The client pays today's price for the days left in the billing period, plus the setup fee for each
-  added step. Nuvabill makes an invoice; the extras are added as soon as it is paid. If the client has wallet credit,
-  it is used first.
+  added step. Nuvabill makes an invoice; the extras are added as soon as it is paid. When the wallet pays invoices
+  automatically (on by default) and the client has credit, it is used first.
 - **Removing steps.** **Settings → General → Billing → When a client moves to a cheaper plan** decides, the same as for
   plan changes: change now and add the unused days to the client's wallet, or change on the next renewal date. The
-  credit is for the unused days of what the client really paid, never more. Setup fees are not refunded.
+  credit is for the unused days of what the client really paid, never more. Setup fees are not refunded. Without a
+  wallet in the service's currency, removals always wait for the renewal date.
 - **Disk space only grows.** Clients can never lower a disk, because the data on it would be lost.
 - **Removing IP addresses** shows a warning ("Sites that use them stop working") and needs a confirmation.
 - **One waiting change at a time.** While a resource change or a plan change waits for payment or for the server, the
@@ -86,7 +87,7 @@ while no service uses it; hide it instead.
   stay"). They can lower them after the move. A server-size slider (Hetzner Cloud) is the exception: plans without the
   same sizes are offered only once that slider is back at 0.
 - **Removed options.** When you hide or stop pricing an option, services that have it keep it ("No longer sold").
-  Clients can still remove it.
+  Clients can still remove it when **Clients can remove extras** is on for the option (never for disk space).
 
 **Settings → General → Billing → Clients can add and remove resources** turns changes on the service page on or off
 for all clients. When it is off, clients see their extras but cannot change them, and staff can still change them.
@@ -141,10 +142,23 @@ you update to Nuvabill 0.7.0, each such product is moved to resource options by 
 - Nuvabill checks that every service's renewal total is the same before and after. If it is not, it leaves that
   product as it was and writes the reason to the activity log.
 
-Afterwards, open **Resource options** on each Virtualizor product: check the prices, and raise **Most extra steps** if
-you want to sell more than before. If a product could not be moved, its options page says so. Set up its options by
-hand, then clear the old JSON. Until then, Nuvabill does not create or change the servers of services that still have
-those add-ons, so nothing is set or billed twice.
+Afterwards, open **Resource options** on each Virtualizor product:
+
+- Check the prices, and raise **Most extra steps** if you want to sell more than before.
+- Look for options marked **Hidden**. The move leaves an option hidden when one of its add-ons was hidden, when its
+  prices had to be worked out for a smaller step (add-ons of different sizes), or when it has no price in your main
+  currency. Check its prices, then press **Show**.
+
+If a product could not be moved, its options page says so, with a **Remove the old add-on settings** button:
+
+1. Set up the product's options by hand.
+2. For each service that still has the old add-ons, use **Change resources** with **Change now without charging or
+   crediting**. Give it the same extras and set their renewal price to 0, because the old add-ons keep billing for them.
+3. Press **Remove the old add-on settings**, and confirm.
+
+Until you press it, Nuvabill does not create a server or change the plan of a service that still has those add-ons, so
+a server never misses extras the client pays for. This does not stop billing: the old add-ons keep billing as before.
+Saving the product keeps the old settings; only the button removes them, and the activity log keeps a copy.
 
 ## Good to know
 

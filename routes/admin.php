@@ -307,6 +307,8 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
             Route::post('order', [ResourceOptionController::class, 'order'])->name('order');
             // Reads the plan from the server.
             Route::post('base', [ResourceOptionController::class, 'base'])->middleware('throttle:10,1')->name('base');
+            // Removes the old Virtualizor add-on JSON that could not be moved to options.
+            Route::delete('old-addons', [ResourceOptionController::class, 'removeOldAddons'])->middleware('throttle:10,1')->name('old-addons.destroy');
             Route::get('{resourceOption}/edit', [ResourceOptionController::class, 'edit'])->whereNumber('resourceOption')->scopeBindings()->name('edit');
             Route::put('{resourceOption}', [ResourceOptionController::class, 'update'])->whereNumber('resourceOption')->scopeBindings()->middleware('throttle:30,1')->name('update');
             Route::delete('{resourceOption}', [ResourceOptionController::class, 'destroy'])->whereNumber('resourceOption')->scopeBindings()->name('destroy');

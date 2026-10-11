@@ -114,6 +114,7 @@ class Demo
         'admin.products.resources.destroy',
         'admin.products.resources.order',
         'admin.products.resources.base',
+        'admin.products.resources.old-addons.destroy',
         'admin.services.resources.change',
         'admin.services.resources.cancel',
         'admin.services.resources.apply',
