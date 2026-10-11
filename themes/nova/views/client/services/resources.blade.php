@@ -60,7 +60,7 @@
                 @else
                     <ul class="resource-list quote-changes">
                         @foreach ($quote['changes'] as $change)
-                            <li><bdi>{{ $change['label'] }}</bdi> <span><bdi>{{ $change['from_text'] }}</bdi> → <b><bdi>{{ $change['to_text'] }}</bdi></b></span></li>
+                            <li><bdi>{{ $change['label'] }}</bdi> <span><bdi>{{ $change['from_text'] }}</bdi> <span class="resource-arrow" aria-hidden="true">→</span><span class="sr-only">{{ __('changes to') }}</span> <b><bdi>{{ $change['to_text'] }}</bdi></b></span></li>
                         @endforeach
                     </ul>
                     @foreach ($quote['lines'] as $line)

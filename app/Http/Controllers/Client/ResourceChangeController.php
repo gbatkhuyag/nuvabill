@@ -118,13 +118,17 @@ class ResourceChangeController extends Controller
 
         $page = redirect()->to(route('client.services.show', $service).'#resources');
 
+        // Applied first: wallet credit may have paid the whole upgrade invoice already.
         return match (true) {
+            $change->status === ResourceChange::STATUS_APPLIED => $page->with('status', match ($change->server_state) {
+                ResourceChange::SERVER_QUEUED, ResourceChange::SERVER_APPLYING, ResourceChange::SERVER_CHECKING => __('Your resources are changing now. This can take a few minutes.'),
+                ResourceChange::SERVER_MANUAL => __('Our team is setting up your resources.'),
+                default => __('Your extras were changed.'),
+            }),
+            ! $change->isPending() => $page->with('error', __('The change could not be made. Please try again.')),
             $change->mode === ResourceChange::MODE_INVOICE && $change->invoice !== null => redirect()->route('client.invoices.show', $change->invoice)
                 ->with('status', __('Pay this invoice and your new resources are added straight away.')),
             $change->mode === ResourceChange::MODE_RENEWAL => $page->with('status', __('Your extras change on :date.', ['date' => $change->apply_on->translatedFormat('d M Y')])),
-            $change->server_state === ResourceChange::SERVER_QUEUED => $page->with('status', __('Your resources are changing now. This can take a few minutes.')),
-            $change->server_state === ResourceChange::SERVER_MANUAL => $page->with('status', __('Our team is setting up your resources.')),
-            $change->status === ResourceChange::STATUS_APPLIED => $page->with('status', __('Your extras were changed.')),
             default => $page->with('error', __('The change could not be made. Please try again.')),
         };
     }

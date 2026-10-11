@@ -88,7 +88,7 @@
                     <strong>{{ __('Waiting change') }} · {{ $modes[$pending->mode] ?? $pending->mode }}</strong>
                     <ul class="resource-list" style="font-size:.86rem">
                         @foreach (app(\App\Billing\ResourceChanges::class)->describe($pending) as $line)
-                            <li><bdi>{{ $line }}</bdi></li>
+                            <li><bdi>{{ $line['label'] }}</bdi> <span><bdi>{{ $line['from_text'] }}</bdi> <span class="resource-arrow" aria-hidden="true">→</span><span class="sr-only">{{ __('changes to') }}</span> <b><bdi>{{ $line['to_text'] }}</bdi></b></span></li>
                         @endforeach
                     </ul>
                     <span class="faint" style="font-size:.85rem">

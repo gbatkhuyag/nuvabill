@@ -23,8 +23,8 @@ use InvalidArgumentException;
 /**
  * The resource catalog: which sliders a product offers, what they cost and what a client may
  * choose. Store, cart and client pages read only the database here (the kind snapshot on each
- * option), so they never ask a module or its server. Only kindsFor() and forService() may reach
- * the module, through Provisioner.
+ * option), so they never ask a module or its server. Only kindsFor(), liveLimits() and
+ * forService() may reach the module, through Provisioner, and never while database rows are locked.
  *
  * Every slider is described by the same array, used by the <x-resource-slider> component, the
  * order forms and the client's service page:
@@ -114,7 +114,7 @@ final class ResourceOptions
                 continue;
             }
 
-            $wanted = $this->wholeNumber($value);
+            $wanted = self::wholeNumber($value);
             $offered = $this->pricesOf($option, $currency, $cycle)->isNotEmpty();
 
             if (! $offered) {
@@ -206,15 +206,19 @@ final class ResourceOptions
      * always include what the service has now. Rows whose option is gone or hidden stay listed, as
      * "retired", so they can still go down.
      *
+     * A caller that holds database locks passes the limits it read before taking them, so a slow
+     * or unreachable server never keeps those rows locked.
+     *
+     * @param  array<string, ResourceLimit>|null  $limits  The live limits, already read; null reads them here.
      * @return list<array<string, mixed>>
      */
-    public function forService(Service $service, bool $staff = false): array
+    public function forService(Service $service, bool $staff = false, ?array $limits = null): array
     {
         $service->loadMissing(['product', 'resources.option']);
         $currency = (string) $service->currency;
         $cycle = $service->billing_cycle;
         $rows = $service->resources->keyBy('kind');
-        $limits = $cycle->isRecurring() ? $this->provisioner->resourceLimits($service) : [];
+        $limits ??= $this->liveLimits($service);
         $sliders = [];
         $seen = [];
 
@@ -236,6 +240,32 @@ final class ResourceOptions
         }
 
         return $sliders;
+    }
+
+    /**
+     * The live limits the module reports for the service's kinds (Provisioner::resourceLimits(),
+     * which may ask the server and is cached for a minute), or none for a service that does not
+     * renew.
+     *
+     * @return array<string, ResourceLimit>
+     */
+    public function liveLimits(Service $service): array
+    {
+        return $service->billing_cycle->isRecurring() ? $this->provisioner->resourceLimits($service) : [];
+    }
+
+    /**
+     * A whole number of steps from form or JSON input, or null when it is not one. A switch may send
+     * true or false. Every place that reads steps uses this, so they all agree on what was chosen.
+     */
+    public static function wholeNumber(mixed $value): ?int
+    {
+        return match (true) {
+            is_bool($value) => (int) $value,
+            is_int($value) => $value,
+            is_string($value) && preg_match('/^\d{1,4}$/D', $value) === 1 => (int) $value,
+            default => null,
+        };
     }
 
     /**
@@ -427,19 +457,5 @@ final class ResourceOptions
             'retired' => $retired,
             'limit_reason' => $reason,
         ];
-    }
-
-    /**
-     * A whole number of steps from form or JSON input, or null when it is not one. A switch may send
-     * true or false.
-     */
-    private function wholeNumber(mixed $value): ?int
-    {
-        return match (true) {
-            is_bool($value) => (int) $value,
-            is_int($value) => $value,
-            is_string($value) && preg_match('/^\d{1,4}$/D', $value) === 1 => (int) $value,
-            default => null,
-        };
     }
 }

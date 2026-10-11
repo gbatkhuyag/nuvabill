@@ -7,6 +7,7 @@ use App\Enums\InvoiceStatus;
 use App\Enums\ServiceStatus;
 use App\Extensions\Servers\ModuleResult;
 use App\Extensions\Servers\Resources\ResourceKind;
+use App\Extensions\Servers\Resources\ResourceLimit;
 use App\Jobs\ApplyServiceResources;
 use App\Jobs\CheckServiceResources;
 use App\Mail\MarkdownValue;
@@ -45,7 +46,8 @@ use RuntimeException;
  * again.
  *
  * Lock order (see Product::lockedStockLeft): the change, then the client, then resource options in
- * id order, then the service, then the service's resource rows.
+ * id order, then the service, then the service's resource rows. No module or server is asked
+ * while these locks are held.
  */
 final class ResourceChanges
 {
@@ -136,20 +138,21 @@ final class ResourceChanges
      *
      * Added steps cost today's price of the option for the days left, plus its setup fee per step
      * (never given back). Removed steps take off the average price paid per step, and give back
-     * the days left of it, never more than was paid for them. Staff may also set a new renewal
-     * price per kind ($amounts); the cost and credit still come from the steps.
+     * the days left of it, never more than was paid for them (see creditCap()). Staff may also set
+     * a new renewal price per kind ($amounts); the cost and credit still come from the steps.
      *
      * @param  array<mixed>  $steps  kind => wanted steps
      * @param  array<string, int>  $amounts  Staff only: kind => new renewal price of the kind, in minor units.
+     * @param  array<string, ResourceLimit>|null  $limits  The module's live limits, already read (see ResourceOptions::forService()); null reads them.
      * @return array{items: list<array{kind: string, label: string, option_id: int|null, row_id: int|null, unit: string, step_size: int, from: int, to: int, old_amount: int, new_amount: int, cost: int, credit: int, setup_fee: int, restarts: bool, ladder: list<string>|null, toggle: bool, included: int|null}>, old: int, new: int, cost: int, setup: int, credit: int, difference: int, mode: string, apply_on: CarbonImmutable|null, start: CarbonImmutable, end: CarbonImmutable, days_left: int, period_days: int, restarts: bool, removes_addresses: bool}
      *
      * @throws ValidationException With messages under "steps.{kind}", or "steps".
      */
-    public function quote(Service $service, array $steps, bool $staff = false, ?CarbonInterface $today = null, array $amounts = []): array
+    public function quote(Service $service, array $steps, bool $staff = false, ?CarbonInterface $today = null, array $amounts = [], ?array $limits = null): array
     {
         $service->loadMissing(['product', 'client', 'resources.option']);
         $period = Proration::period($service, $today);
-        $sliders = collect($this->options->forService($service, $staff))->keyBy('kind');
+        $sliders = collect($this->options->forService($service, $staff, $limits))->keyBy('kind');
         $options = $service->product->resourceOptions->keyBy('kind');
         $rows = $service->resources->keyBy('kind');
         $cycle = $service->billing_cycle->value;
@@ -198,12 +201,10 @@ final class ResourceChanges
                 $recurring = (int) round($old * $removed / $from);
                 $new = $old - $recurring;
                 $credit = Proration::forDays($recurring, $period['days_left'], $period['period_days']);
-                $paidLeft = $row !== null ? $this->paidForDaysLeft($row, $period['end'], $period['days_left']) : null;
+                $cap = $row !== null ? $this->creditCap($row, $removed, $from, $period) : null;
 
-                // Never more back than was paid for these days: nothing after a refund, a share after a
-                // partial credit note. A row with no paid line (imported, or made by staff) has no cap.
-                if ($paidLeft !== null) {
-                    $credit = min($credit, (int) round($paidLeft * $removed / $from));
+                if ($cap !== null) {
+                    $credit = min($credit, $cap);
                 }
             }
 
@@ -280,11 +281,21 @@ final class ResourceChanges
         // The options that may need a stock count, read before any lock and locked first, in id
         // order. The steps are read again under the locks.
         $counted = $staff ? [] : $this->stockOptionsFor($service, $steps);
+        $reason = $this->blockedReason($service, $staff);
+
+        // Refused before the server is asked; checked again under the locks.
+        if ($reason !== null) {
+            throw new RuntimeException($reason);
+        }
+
+        // The module's live limits may ask the server (up to its timeout), so they are read before
+        // any lock: nothing inside the transaction below reaches a module.
+        $limits = $this->options->liveLimits($service);
 
         // Up to three tries, like a checkout: on MySQL and MariaDB two sales can still lock each
         // other out. Only rows are saved in here: the log, the invoice email and a change that
         // happens now run after it.
-        $change = DB::transaction(function () use ($service, $steps, $admin, $staff, $free, $amounts, $setsServer, $expected, $counted): ResourceChange {
+        $change = DB::transaction(function () use ($service, $steps, $admin, $staff, $free, $amounts, $setsServer, $expected, $counted, $limits): ResourceChange {
             if ($counted !== []) {
                 ResourceOption::query()->whereKey($counted)->orderBy('id')->lockForUpdate()->get(['id']);
             }
@@ -297,7 +308,7 @@ final class ResourceChanges
                 throw new RuntimeException($reason);
             }
 
-            $quote = $this->quote($locked, $steps, $staff, amounts: $staff ? $amounts : []);
+            $quote = $this->quote($locked, $steps, $staff, amounts: $staff ? $amounts : [], limits: $limits);
 
             if ($quote['items'] === []) {
                 throw ValidationException::withMessages(['steps' => __('Choose at least one change.')]);
@@ -351,6 +362,9 @@ final class ResourceChanges
             if ($mode === ResourceChange::MODE_INVOICE) {
                 $invoice = $this->invoices->create($locked->client, $this->invoiceLines($locked, $change), dueAt: today(), currency: $locked->currency);
                 $change->update(['invoice_id' => $invoice->id]);
+            } elseif ($mode === ResourceChange::MODE_RENEWAL) {
+                // The renewal bills the kinds this change adds: their lines point at these rows.
+                $this->addEmptyRows($locked, $change);
             }
 
             return $change;
@@ -896,9 +910,11 @@ final class ResourceChanges
     }
 
     /**
-     * The resources card for the client's service page (ServicePanels), or null when the service
-     * has no extras and none to add. It lists the extras, shows a waiting change or the server
-     * state, and has the sliders when the client may change them.
+     * The resources card for the client's service page (ServicePanels), or null when it would have
+     * nothing to show: no extras, no waiting change, no server news and nothing the client may add
+     * now (client changes off, every option only at order, or the service blocked). It lists the
+     * extras, shows a waiting change or the server state, and has the sliders when the client may
+     * change them.
      *
      * @return array{view: string, data: array<string, mixed>}|null
      */
@@ -918,14 +934,20 @@ final class ResourceChanges
             && $this->options->offeredFor($service->product, (string) $service->currency, $service->billing_cycle)->isNotEmpty();
         $pending = $this->pendingFor($service);
         $status = $this->serverStatus($service);
+        $empty = $rows->isEmpty() && $pending === null && $status['state'] === 'none';
 
-        if ($rows->isEmpty() && ! $offered && $pending === null && $status['state'] === 'none') {
+        // Checked before the sliders, which may ask the module.
+        if ($empty && ! $offered) {
             return null;
         }
 
         $blocked = $this->blockedReason($service);
         $sliders = $this->enabled() && $blocked === null ? $this->options->forService($service) : [];
         $changeable = collect($sliders)->contains(fn (array $slider): bool => $slider['can_add'] || $slider['can_remove']);
+
+        if ($empty && ! $changeable) {
+            return null;
+        }
 
         return [
             'view' => 'theme::client.services.resources-card',
@@ -1031,15 +1053,17 @@ final class ResourceChanges
     }
 
     /**
-     * Each kind of a change in words, such as "RAM: +2 GB → +4 GB" or "Backups: Off → On".
+     * Each kind of a change as its name and its old and new value, such as RAM, "+2 GB" and
+     * "+4 GB", or Backups, "Off" and "On". The same keys as the changes of present(), so pages draw
+     * both lists the same way, with an arrow that turns round on right-to-left pages.
      *
-     * @return list<string>
+     * @return list<array{kind: string, label: string, from_text: string, to_text: string}>
      */
     public function describe(ResourceChange $change): array
     {
         $change->loadMissing('items.option');
 
-        return $change->items->map(function (ResourceChangeItem $item): string {
+        return $change->items->map(function (ResourceChangeItem $item): array {
             $option = $item->option;
             $info = [
                 'unit' => $item->unit,
@@ -1047,9 +1071,13 @@ final class ResourceChanges
                 'ladder' => $option?->ladder,
                 'toggle' => $option !== null ? ResourceKinds::isToggle($option->max_steps, $option->ladder) : $item->kind === 'backups',
             ];
-            $label = $option?->displayLabel() ?? ResourceOption::kindLabel($item->kind);
 
-            return $label.': '.$this->stepText($info, $item->from_steps).' → '.$this->stepText($info, $item->to_steps);
+            return [
+                'kind' => $item->kind,
+                'label' => $option?->displayLabel() ?? ResourceOption::kindLabel($item->kind),
+                'from_text' => $this->stepText($info, $item->from_steps),
+                'to_text' => $this->stepText($info, $item->to_steps),
+            ];
         })->values()->all();
     }
 
@@ -1080,12 +1108,7 @@ final class ResourceChanges
                 continue;
             }
 
-            $number = match (true) {
-                is_int($value) => $value,
-                is_bool($value) => (int) $value,
-                is_string($value) && preg_match('/^\d{1,4}$/D', $value) === 1 => (int) $value,
-                default => -1,
-            };
+            $number = ResourceOptions::wholeNumber($value) ?? -1;
             [$min, $max, $current] = [(int) $slider['min'], (int) $slider['max'], (int) $slider['current']];
 
             if ($number >= $min && $number <= $max) {
@@ -1109,9 +1132,62 @@ final class ResourceChanges
     }
 
     /**
+     * The most that removing these steps may give back for the days left, or null for no cap. It
+     * is never more than was paid for them:
+     *
+     * - with a paid line for the period (order, renewal or upgrade): its share for these steps,
+     *   nothing after a refund and less after a credit note;
+     * - without one, when a change of this period grew the row: only what those changes were paid
+     *   with (see paidByChanges()), so steps staff gave without charging give nothing back;
+     * - without one, for a row no change of this period grew (imported or converted, paid outside
+     *   Nuvabill): no cap.
+     *
+     * @param  array{start: CarbonImmutable, end: CarbonImmutable, days_left: int}  $period
+     */
+    private function creditCap(ServiceResourceOption $row, int $removed, int $from, array $period): ?int
+    {
+        $paidLeft = $this->paidForDaysLeft($row, $period['end'], $period['days_left']);
+
+        if ($paidLeft !== null) {
+            return (int) round($paidLeft * $removed / max(1, $from));
+        }
+
+        return $this->paidByChanges($row, $period['start']);
+    }
+
+    /**
+     * What this period's applied changes of the row's kind were paid with, when one of them grew
+     * it, or null when none did. Only growth that happened at once counts, at its cost (taken off
+     * the credit it was netted with, or 0 for a staff change without charging), less what removals
+     * of the kind already gave back this period. Growth that waited for an invoice or a renewal
+     * counts through its paid line, so here it counts as nothing.
+     */
+    private function paidByChanges(ServiceResourceOption $row, CarbonImmutable $periodStart): ?int
+    {
+        $items = ResourceChangeItem::query()
+            ->with('change:id,mode')
+            ->where('kind', $row->kind)
+            ->whereHas('change', fn ($query) => $query
+                ->where('service_id', $row->service_id)
+                ->where('status', ResourceChange::STATUS_APPLIED)
+                ->where('applied_at', '>=', $periodStart))
+            ->get();
+
+        if (! $items->contains(fn (ResourceChangeItem $item): bool => $item->to_steps > $item->from_steps)) {
+            return null;
+        }
+
+        $now = $items->filter(fn (ResourceChangeItem $item): bool => $item->change?->mode === ResourceChange::MODE_NOW);
+        $paid = (int) $now->sum(fn (ResourceChangeItem $item): int => $item->to_steps > $item->from_steps ? $item->cost : 0);
+        $given = (int) $now->sum(fn (ResourceChangeItem $item): int => $item->to_steps < $item->from_steps ? $item->credit : 0);
+
+        return max(0, $paid - $given);
+    }
+
+    /**
      * What the client paid for the days left of the current period for one row: its period line
      * and its upgrades, each for its own days, less credit notes. Null when no paid line covers the
-     * period (an imported row, or one made by staff).
+     * period (see creditCap()).
      */
     private function paidForDaysLeft(ServiceResourceOption $row, CarbonImmutable $end, int $daysLeft): ?int
     {
@@ -1143,7 +1219,8 @@ final class ResourceChanges
 
     /**
      * The ids of the product's options with a stock limit that the wanted steps grow, read without
-     * a lock (start() reads the steps again under the locks).
+     * a lock (start() reads the steps again under the locks). The steps are read the same way as
+     * wanted() reads them, so every option a change may count is locked before the service.
      *
      * @param  array<mixed>  $steps
      * @return list<int>
@@ -1154,7 +1231,9 @@ final class ResourceChanges
         $kinds = [];
 
         foreach ($steps as $kind => $value) {
-            if (is_string($kind) && is_numeric($value) && (int) $value > (int) ($current[$kind] ?? 0)) {
+            $number = is_string($kind) ? ResourceOptions::wholeNumber($value) : null;
+
+            if ($number !== null && $number > (int) ($current[$kind] ?? 0)) {
                 $kinds[] = $kind;
             }
         }
@@ -1206,18 +1285,15 @@ final class ResourceChanges
     }
 
     /**
-     * The invoice lines of an upgrade: one line per kind that grows (for the days left), its setup
-     * fee, and one negative line for the unused days of extras that go down. A kind the service has
-     * no row of yet gets an empty row now, so the lines point at it (see paidForDaysLeft()).
-     *
-     * @return list<array<string, mixed>>
+     * Give each kind the change adds, that the service has no row of yet, an empty row now (0
+     * steps, cancelled until the change is applied). The upgrade invoice or the renewal then bills
+     * it with a line that points at the row, so a later removal knows what was paid for it (see
+     * paidForDaysLeft()). Call it under the service's lock.
      */
-    private function invoiceLines(Service $service, ResourceChange $change): array
+    private function addEmptyRows(Service $service, ResourceChange $change): void
     {
-        $start = CarbonImmutable::today();
-        $end = $service->next_due_date->subDay();
-        $taxed = (bool) $service->product->taxable;
-        $change->load('items.option');
+        $change->loadMissing('items');
+        $service->loadMissing('resources');
 
         foreach ($change->items as $item) {
             if ($item->to_steps > $item->from_steps && $service->resources->firstWhere('kind', $item->kind) === null) {
@@ -1232,6 +1308,22 @@ final class ResourceChanges
                 ]));
             }
         }
+    }
+
+    /**
+     * The invoice lines of an upgrade: one line per kind that grows (for the days left), its setup
+     * fee, and one negative line for the unused days of extras that go down. A kind the service has
+     * no row of yet gets an empty row first (see addEmptyRows()).
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function invoiceLines(Service $service, ResourceChange $change): array
+    {
+        $start = CarbonImmutable::today();
+        $end = $service->next_due_date->subDay();
+        $taxed = (bool) $service->product->taxable;
+        $change->load('items.option');
+        $this->addEmptyRows($service, $change);
 
         $lines = [];
 

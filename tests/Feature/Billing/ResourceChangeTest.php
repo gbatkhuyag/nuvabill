@@ -9,6 +9,7 @@ use App\Billing\PaymentRecorder;
 use App\Billing\PlanChanges;
 use App\Billing\RenewalGenerator;
 use App\Billing\ResourceChanges;
+use App\Billing\Wallet;
 use App\Enums\InvoiceStatus;
 use App\Enums\ServiceStatus;
 use App\Extensions\ExtensionManager;
@@ -30,6 +31,7 @@ use App\Models\ServiceResourceOption;
 use App\Models\TaxRule;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
@@ -251,7 +253,7 @@ class ResourceChangeTest extends TestCase
         $row = $this->row($this->ram, 5, 1000);
         $quote = fn (): int => app(ResourceChanges::class)->quote($this->service->fresh(), ['ram' => 1])['credit'];
 
-        $this->assertSame(439, $quote(), 'A row without a paid line (staff made it) has no cap.');
+        $this->assertSame(439, $quote(), 'A row without a paid line that no change grew (imported) has no cap.');
 
         $invoice = $this->paidLine($row, 1000);
         // 1000 × 17/31 paid for the days left, 4 of 5 steps of it.
@@ -262,6 +264,120 @@ class ResourceChangeTest extends TestCase
 
         $invoice->refresh()->update(['status' => InvoiceStatus::Refunded]);
         $this->assertSame(0, $quote(), 'A refunded period gives nothing back.');
+    }
+
+    public function test_extras_staff_gave_without_charging_give_nothing_back(): void
+    {
+        app(ResourceChanges::class)->start($this->service, ['ram' => 5], Admin::factory()->create(['name' => 'Raz']), charge: false);
+        $row = $this->service->resources()->where('kind', 'ram')->sole();
+        $this->assertSame([5, 1000], [$row->steps, $row->recurring_amount]);
+
+        $quote = app(ResourceChanges::class)->quote($this->service->fresh(), ['ram' => 0]);
+        $this->assertSame([0, 0, ResourceChange::MODE_NOW], [$quote['items'][0]['credit'], $quote['difference'], $quote['mode']], 'Without the cap this was 1000 × 17/31 = 548.');
+
+        $this->actingAs($this->client, 'web')
+            ->post(route('client.services.resources.store', $this->service), ['steps' => ['ram' => 0], 'expected' => 0])
+            ->assertRedirect(route('client.services.show', $this->service).'#resources');
+
+        $this->assertSame([0, ServiceResourceOption::STATUS_CANCELLED], [$row->fresh()->steps, $row->fresh()->status]);
+        $this->assertSame(0, $this->client->fresh()->credit);
+    }
+
+    public function test_growth_paid_by_a_netted_credit_gives_back_at_most_its_cost(): void
+    {
+        ResourceOption::factory()->kind('cpu', 1)->priced(500)->create(['product_id' => $this->vps->id, 'sort_order' => 1]);
+        $this->paidLine($this->row($this->ram, 5, 1000), 1000);
+
+        // RAM 5 → 1 gives back 438 (capped by its paid line); one core costs 500 × 17/31 = 274.
+        $first = app(ResourceChanges::class)->start($this->service, ['ram' => 1, 'cpu' => 1]);
+        $this->assertSame([ResourceChange::MODE_NOW, -164], [$first->mode, $first->difference]);
+        $this->assertSame(164, $this->client->fresh()->credit);
+
+        // The core had no paid line of its own: it gives back what it cost, no more.
+        $quote = app(ResourceChanges::class)->quote($this->service->fresh(), ['cpu' => 0]);
+        $this->assertSame(274, $quote['credit']);
+
+        app(ResourceChanges::class)->start($this->service, ['cpu' => 0]);
+        $this->assertSame(438, $this->client->fresh()->credit, 'All of it is what the removed RAM was paid.');
+        $this->assertSame(110, app(ResourceChanges::class)->quote($this->service->fresh(), ['ram' => 0])['credit'], 'The last RAM step keeps its paid line: 200 × 17/31.');
+    }
+
+    public function test_a_kind_added_on_the_renewal_date_is_billed_on_its_own_row(): void
+    {
+        $this->setSettings(['billing.downgrade' => 'renewal', 'billing.renewal_days_before' => 7]);
+        ResourceOption::factory()->kind('cpu', 1)->priced(500)->create(['product_id' => $this->vps->id, 'sort_order' => 1]);
+        $this->row($this->ram, 5, 1000);
+
+        $change = app(ResourceChanges::class)->start($this->service, ['ram' => 1, 'cpu' => 1]);
+
+        $this->assertSame(ResourceChange::MODE_RENEWAL, $change->mode);
+        $cpu = $this->service->resources()->where('kind', 'cpu')->sole();
+        $this->assertSame([0, ServiceResourceOption::STATUS_CANCELLED], [$cpu->steps, $cpu->status], 'An empty row waits for the renewal date.');
+
+        $this->travelTo('2026-10-26 09:00');
+        app(RenewalGenerator::class)->generate();
+        $renewal = Invoice::query()->whereHas('items', fn ($query) => $query->where('type', InvoiceItem::TYPE_SERVICE))->sole();
+        $line = $renewal->items()->where('type', InvoiceItem::TYPE_RESOURCE)->where('description', 'like', 'CPU cores%')->sole();
+        $this->assertSame([500, $cpu->id], [$line->amount, (int) $line->service_resource_option_id]);
+        app(PaymentRecorder::class)->record($renewal, $renewal->total, 'banktransfer');
+
+        $this->travelTo('2026-11-01 01:00');
+        app(ResourceChanges::class)->applyScheduled();
+        $this->assertSame([1, 500, ServiceResourceOption::STATUS_ACTIVE], [$cpu->fresh()->steps, $cpu->fresh()->recurring_amount, $cpu->fresh()->status]);
+
+        // Half way through November: the core's paid renewal line caps what removing it gives back.
+        $this->travelTo('2026-11-15 10:00');
+        $credit = fn (): int => app(ResourceChanges::class)->quote($this->service->fresh(), ['cpu' => 0])['credit'];
+        $this->assertSame(267, $credit(), '500 × 16/30, all of it paid.');
+
+        $renewal->refresh()->update(['status' => InvoiceStatus::Refunded]);
+        $this->assertSame(0, $credit(), 'A refunded renewal gives nothing back.');
+    }
+
+    public function test_a_switch_value_locks_a_stock_option_before_the_service(): void
+    {
+        $ipv4 = ResourceOption::factory()->kind('ipv4', 1)->priced(0)->create(['product_id' => $this->vps->id, 'stock' => 5]);
+        DB::enableQueryLog();
+
+        $change = app(ResourceChanges::class)->start($this->service, ['ipv4' => true]);
+
+        $queries = array_column(DB::getQueryLog(), 'query');
+        $optionLock = array_key_first(array_filter($queries, fn (string $sql): bool => str_starts_with($sql, 'select "id" from "resource_options" where "resource_options"."id" in')));
+        $this->assertNotNull($optionLock, 'The steps true and 1 read the same, so the option was locked first.');
+        $this->assertSame([ResourceChange::MODE_NOW, ResourceChange::STATUS_APPLIED], [$change->mode, $change->status]);
+        $this->assertSame([1, 4], [(int) $this->service->resources()->where('kind', 'ipv4')->value('steps'), $ipv4->stockLeft()]);
+    }
+
+    public function test_an_upgrade_the_wallet_pays_at_once_goes_back_to_the_service_page(): void
+    {
+        Queue::fake();
+        $this->withModule();
+        $this->setSettings(['wallet.auto_apply' => true]);
+        app(Wallet::class)->change($this->client, 5000, 'Top up');
+        $row = $this->row($this->ram, 2, 400);
+
+        $this->actingAs($this->client, 'web')
+            ->post(route('client.services.resources.store', $this->service), ['steps' => ['ram' => 5], 'expected' => 329])
+            ->assertRedirect(route('client.services.show', $this->service).'#resources')
+            ->assertSessionHas('status', 'Your resources are changing now. This can take a few minutes.');
+
+        $change = ResourceChange::query()->sole();
+        $this->assertSame([ResourceChange::STATUS_APPLIED, InvoiceStatus::Paid], [$change->status, $change->invoice->status]);
+        $this->assertSame(5, $row->fresh()->steps);
+        $this->assertSame(5000 - 329, $this->client->fresh()->credit);
+    }
+
+    public function test_change_lines_take_their_arrow_from_the_translation(): void
+    {
+        // A right-to-left language turns the arrow round, so it points from the old to the new value.
+        app('translator')->addLines(['*.:from → :to' => ':from ← :to'], 'ar');
+        $this->row($this->ram, 2, 400);
+        app()->setLocale('ar');
+
+        $change = app(ResourceChanges::class)->start($this->service, ['ram' => 5]);
+
+        app()->setLocale('en');
+        $this->assertStringContainsString('+2 GB ← +5 GB', $change->invoice->items()->orderBy('id')->firstOrFail()->description);
     }
 
     public function test_a_mixed_change_nets_the_credit_against_the_cost(): void

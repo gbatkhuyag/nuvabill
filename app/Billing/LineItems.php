@@ -199,7 +199,8 @@ class LineItems
 
     /**
      * "RAM +2 GB → +5 GB", "Server size: CX23 → CX33" or "Backups: Off → On". A switch that counts
-     * nothing (one step, no unit) reads the same as ServiceResourceOption::describe() names it.
+     * nothing (one step, no unit) reads the same as ServiceResourceOption::describe() names it. The
+     * arrow comes from the translation, so right-to-left languages can point it the way they read.
      */
     private static function changeText(ResourceChangeItem $item): string
     {
@@ -213,7 +214,7 @@ class LineItems
             default => $steps > 0 ? '+'.ResourceKinds::format($item->unit, $steps * $item->step_size) : '0',
         };
 
-        return $label.($ladder !== null || $toggle ? ': ' : ' ').$side($item->from_steps).' → '.$side($item->to_steps);
+        return $label.($ladder !== null || $toggle ? ': ' : ' ').__(':from → :to', ['from' => $side($item->from_steps), 'to' => $side($item->to_steps)]);
     }
 
     /**

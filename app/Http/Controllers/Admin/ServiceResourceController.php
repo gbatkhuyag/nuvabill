@@ -73,11 +73,17 @@ class ServiceResourceController extends Controller
             return back()->with('error', $this->refusalMessage($exception));
         }
 
+        if ($change->status === ResourceChange::STATUS_CANCELLED) {
+            return back()->with('error', __('The change stopped. The activity log says why.'));
+        }
+
+        // Applied first: the client's wallet credit may have paid the whole invoice already.
         return back()->with('status', match (true) {
+            $change->status === ResourceChange::STATUS_APPLIED && in_array($change->server_state, [ResourceChange::SERVER_QUEUED, ResourceChange::SERVER_APPLYING, ResourceChange::SERVER_CHECKING], true) => __('The extras were changed. The server is set in the background.'),
+            $change->status === ResourceChange::STATUS_APPLIED && $change->server_state === ResourceChange::SERVER_MANUAL => __('The extras were changed. Set them on the server by hand, then press Mark done.'),
+            $change->status === ResourceChange::STATUS_APPLIED => __('The extras were changed.'),
             $change->mode === ResourceChange::MODE_INVOICE => __('The extras change once the client pays invoice :number.', ['number' => $change->invoice?->displayNumber()]),
             $change->mode === ResourceChange::MODE_RENEWAL => __('The extras change on the next renewal date.'),
-            $change->server_state === ResourceChange::SERVER_QUEUED => __('The extras were changed. The server is set in the background.'),
-            $change->server_state === ResourceChange::SERVER_MANUAL => __('The extras were changed. Set them on the server by hand, then press Mark done.'),
             default => __('The extras were changed.'),
         });
     }

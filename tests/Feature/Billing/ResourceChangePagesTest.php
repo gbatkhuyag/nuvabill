@@ -4,6 +4,7 @@ namespace Tests\Feature\Billing;
 
 use App\Billing\PaymentRecorder;
 use App\Billing\ResourceChanges;
+use App\Billing\Wallet;
 use App\Enums\ServiceStatus;
 use App\Extensions\ExtensionManager;
 use App\Mail\TemplatedMessage;
@@ -171,6 +172,34 @@ class ResourceChangePagesTest extends TestCase
         $this->getJson(route('client.services.resources', $this->service))->assertOk()->assertJsonPath('state', 'none');
     }
 
+    public function test_the_card_is_left_out_when_the_client_can_change_nothing(): void
+    {
+        $bare = Service::factory()->create(['client_id' => $this->client->id, 'product_id' => $this->vps->id, 'registration_date' => '2026-07-01', 'next_due_date' => '2026-11-01']);
+        $this->actingAs($this->client, 'web');
+
+        $this->get(route('client.services.show', $bare))->assertOk()->assertSee('id="resources"', false)->assertSee('name="steps[ram]"', false);
+
+        // Client changes switched off: no extras and nothing to add, so no empty card.
+        $this->setSettings(['billing.resource_changes' => false]);
+        $this->get(route('client.services.show', $bare))->assertOk()->assertDontSee('id="resources"', false);
+
+        // Every option only at order.
+        $this->setSettings(['billing.resource_changes' => true]);
+        ResourceOption::query()->update(['client_can_add' => false]);
+        $this->get(route('client.services.show', $bare))->assertOk()->assertDontSee('id="resources"', false);
+
+        // A service with extras still lists them.
+        $this->get(route('client.services.show', $this->service))->assertOk()->assertSee('id="resources"', false)->assertSee('RAM +2 GB');
+    }
+
+    public function test_the_review_page_draws_the_arrow_for_both_reading_directions(): void
+    {
+        $this->actingAs($this->client, 'web')
+            ->get(route('client.services.resources', ['service' => $this->service, 'steps' => ['ram' => 3]]))
+            ->assertOk()
+            ->assertSee('<bdi>+2 GB</bdi> <span class="resource-arrow" aria-hidden="true">→</span><span class="sr-only">changes to</span> <b><bdi>+3 GB</bdi></b>', false);
+    }
+
     public function test_a_waiting_change_shows_pay_and_stop_on_the_card(): void
     {
         $change = app(ResourceChanges::class)->start($this->service, ['ram' => 3]);
@@ -179,7 +208,7 @@ class ResourceChangePagesTest extends TestCase
             ->get(route('client.services.show', $this->service))
             ->assertOk()
             ->assertSee('Waiting for payment of invoice '.$change->invoice->displayNumber().'.')
-            ->assertSee('RAM: +2 GB → +3 GB')
+            ->assertSee('<bdi>RAM</bdi> <span><bdi>+2 GB</bdi> <span class="resource-arrow" aria-hidden="true">→</span><span class="sr-only">changes to</span> <b><bdi>+3 GB</bdi></b></span>', false)
             ->assertSee(route('client.invoices.show', $change->invoice), false)
             ->assertSee('Stop this change')
             ->assertDontSee('name="steps[ram]"', false);
@@ -235,6 +264,20 @@ class ResourceChangePagesTest extends TestCase
         $this->post(route('admin.services.resources.done', $this->service))->assertSessionHas('status', 'The change is marked as done. The client got an email.');
         $this->assertSame(ResourceChange::SERVER_DONE, $change->fresh()->server_state);
         Mail::assertSent(TemplatedMessage::class, fn (TemplatedMessage $mail): bool => $mail->hasTo('mer.las@example.test') && $mail->subjectLine === 'Your server resources changed');
+    }
+
+    public function test_staff_are_told_when_the_clients_wallet_paid_the_change_at_once(): void
+    {
+        $this->setSettings(['wallet.auto_apply' => true]);
+        app(Wallet::class)->change($this->client, 5000, 'Top up');
+        $this->signInAdmin(Admin::factory()->create(['name' => 'Raz']));
+
+        $this->post(route('admin.services.resources.change', $this->service), ['steps' => ['ram' => 4], 'charge' => '1'])
+            ->assertSessionHas('status', 'The extras were changed. Set them on the server by hand, then press Mark done.');
+
+        $change = ResourceChange::query()->sole();
+        $this->assertSame([ResourceChange::MODE_INVOICE, ResourceChange::STATUS_APPLIED], [$change->mode, $change->status]);
+        $this->assertSame(4, (int) $this->service->resources()->where('kind', 'ram')->value('steps'));
     }
 
     public function test_staff_stop_a_waiting_change_and_use_the_server_tools(): void

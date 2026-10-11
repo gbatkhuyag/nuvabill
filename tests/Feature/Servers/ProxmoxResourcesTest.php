@@ -2,11 +2,13 @@
 
 namespace Tests\Feature\Servers;
 
+use App\Billing\ResourceChanges;
 use App\Enums\ServiceStatus;
 use App\Extensions\ExtensionManager;
 use App\Extensions\Servers\Resources\ResourceExtras;
 use App\Models\ActivityLog;
 use App\Models\Product;
+use App\Models\ResourceChange;
 use App\Models\ResourceOption;
 use App\Models\Server;
 use App\Models\Service;
@@ -14,7 +16,9 @@ use App\Models\ServiceResourceOption;
 use App\Provisioning\Provisioner;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Sleep;
 use Nuvabill\Extensions\Proxmox\ProxmoxModule;
 use Tests\TestCase;
@@ -196,6 +200,22 @@ class ProxmoxResourcesTest extends TestCase
         $this->assertSame([], $node->log);
     }
 
+    public function test_a_client_change_asks_the_node_for_its_limits_before_any_lock(): void
+    {
+        Mail::fake();
+        $this->setSettings(['billing.currency' => 'USD']);
+        $node = $this->fakeNode(['cores' => 2, 'memory' => '2048', 'scsi0' => 'local-lvm:vm-105-disk-0,size=40G']);
+        $service = $this->service(['module_data' => ['vmid' => 105, 'node' => 'pve1']]);
+        ResourceOption::factory()->kind('ram', 1024)->priced(200)->create(['product_id' => $service->product_id]);
+        $outside = DB::transactionLevel();
+
+        $change = app(ResourceChanges::class)->start($service->fresh(), ['ram' => 2]);
+
+        $this->assertSame(ResourceChange::MODE_INVOICE, $change->mode);
+        $this->assertContains('GET config', $node->log, 'The limits were read from the node (the cache was cold).');
+        $this->assertSame([$outside], array_values(array_unique($node->levels)), 'No request ran while the service and option rows were locked.');
+    }
+
     public function test_a_slow_disk_resize_is_checked_again_later(): void
     {
         Sleep::fake(syncWithCarbon: true);
@@ -216,15 +236,17 @@ class ProxmoxResourcesTest extends TestCase
     /**
      * A Proxmox node with VM 105 (cloned from template 9000) whose config changes as it is set.
      * Tasks end with "OK" at once, except a resize while resizeRuns is true. Its log lists each
-     * request as "METHOD what", with the sent values.
+     * request as "METHOD what", with the sent values, and levels the database transaction level
+     * each request ran at.
      *
      * @param  array<string, mixed>  $config
      */
     private function fakeNode(array $config): \stdClass
     {
-        $node = (object) ['config' => $config, 'resizeRuns' => false, 'down' => false, 'log' => []];
+        $node = (object) ['config' => $config, 'resizeRuns' => false, 'down' => false, 'log' => [], 'levels' => []];
 
         Http::fake(function (Request $request) use ($node) {
+            $node->levels[] = DB::transactionLevel();
             $path = (string) preg_replace('#^/api2/json/(nodes/pve1/)?#', '', (string) parse_url($request->url(), PHP_URL_PATH));
             $method = $request->method();
             $data = array_diff_key($request->data(), ['cipassword' => true]);

@@ -87,7 +87,7 @@
                 </span>
                 <ul class="resource-list" style="font-size:.86rem">
                     @foreach (app(\App\Billing\ResourceChanges::class)->describe($pending) as $line)
-                        <li><bdi>{{ $line }}</bdi></li>
+                        <li><bdi>{{ $line['label'] }}</bdi> <span><bdi>{{ $line['from_text'] }}</bdi> <span class="resource-arrow" aria-hidden="true">→</span><span class="sr-only">{{ __('changes to') }}</span> <b><bdi>{{ $line['to_text'] }}</bdi></b></span></li>
                     @endforeach
                 </ul>
                 <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -126,7 +126,7 @@
                         <div style="display:grid;gap:.45rem">
                             <ul class="resource-list quote-changes">
                                 <template x-for="change in quote.changes" :key="change.kind">
-                                    <li><bdi x-text="change.label"></bdi> <span><bdi x-text="change.from_text"></bdi> → <b><bdi x-text="change.to_text"></bdi></b></span></li>
+                                    <li><bdi x-text="change.label"></bdi> <span><bdi x-text="change.from_text"></bdi> <span class="resource-arrow" aria-hidden="true">→</span><span class="sr-only">{{ __('changes to') }}</span> <b><bdi x-text="change.to_text"></bdi></b></span></li>
                                 </template>
                             </ul>
                             <template x-for="line in quote.lines" :key="line.label">

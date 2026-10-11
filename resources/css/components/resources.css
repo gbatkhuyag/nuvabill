@@ -208,6 +208,15 @@
         gap: 0.2rem 0.75rem;
     }
 
+    /* The arrow from the old to the new value points the way the page reads. */
+    .resource-arrow {
+        display: inline-block;
+    }
+
+    [dir='rtl'] .resource-arrow {
+        transform: scaleX(-1);
+    }
+
     .quote-box {
         display: grid;
         gap: 0.45rem;
