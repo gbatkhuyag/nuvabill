@@ -11,7 +11,9 @@ use App\Enums\AutoSetup;
 use App\Enums\BillingCycle;
 use App\Enums\IncidentStatus;
 use App\Enums\InvoiceStatus;
+use App\Enums\MachineStatus;
 use App\Enums\OrderStatus;
+use App\Enums\PowerState;
 use App\Enums\ProductType;
 use App\Enums\QuoteStatus;
 use App\Enums\ServiceStatus;
@@ -29,6 +31,8 @@ use App\Models\Domain;
 use App\Models\Invoice;
 use App\Models\KbArticle;
 use App\Models\KbCategory;
+use App\Models\Machine;
+use App\Models\MachineIp;
 use App\Models\NetworkIncident;
 use App\Models\Order;
 use App\Models\PaymentMethod;
@@ -39,6 +43,7 @@ use App\Models\Role;
 use App\Models\Server;
 use App\Models\ServerCheck;
 use App\Models\Service;
+use App\Models\ServiceResourceOption;
 use App\Models\TaxRule;
 use App\Models\Ticket;
 use App\Models\TicketDepartment;
@@ -49,6 +54,7 @@ use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 
 /**
  * Demo data for local development, screenshots and the public demo: php artisan migrate:fresh --seed
@@ -155,15 +161,18 @@ class DatabaseSeeder extends Seeder
             'next_due_date' => $today,
         ]);
 
+        // Demo::fakeServers() gives each demo VPS its own Virtualizor user with the same number.
         Service::query()
             ->whereHas('product', fn ($query) => $query->where('server_module', 'virtualizor'))
             ->each(fn (Service $service) => $service->update([
                 'server_id' => Server::query()->where('hostname', Demo::VPS_HOST)->value('id'),
                 'username' => 'root',
                 'domain' => 'vps'.(100 + $service->id).'.yourhost.net',
-                'module_data' => ['vpsid' => (string) (100 + $service->id)],
+                'module_data' => ['vpsid' => (string) (100 + $service->id), 'uid' => (string) (100 + $service->id)],
             ]));
 
+        $this->extraRam($clients[5]);
+        $this->dedicatedServers($clients[5]);
         $this->domains($clients);
         $this->tickets($clients->slice(1, 4)->values(), $admin);
 
@@ -322,7 +331,7 @@ class DatabaseSeeder extends Seeder
      */
     private function addonsAndCoupons(): void
     {
-        $hosting = Product::query()->where('server_module', '!=', 'virtualizor')->orWhereNull('server_module')->pluck('id')->all();
+        $hosting = Product::query()->whereNotIn('server_module', ['virtualizor', 'dedicated'])->orWhereNull('server_module')->pluck('id')->all();
 
         foreach ([
             ['Daily backups', 'Keep 30 days of copies. Restore any file in one click.', 'refresh', 200, true, $hosting],
@@ -471,7 +480,8 @@ class DatabaseSeeder extends Seeder
     }
 
     /**
-     * VPS plans on the demo Virtualizor node (answered by Demo::fakeServers()), so clients see the VPS panel.
+     * VPS plans on the demo Virtualizor node (answered by Demo::fakeServers()), so clients see the VPS panel
+     * with every tab the fake node answers for, and sliders for extra CPU, RAM, disk and IPv4.
      */
     private function vpsPlans(): void
     {
@@ -493,7 +503,7 @@ class DatabaseSeeder extends Seeder
             'sort_order' => 1,
         ]);
 
-        foreach ([['VPS 2', 'vps-2', 1200, "2 vCPU\n4 GB RAM\n80 GB NVMe\n2 TB traffic"], ['VPS 4', 'vps-4', 2400, "4 vCPU\n8 GB RAM\n160 GB NVMe\n4 TB traffic"], ['VPS 8', 'vps-8', 4800, "8 vCPU\n16 GB RAM\n320 GB NVMe\n8 TB traffic"]] as $order => [$name, $slug, $price, $features]) {
+        foreach ([['VPS 2', 'vps-2', 1200, "2 vCPU\n4 GB RAM\n80 GB NVMe\n2 TB traffic", [2, 4096, 80]], ['VPS 4', 'vps-4', 2400, "4 vCPU\n8 GB RAM\n160 GB NVMe\n4 TB traffic", [4, 8192, 160]], ['VPS 8', 'vps-8', 4800, "8 vCPU\n16 GB RAM\n320 GB NVMe\n8 TB traffic", [8, 16384, 320]]] as $order => [$name, $slug, $price, $features, $plan]) {
             $product = Product::query()->firstOrCreate(['slug' => $slug], [
                 'product_group_id' => $group->id,
                 'name' => $name,
@@ -504,12 +514,184 @@ class DatabaseSeeder extends Seeder
                 'server_module' => 'virtualizor',
                 'server_id' => $server->id,
                 'module_config' => ['virt' => 'kvm', 'os_id' => '100', 'plan_id' => (string) ($order + 1)],
+                // Off by default until tested on a real Virtualizor; the demo node answers for them.
+                'panel_sections' => ['firewall' => true, 'backups' => true, 'media' => true],
                 'auto_setup' => AutoSetup::Manual,
                 'sort_order' => $order,
             ]);
 
             $product->prices()->firstOrCreate(['currency' => 'USD', 'billing_cycle' => BillingCycle::Monthly], ['price' => $price, 'setup_fee' => 0]);
             $product->prices()->firstOrCreate(['currency' => 'USD', 'billing_cycle' => BillingCycle::Annually], ['price' => $price * 10, 'setup_fee' => 0]);
+            $this->resourceOptions($product, ...$plan);
+        }
+    }
+
+    /**
+     * Sliders for extra CPU cores, RAM, disk space and IPv4 addresses on a VPS plan, priced per
+     * step in dollars, with the module's kind details saved on each option as the option editor
+     * saves them. Disk can only grow; an extra IPv4 address has a one-time setup fee.
+     */
+    private function resourceOptions(Product $product, int $cores, int $ramMb, int $diskGb): void
+    {
+        $options = [
+            // kind, unit, step size, plan amount, most steps, monthly price per step, setup fee per step, can shrink, restarts, note, module maximum
+            ['cpu', 'core', 1, $cores, 8, 400, 0, true, true, null, 64],
+            ['ram', 'MB', 1024, $ramMb, 16, 300, 0, true, true, null, 262144],
+            ['disk', 'GB', 20, $diskGb, 10, 200, 0, false, false, 'Grow the partition inside your server to use the new space.', 16384],
+            ['ipv4', 'IP', 1, 1, 4, 250, 200, true, false, 'New addresses may need a restart.', 16],
+        ];
+
+        foreach ($options as $order => [$kind, $unit, $step, $included, $maxSteps, $monthly, $setup, $canShrink, $restarts, $note, $maxExtra]) {
+            $option = $product->resourceOptions()->firstOrCreate(['kind' => $kind], [
+                'unit' => $unit,
+                'step_size' => $step,
+                'included' => $included,
+                'min_steps' => 0,
+                'max_steps' => $maxSteps,
+                'default_steps' => 0,
+                'client_can_add' => true,
+                'client_can_remove' => $canShrink,
+                'is_active' => true,
+                'sort_order' => $order,
+                'can_shrink' => $canShrink,
+                'restarts' => $restarts,
+                'note' => $note,
+                'max_extra' => $maxExtra,
+            ]);
+
+            foreach ([[BillingCycle::Monthly, 1], [BillingCycle::Annually, 10]] as [$cycle, $months]) {
+                $option->prices()->firstOrCreate(['currency' => 'USD', 'billing_cycle' => $cycle], ['price' => $monthly * $months, 'setup_fee' => $setup]);
+            }
+        }
+    }
+
+    /**
+     * One more RAM step on a "Mer Las" VPS, so staff see a service with extras: its own row, at the
+     * price of one step, renewed with the plan.
+     */
+    private function extraRam(Client $client): void
+    {
+        $service = $client->services()
+            ->whereHas('product', fn ($query) => $query->where('server_module', 'virtualizor'))
+            ->with('product.resourceOptions.prices')
+            ->first();
+        $option = $service?->product->resourceOptions->firstWhere('kind', 'ram');
+
+        if ($service === null || $option === null) {
+            return;
+        }
+
+        $service->resources()->create([
+            'resource_option_id' => $option->id,
+            'kind' => $option->kind,
+            'unit' => $option->unit,
+            'step_size' => $option->step_size,
+            'steps' => 1,
+            'recurring_amount' => (int) $option->priceFor($service->currency, $service->billing_cycle)?->price,
+            'status' => ServiceResourceOption::STATUS_ACTIVE,
+        ]);
+    }
+
+    /**
+     * Dedicated servers from the hardware inventory: one product sold from six machines whose
+     * BMCs are fakes (Demo::fakeServers() answers for them). DS-101 runs a "Mer Las" server,
+     * DS-103 waits for its disks to be wiped, and DS-102, DS-104, DS-105 and DS-106 are free stock,
+     * so one visitor's order does not sell the product out for everyone until the next reset.
+     *
+     * The BMC passwords are random and the certificate pins are dummies: the fake BMCs check
+     * neither, and the demo locks every hardware change.
+     */
+    private function dedicatedServers(Client $client): void
+    {
+        $group = ProductGroup::query()->firstOrCreate(['slug' => 'dedicated-servers'], [
+            'name' => 'Dedicated servers',
+            'description' => 'Your own physical server in our rack, with full root access and power buttons in your client area.',
+            'is_visible' => true,
+            'sort_order' => 2,
+        ]);
+
+        $product = Product::query()->firstOrCreate(['slug' => 'dedicated-e-2388g'], [
+            'product_group_id' => $group->id,
+            'name' => 'Dedicated E-2388G',
+            'type' => ProductType::Dedicated,
+            'description' => "Intel Xeon E-2388G, 8 cores\n64 GB ECC RAM\n2 × 960 GB NVMe\n1 Gbps port\nPower on, off and restart from your client area",
+            'is_visible' => true,
+            'requires_domain' => false,
+            'server_module' => 'dedicated',
+            'uses_machines' => true,
+            'module_config' => [
+                'client_power' => 'full',
+                'reinstall_requests' => '1',
+                'suspend_mode' => 'graceful',
+                'suspend_notify_staff' => '0',
+                'unsuspend_power_on' => '1',
+                'setup_before_payment' => '0',
+                'default_os' => 'Debian 12',
+                'login_name' => 'root',
+            ],
+            'auto_setup' => AutoSetup::OnPayment,
+            'sort_order' => 0,
+        ]);
+
+        $product->prices()->firstOrCreate(['currency' => 'USD', 'billing_cycle' => BillingCycle::Monthly], ['price' => 9900, 'setup_fee' => 0]);
+        $product->prices()->firstOrCreate(['currency' => 'USD', 'billing_cycle' => BillingCycle::Annually], ['price' => 99000, 'setup_fee' => 0]);
+        $product->load('prices');
+
+        $started = CarbonImmutable::today()->subMonths(4)->subDays(3);
+        $service = $this->serviceWithHistory($client, $product, $started, 'server.'.self::slug((string) $client->company_name).'.com');
+        $service->update(['username' => 'root']);
+
+        foreach ([
+            ['DS-101', Demo::BMC_HOSTS[0], 'U7', 8, MachineStatus::Active],
+            ['DS-102', Demo::BMC_HOSTS[1], 'U8', 16, MachineStatus::Available],
+            ['DS-103', Demo::BMC_HOSTS[2], 'U9', 24, MachineStatus::Wiping],
+            ['DS-104', Demo::BMC_HOSTS[3], 'U10', 32, MachineStatus::Available],
+            ['DS-105', Demo::BMC_HOSTS[4], 'U11', 40, MachineStatus::Available],
+            ['DS-106', Demo::BMC_HOSTS[5], 'U12', 48, MachineStatus::Available],
+        ] as $index => [$name, $bmc, $unit, $network, $status]) {
+            $machine = new Machine([
+                'name' => $name,
+                'location' => 'Data center 1',
+                'rack' => 'A1',
+                'rack_unit' => $unit,
+                'cpu' => 'Intel Xeon E-2388G',
+                'cpu_cores' => 8,
+                'ram_gb' => 64,
+                'storage' => '2 × 960 GB NVMe',
+                'port_speed' => '1 Gbps',
+                'bmc_type' => 'redfish',
+                'bmc_host' => $bmc,
+                'bmc_port' => 443,
+                'bmc_username' => 'operator',
+                'bmc_password' => Str::random(32),
+                'bmc_tls_mode' => 'pinned',
+            ]);
+
+            $machine->forceFill([
+                'status' => $status,
+                'service_id' => $status === MachineStatus::Active ? $service->id : null,
+                'provisioned_at' => $status === MachineStatus::Active ? $started->addDay() : null,
+                'released_at' => $status === MachineStatus::Wiping ? now()->subDay() : null,
+                'bmc_tls_pin' => base64_encode(hash('sha256', 'Nuvabill demo BMC key '.$bmc, true)),
+                'bmc_tls_fingerprint' => implode(':', str_split(strtoupper(hash('sha256', 'Nuvabill demo BMC certificate '.$bmc)), 2)),
+                'bmc_system_path' => Demo::BMC_SYSTEM,
+                'bmc_reset_target' => Demo::BMC_SYSTEM.'/Actions/ComputerSystem.Reset',
+                'bmc_reset_types' => ['On', 'ForceOff', 'GracefulShutdown', 'GracefulRestart', 'ForceRestart'],
+                'bmc_vendor' => 'Supermicro',
+                'bmc_model' => 'SYS-510T-MR',
+                'bmc_checked_at' => now()->subDays(10 + $index),
+                'power_state' => $status === MachineStatus::Active ? PowerState::On->value : PowerState::Off->value,
+                'power_checked_at' => now(),
+            ])->save();
+
+            $machine->products()->attach($product->id);
+
+            // A /29 of documentation addresses: the gateway, the main IP, an included IP and a free extra IP.
+            foreach ([[1, MachineIp::KIND_PRIMARY], [2, MachineIp::KIND_INCLUDED], [3, MachineIp::KIND_EXTRA]] as [$offset, $kind]) {
+                $machine->ips()->create(['address' => '198.51.100.'.($network + 1 + $offset), 'version' => 4, 'prefix' => 29, 'gateway' => '198.51.100.'.($network + 1), 'kind' => $kind]);
+            }
+
+            $machine->ips()->create(['address' => '2001:db8:'.(101 + $index).'::2', 'version' => 6, 'prefix' => 64, 'gateway' => '2001:db8:'.(101 + $index).'::1', 'kind' => MachineIp::KIND_INCLUDED]);
         }
     }
 
@@ -584,7 +766,7 @@ class DatabaseSeeder extends Seeder
         }
     }
 
-    private function serviceWithHistory(Client $client, Product $product, CarbonImmutable $started, ?string $domain): void
+    private function serviceWithHistory(Client $client, Product $product, CarbonImmutable $started, ?string $domain): Service
     {
         $today = CarbonImmutable::today();
         $price = $product->priceFor('USD', BillingCycle::Monthly)->price;
@@ -639,6 +821,8 @@ class DatabaseSeeder extends Seeder
                 'paid_at' => $paidAt,
             ]);
         }
+
+        return $service;
     }
 
     /**
