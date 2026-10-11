@@ -35,7 +35,7 @@
                     @foreach ($group->products as $product)
                         @php $start = $product->startingPrice($currency); @endphp
                         <tr>
-                            <td><a class="row-link" href="{{ route('admin.products.edit', $product) }}">{{ $product->name }}</a><div class="faint" style="font-size:.8rem">{{ $product->type->label() }}@if ($product->server_module) · {{ $product->server_module }}@endif</div></td>
+                            <td><a class="row-link" href="{{ route('admin.products.edit', $product) }}">{{ $product->name }}</a><div class="faint" style="font-size:.8rem">{{ $product->type->label() }}@if ($product->server_module) · {{ $product->server_module }}@endif @if ($resourceOptionCounts[$product->id] ?? 0) · <a href="{{ route('admin.products.resources.index', $product) }}">{{ trans_choice(':count resource option|:count resource options', $resourceOptionCounts[$product->id], ['count' => $resourceOptionCounts[$product->id]]) }}</a>@endif</div></td>
                             <td class="num" style="white-space:nowrap">{{ $start ? money($start->price, $currency).$start->billing_cycle->suffix() : __('No price') }}</td>
                             <td>{{ $product->auto_setup->label() }}</td>
                             <td>@if ($product->is_visible)<x-pill tone="good">{{ __('Visible') }}</x-pill>@else<x-pill>{{ __('Hidden') }}</x-pill>@endif</td>

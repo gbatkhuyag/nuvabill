@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Store;
 use App\Billing\Cart;
 use App\Billing\CouponUnavailable;
 use App\Billing\OrderPlacer;
+use App\Billing\ResourceSoldOut;
 use App\Billing\SoldOut;
 use App\Billing\Taxes;
 use App\Http\Controllers\Controller;
@@ -63,7 +64,7 @@ class CheckoutController extends Controller
 
         try {
             $order = $placer->place($client, $lines, $request->ip(), $ipCountry, $coupon);
-        } catch (SoldOut $exception) {
+        } catch (SoldOut|ResourceSoldOut $exception) {
             return redirect()->route('cart.show')->with('error', $exception->getMessage());
         } catch (CouponUnavailable $exception) {
             // Another order used the coupon up a moment ago: the cart shows the full prices again.

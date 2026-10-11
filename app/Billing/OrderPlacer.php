@@ -16,10 +16,14 @@ use App\Models\Domain;
 use App\Models\InvoiceItem;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\ResourceOption;
 use App\Models\Service;
 use App\Models\ServiceAddon;
+use App\Models\ServiceResourceOption;
+use App\Provisioning\Hardware\MachineInventory;
 use App\Support\Activity;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -38,10 +42,16 @@ class OrderPlacer
     ) {}
 
     /**
+     * Each product line becomes a pending service with its add-ons and its extras (resource rows,
+     * priced as the cart line says), and one invoice bills them all. A product sold from the
+     * hardware inventory reserves its machine here. Coupons only ever take money off the plan
+     * price, never off add-ons or extras.
+     *
      * @param  Collection<int, CartLine>  $lines  Lines from the cart. With a coupon, they already carry their discounts.
      * @param  string|null  $ipCountry  The visitor's country from a trusted proxy, for the fraud check.
      *
-     * @throws SoldOut When the order wants more of a product than is left; nothing is made then.
+     * @throws SoldOut When the order wants more of a product than is left (or no machine is free); nothing is made then.
+     * @throws ResourceSoldOut When the order wants more steps of an extra than its stock has left; nothing is made then.
      * @throws CouponUnavailable When the coupon stopped working in the meantime; nothing is made then.
      */
     public function place(Client $client, Collection $lines, ?string $ipAddress = null, ?string $ipCountry = null, ?Coupon $coupon = null): Order
@@ -60,9 +70,10 @@ class OrderPlacer
         // each other out (the gaps between saved services are locked too). The database then stops
         // one of them; it is rolled back in full and made again.
         $order = DB::transaction(function () use ($client, $lines, $ipAddress, $fraudReasons, &$coupon): Order {
-            // First, before anything is read: the client and coupon, then the products in stock and
-            // their services are locked, in the order plan changes use too (see lockCoupon). MySQL
-            // and MariaDB then count the stock from the newest rows, not from an older snapshot.
+            // First, before anything is read: the client and coupon, then the products in stock, their
+            // machines, the extras in stock and what holds their stock are locked, in the order plan
+            // and resource changes use too (see lockCoupon and reserveStock). MySQL and MariaDB then
+            // count the stock from the newest rows, not from an older snapshot.
             $checksCoupon = $coupon !== null && $lines->contains(fn (CartLine $line): bool => $line->discount > 0);
             $lockedCoupon = $checksCoupon ? $this->lockCoupon($client, $coupon) : null;
 
@@ -115,6 +126,12 @@ class OrderPlacer
                 ]);
 
                 $service->setRelation('product', $line->product);
+
+                if ($line->product->uses_machines) {
+                    // The free linked machine with the lowest id, under the locks reserveStock() took.
+                    app(MachineInventory::class)->reserveFor($service);
+                }
+
                 $items[] = LineItems::servicePeriod($service, $today, $line->price);
 
                 if ($line->setupFee > 0) {
@@ -135,6 +152,8 @@ class OrderPlacer
                         $items[] = ['type' => InvoiceItem::TYPE_ADDON, 'description' => __('Setup fee').' - '.$addon['name'], 'amount' => $addon['setup_fee'], 'service_id' => $service->id];
                     }
                 }
+
+                $items = [...$items, ...$this->resourceItems($service, $line, $today)];
 
                 if ($coupon !== null && $line->discount > 0) {
                     $items[] = LineItems::discount($coupon, $line->discount, $service);
@@ -273,33 +292,145 @@ class OrderPlacer
     }
 
     /**
-     * Products with a stock limit and their services are locked until the order is made, so two
-     * checkouts at once cannot both take the last one. Run inside the order's database transaction,
-     * before anything is read.
+     * Products with a stock limit (or sold from the hardware inventory), extras with a stock limit,
+     * and what holds their stock are locked until the order is made, so two checkouts at once cannot
+     * both take the last one. Run inside the order's database transaction, before anything is read.
+     *
+     * Locks follow the one order every checkout and change uses (see Product::lockedStockLeft()):
+     * the products in id order, then the free machines of hardware products, then the extras'
+     * options in id order, then the products' services, then the services' extras rows.
      *
      * @param  Collection<int, CartLine>  $lines
      *
      * @throws SoldOut
+     * @throws ResourceSoldOut
      */
     private function reserveStock(Collection $lines): void
     {
-        $wanted = $lines->reject(fn (CartLine $line): bool => $line->isDomain())->countBy(fn (CartLine $line): int => $line->product->id);
+        $products = $lines->reject(fn (CartLine $line): bool => $line->isDomain());
+        $wanted = $products->countBy(fn (CartLine $line): int => $line->product->id);
 
         if ($wanted->isEmpty()) {
             return;
         }
 
         // All the products first, in id order, so two carts with the same products lock them in the
-        // same order; then each one's services.
-        $limited = Product::query()->whereKey($wanted->keys()->all())->whereNotNull('stock')->orderBy('id')->lockForUpdate()->get();
+        // same order.
+        $limited = Product::query()
+            ->whereKey($wanted->keys()->all())
+            ->where(fn (Builder $query): Builder => $query->whereNotNull('stock')->orWhere('uses_machines', true))
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
 
-        foreach ($limited as $product) {
-            $left = $product->lockedStockLeft();
+        [$hardware, $counted] = $limited->partition(fn (Product $product): bool => $product->uses_machines);
 
-            if ($left !== null && $wanted[$product->id] > $left) {
-                throw new SoldOut($product, $left);
+        // Hardware products count (and lock) their free machines first.
+        foreach ($hardware as $product) {
+            $this->checkProductStock($product, $wanted[$product->id]);
+        }
+
+        $options = $this->lockResourceOptions($products);
+
+        // Then the other products count (and lock) their services, and the options their rows.
+        foreach ($counted as $product) {
+            $this->checkProductStock($product, $wanted[$product->id]);
+        }
+
+        $this->checkResourceStock($options);
+    }
+
+    /**
+     * @throws SoldOut
+     */
+    private function checkProductStock(Product $product, int $wanted): void
+    {
+        $left = $product->lockedStockLeft();
+
+        if ($left !== null && $wanted > $left) {
+            throw new SoldOut($product, $left);
+        }
+    }
+
+    /**
+     * Lock the options with a stock limit of the extras the order wants, in id order, and return
+     * how many steps the order wants of each.
+     *
+     * @param  Collection<int, CartLine>  $lines
+     * @return array<int, array{option: ResourceOption, steps: int}> option id => the locked option and the steps wanted
+     */
+    private function lockResourceOptions(Collection $lines): array
+    {
+        $wanted = [];
+
+        foreach ($lines as $line) {
+            foreach ($line->resources as $resource) {
+                $wanted[$resource['option_id']] = ($wanted[$resource['option_id']] ?? 0) + $resource['steps'];
             }
         }
+
+        if ($wanted === []) {
+            return [];
+        }
+
+        $options = ResourceOption::query()->whereKey(array_keys($wanted))->whereNotNull('stock')->orderBy('id')->lockForUpdate()->get();
+
+        return $options->mapWithKeys(fn (ResourceOption $option): array => [$option->id => ['option' => $option, 'steps' => $wanted[$option->id]]])->all();
+    }
+
+    /**
+     * Count the stock left of each locked option from the newest saved rows (locking them).
+     *
+     * @param  array<int, array{option: ResourceOption, steps: int}>  $wanted
+     *
+     * @throws ResourceSoldOut
+     */
+    private function checkResourceStock(array $wanted): void
+    {
+        foreach ($wanted as ['option' => $option, 'steps' => $steps]) {
+            $left = $option->lockedStockLeft();
+
+            if ($left !== null && $steps > $left) {
+                throw new ResourceSoldOut($option, $left);
+            }
+        }
+    }
+
+    /**
+     * The extras of one product line: a resource row per kind on the new service, and its invoice
+     * lines (the first period, and the setup fee when there is one). A cycle that does not renew
+     * bills the extras once, so the row's renewal price is 0.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function resourceItems(Service $service, CartLine $line, CarbonImmutable $today): array
+    {
+        $items = [];
+        $options = $line->product->relationLoaded('resourceOptions') ? $line->product->resourceOptions->keyBy('id') : collect();
+
+        foreach ($line->resources as $resource) {
+            $row = $service->resources()->create([
+                'resource_option_id' => $resource['option_id'],
+                'kind' => $resource['kind'],
+                'unit' => $resource['unit'],
+                'step_size' => $resource['step_size'],
+                'steps' => $resource['steps'],
+                'recurring_amount' => $line->cycle->isRecurring() ? $resource['price'] : 0,
+                'status' => ServiceResourceOption::STATUS_ACTIVE,
+            ]);
+
+            if ($options->has($resource['option_id'])) {
+                $row->setRelation('option', $options->get($resource['option_id']));
+            }
+
+            $items[] = LineItems::resourcePeriod($service, $row, $today, $resource['price']);
+
+            if ($resource['setup_fee'] > 0) {
+                $items[] = LineItems::resourceSetupFee($service, $row, $resource['setup_fee']);
+            }
+        }
+
+        return $items;
     }
 
     private function uniqueOrderNumber(): string

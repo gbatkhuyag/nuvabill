@@ -4,6 +4,7 @@ namespace App\Billing;
 
 use App\Domains\DomainName;
 use App\Enums\BillingCycle;
+use App\Extensions\Servers\Resources\ResourceKind;
 use App\Models\Client;
 use App\Models\Coupon;
 use App\Models\Domain;
@@ -29,6 +30,26 @@ class Cart
      */
     public function add(Product $product, BillingCycle $cycle, ?string $domain, array $addonIds = []): void
     {
+        $this->addProduct($product, $cycle, $domain, $addonIds);
+    }
+
+    /**
+     * Add a product with its add-ons and extras, and return the new line's index. Only the number
+     * of steps per kind is kept: prices are looked up again each time the cart is read.
+     *
+     * @param  list<int>  $addonIds  Product add-ons the client ticked.
+     * @param  array<string, int>  $resources  kind => steps, as checked by ResourceOptions::validateForOrder().
+     */
+    public function addProduct(Product $product, BillingCycle $cycle, ?string $domain, array $addonIds = [], array $resources = []): int
+    {
+        $steps = [];
+
+        foreach ($resources as $kind => $count) {
+            if (is_string($kind) && ResourceKind::isValidKey($kind) && is_int($count) && $count > 0 && count($steps) < ResourceOptions::MAX_KINDS) {
+                $steps[$kind] = min($count, ResourceOptions::MAX_STEPS);
+            }
+        }
+
         $items = $this->rawItems();
         $items[] = [
             'kind' => CartLine::KIND_PRODUCT,
@@ -36,9 +57,12 @@ class Cart
             'billing_cycle' => $cycle->value,
             'domain' => $domain,
             'addons' => array_values(array_unique(array_map('intval', $addonIds))),
+            'resources' => $steps,
         ];
 
         $this->session->put(self::SESSION_KEY, $items);
+
+        return array_key_last($items);
     }
 
     /**
@@ -130,6 +154,8 @@ class Cart
 
     /**
      * Cart lines with current prices. Lines for hidden, sold-out or unpriced products and extensions are dropped.
+     * Extras are priced from the database in the cart's currency and kept inside each option's
+     * current range; extras that are no longer offered are left out (see ResourceOptions::cartLines()).
      *
      * With a working coupon, each line carries its discount.
      *
@@ -138,7 +164,7 @@ class Cart
     public function lines(string $currency, ?Client $client = null): Collection
     {
         $items = $this->rawItems();
-        $products = Product::query()->with('prices', 'server')->whereIn('id', array_filter(array_column($items, 'product_id')))->get()->keyBy('id');
+        $products = Product::query()->with('prices', 'server', 'resourceOptions.prices')->whereIn('id', array_filter(array_column($items, 'product_id')))->get()->keyBy('id');
         $addons = ProductAddon::query()->visible()->with('prices')->whereIn('id', collect($items)->pluck('addons')->flatten()->filter()->all())->get()->keyBy('id');
         $tlds = TldPrice::query()->enabled($currency)->get();
         $coupon = $this->coupon($currency, $client);
@@ -168,7 +194,11 @@ class Cart
                     $stockLeft[$product->id]--;
                 }
 
-                return new CartLine($index, $product, $cycle, $item['domain'] ?? null, $price->price, $price->setup_fee, addons: $this->addonLines($item, $product, $cycle, $currency, $addons));
+                return new CartLine(
+                    $index, $product, $cycle, $item['domain'] ?? null, $price->price, $price->setup_fee,
+                    addons: $this->addonLines($item, $product, $cycle, $currency, $addons),
+                    resources: $this->resourceLines($item, $product, $cycle, $currency),
+                );
             })
             ->filter()
             ->map(fn (CartLine $line): CartLine => $coupon === null ? $line : $line->withDiscount($this->discountFor($coupon, $line)))
@@ -219,6 +249,27 @@ class Cart
         return $lines;
     }
 
+    /**
+     * The extras saved with a product item, priced for its cycle and the cart's currency.
+     *
+     * @param  array<string, mixed>  $item
+     * @return list<array{kind: string, option_id: int, label: string, steps: int, step_size: int, unit: string, units: int, text: string, price: int, setup_fee: int}>
+     */
+    private function resourceLines(array $item, Product $product, BillingCycle $cycle, string $currency): array
+    {
+        $steps = array_filter(
+            (array) ($item['resources'] ?? []),
+            fn (mixed $count, mixed $kind): bool => is_string($kind) && is_int($count) && $count > 0,
+            ARRAY_FILTER_USE_BOTH,
+        );
+
+        if ($steps === [] || $product->resourceOptions->isEmpty()) {
+            return [];
+        }
+
+        return app(ResourceOptions::class)->cartLines($product, $cycle, $currency, $steps, $product->resourceOptions);
+    }
+
     private function client(): ?Client
     {
         $client = auth('web')->user();
@@ -251,9 +302,6 @@ class Cart
     }
 
     /**
-     * @return list<array<string, mixed>>
-     */
-    /**
      * How many lines of this product are in the cart.
      */
     public function quantityOf(Product $product): int
@@ -261,6 +309,9 @@ class Cart
         return collect($this->rawItems())->where('product_id', $product->id)->count();
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
     private function rawItems(): array
     {
         return array_values((array) $this->session->get(self::SESSION_KEY, []));

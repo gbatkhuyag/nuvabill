@@ -24,6 +24,9 @@
                                 @foreach ($line->addons as $addon)
                                     <div class="muted" style="font-size:.85rem">+ {{ $addon['name'] }} · {{ money($addon['price'] + $addon['setup_fee'], $currency) }}</div>
                                 @endforeach
+                                @foreach ($line->resources as $resource)
+                                    <div class="muted" style="font-size:.85rem">+ <bdi>{{ $resource['text'] }}</bdi> · {{ money($resource['price'] + $resource['setup_fee'], $currency) }}@if ($resource['setup_fee'] > 0) · {{ __('includes :fee setup', ['fee' => money($resource['setup_fee'], $currency)]) }}@endif</div>
+                                @endforeach
                                 @if ($line->discount)
                                     <div style="font-size:.85rem;color:var(--nb-good)">{{ __('Coupon: -:amount', ['amount' => money($line->discount, $currency)]) }}</div>
                                 @endif

@@ -9,6 +9,8 @@ use App\Billing\CouponLookups;
 use App\Billing\ExchangeRates;
 use App\Billing\OrderPlacer;
 use App\Billing\PaymentStarter;
+use App\Billing\ResourceOptions;
+use App\Billing\ResourceSoldOut;
 use App\Billing\SoldOut;
 use App\Billing\Taxes;
 use App\Domains\AvailabilityChecker;
@@ -94,6 +96,8 @@ class QuickOrderController extends Controller
                 'product_id' => $productId,
                 'billing_cycle' => $billingCycle,
                 'addons' => [],
+                // No choice yet: the extras start at their first steps, as the store shows them.
+                'resources' => [],
                 'domain_action' => 'none',
                 'domain' => null,
                 'coupon' => $coupon,
@@ -131,6 +135,7 @@ class QuickOrderController extends Controller
                 'summary' => $line->summary(),
                 'amount' => money($line->subtotal(), $currency),
                 'addons' => array_map(fn (array $addon): string => $addon['name'], $line->addons),
+                'resources' => array_column($line->resources, 'text'),
             ])->values()->all(),
             'subtotal' => money((int) $lines->sum(fn (CartLine $line): int => $line->subtotal()), $currency),
             'discount' => (int) $lines->sum(fn (CartLine $line): int => $line->discount),
@@ -141,7 +146,7 @@ class QuickOrderController extends Controller
             'saving' => $saving > 0 ? money($saving, $currency) : null,
             'saved_label' => $saving + $discount > 0 ? money($saving + $discount, $currency) : null,
             'renewal' => $productLine && $cycle->isRecurring()
-                ? __(':amount :cycle', ['amount' => money($productLine->price + array_sum(array_column($productLine->addons, 'price')), $currency), 'cycle' => Locales::inSentence($cycle->label())])
+                ? __(':amount :cycle', ['amount' => money($productLine->renewalAmount(), $currency), 'cycle' => Locales::inSentence($cycle->label())])
                 : null,
             'coupon' => $coupon ? ['code' => $coupon->code, 'label' => $coupon->describe().' · '.$coupon->paymentsLabel()] : null,
             'coupon_problem' => $cart->couponProblem($currency, $client),
@@ -186,6 +191,8 @@ class QuickOrderController extends Controller
             $order = $placer->place($client, $lines, $request->ip(), $ipCountry, $coupon);
         } catch (SoldOut $exception) {
             throw ValidationException::withMessages(['product_id' => $exception->getMessage()]);
+        } catch (ResourceSoldOut $exception) {
+            throw ValidationException::withMessages(['resources.'.$exception->option->kind => $exception->getMessage()]);
         }
 
         $cart->clear();
@@ -227,6 +234,8 @@ class QuickOrderController extends Controller
             'billing_cycle' => ['required', Rule::enum(BillingCycle::class)],
             'addons' => ['sometimes', 'array', 'max:20'],
             'addons.*' => ['integer'],
+            // kind => steps; ResourceOptions::validateForOrder() checks the kinds and ranges.
+            'resources' => ['sometimes', 'array'],
             'domain_action' => ['nullable', Rule::in([Domain::TYPE_REGISTER, Domain::TYPE_TRANSFER, 'own', 'none'])],
             'domain' => ['nullable', 'string', 'max:190', 'not_in:!'],
             'epp_code' => ['nullable', 'string', 'max:128'],
@@ -248,7 +257,7 @@ class QuickOrderController extends Controller
     }
 
     /**
-     * Put the product, its add-ons, the domain and the coupon in the cart.
+     * Put the product, its add-ons and extras, the domain and the coupon in the cart.
      *
      * @param  array<string, mixed>  $data
      * @return array{0: Product, 1: BillingCycle}
@@ -273,7 +282,8 @@ class QuickOrderController extends Controller
             throw ValidationException::withMessages(['domain' => __('Enter the domain name for this service.')]);
         }
 
-        $cart->add($product, $cycle, $product->requires_domain ? $domain : null, array_map('intval', $data['addons'] ?? []));
+        $resources = app(ResourceOptions::class)->validateForOrder($product, $cycle, $currency, (array) ($data['resources'] ?? []));
+        $cart->addProduct($product, $cycle, $product->requires_domain ? $domain : null, array_map('intval', $data['addons'] ?? []), $resources);
 
         if ($domain !== null && in_array($action, [Domain::TYPE_REGISTER, Domain::TYPE_TRANSFER], true)) {
             $price = $this->tldPrice($domain, $currency);

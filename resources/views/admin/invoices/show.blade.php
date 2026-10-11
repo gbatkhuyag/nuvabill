@@ -140,6 +140,9 @@
                     <form method="POST" action="{{ route('admin.invoices.credit-notes.store', $invoice) }}" style="display:grid;gap:.9rem">
                         @csrf
                         <p class="muted" style="margin:0">{{ __('Take back part of this invoice, for example for a day of downtime. The invoice stays as it is.') }}</p>
+                        @if ($invoice->items->contains('type', \App\Models\InvoiceItem::TYPE_RESOURCE_CHANGE))
+                            <p class="flash" data-tone="warn" style="margin:0">{{ __('Resources from this invoice are still on the service. Lower them on the service page if you take the money back.') }}</p>
+                        @endif
                         <x-input name="amount" type="number" step="0.01" min="0.01" :max="\App\Support\Money::toDecimal($invoice->creditableAmount())" :label="__('Amount (:currency), with tax', ['currency' => $invoice->currency])" :value="\App\Support\Money::toDecimal($invoice->creditableAmount())" required />
                         <div class="field">
                             <label for="f-credit-method">{{ __('What happens to the money') }}</label>
