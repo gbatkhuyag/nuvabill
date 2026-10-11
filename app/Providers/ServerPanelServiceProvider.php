@@ -2,9 +2,12 @@
 
 namespace App\Providers;
 
+use App\View\Composers\ProductPanelSectionsComposer;
+use App\View\Composers\ServiceClientAccessComposer;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -29,6 +32,10 @@ class ServerPanelServiceProvider extends ServiceProvider
     {
         RateLimiter::for('panel-reads', fn (Request $request): Limit => Limit::perMinute(self::READS_PER_MINUTE)->by(self::visitor($request)));
         RateLimiter::for('panel-actions', fn (Request $request): Limit => Limit::perMinute(self::ACTIONS_PER_MINUTE)->by(self::visitor($request)));
+
+        // The product form's "Client panel" switches and the service page's "Client access" card.
+        View::composer('admin.products.partials.panel-sections', ProductPanelSectionsComposer::class);
+        View::composer('admin.services.partials.client-access', ServiceClientAccessComposer::class);
     }
 
     /**

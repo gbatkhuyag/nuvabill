@@ -9,6 +9,8 @@ export default defineConfig({
             input: [
                 'resources/css/admin.css',
                 'resources/js/app.js',
+                // The console page only: noVNC stays out of app.js.
+                'resources/js/console.js',
                 'themes/nova/assets/theme.css',
             ],
             refresh: ['resources/views/**', 'themes/**/views/**', 'extensions/**/*.php'],

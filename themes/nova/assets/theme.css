@@ -1475,3 +1475,411 @@
         background: var(--nb-crit);
     }
 }
+
+/*
+ * The client server panel (client/services/server-panel and its tabs) and the console page. Shared
+ * pieces (tabs, charts, tiles, the secret box) are in resources/css/components/server-panel.css.
+ */
+@layer components {
+    .server-panel {
+        display: grid;
+        gap: 16px;
+    }
+
+    .server-panel-head {
+        display: grid;
+        gap: 12px;
+    }
+
+    .server-panel-top {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+    }
+
+    .server-panel-name {
+        min-width: 0;
+    }
+
+    .server-panel-name h2 {
+        font-size: 1.05rem;
+    }
+
+    .server-panel-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 10px;
+        margin: 0.25rem 0 0;
+        font-size: 0.88rem;
+        overflow-wrap: anywhere;
+    }
+
+    .server-panel-meta > span + span {
+        padding-inline-start: 10px;
+        border-inline-start: 1px solid var(--nb-line-2);
+    }
+
+    .server-panel-side {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .server-panel-side form {
+        margin: 0;
+    }
+
+    .server-panel-confirm {
+        margin-top: 8px;
+        font-size: 0.85rem;
+    }
+
+    .server-panel-tabs {
+        margin-inline: -1.1rem;
+        padding-inline: 1.1rem;
+    }
+
+    .server-panel-section {
+        padding-top: 4px;
+    }
+
+    .server-panel-section-title {
+        font-size: 0.98rem;
+        padding-top: 8px;
+        border-top: 1px solid var(--nb-line);
+    }
+
+    /* Inside a tab */
+    .panel-body,
+    .panel-stack,
+    .panel-feedback,
+    .panel-form {
+        display: grid;
+        gap: 14px;
+        min-width: 0;
+    }
+
+    .panel-note {
+        margin: 0;
+        max-width: 72ch;
+        font-size: 0.86rem;
+    }
+
+    .panel-columns {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        align-items: start;
+    }
+
+    .panel-block {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+        padding: 12px 14px;
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius);
+        background: var(--nb-surface);
+    }
+
+    .panel-block > .eyebrow,
+    .panel-block-head .eyebrow {
+        margin: 0;
+    }
+
+    .panel-block-head {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+    }
+
+    /* A key and value list built from rows of <div><dt><dd></div>. */
+    .panel-facts > div {
+        display: contents;
+    }
+
+    .panel-net {
+        display: grid;
+        gap: 2px;
+        font-size: 0.86rem;
+        color: var(--nb-muted);
+    }
+
+    .panel-net strong {
+        color: var(--nb-ink);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .panel-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 8px 12px;
+    }
+
+    .panel-toolbar > p {
+        margin: 0;
+    }
+
+    .panel-toolbar > .error {
+        flex-basis: 100%;
+    }
+
+    .panel-inline-field {
+        flex: 0 1 280px;
+    }
+
+    .panel-table {
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius);
+    }
+
+    .panel-table .table th,
+    .panel-table .table td {
+        padding-inline: 0.8rem;
+    }
+
+    .panel-details > summary {
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+
+    .panel-details[open] > summary {
+        margin-bottom: 4px;
+        color: var(--nb-accent);
+    }
+
+    .panel-rules,
+    .panel-choices {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        min-width: 0;
+    }
+
+    .panel-rules legend,
+    .panel-choices legend {
+        margin-bottom: 6px;
+        padding: 0;
+    }
+
+    .panel-rule {
+        display: grid;
+        gap: 6px;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr) auto;
+        align-items: center;
+    }
+
+    .panel-rule-error {
+        grid-column: 1 / -1;
+        margin: 0;
+    }
+
+    .panel-list {
+        display: grid;
+        gap: 4px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .panel-list-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 10px;
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius);
+    }
+
+    .panel-list-row .check svg {
+        width: 16px;
+        height: 16px;
+        margin-top: 0.2rem;
+        color: var(--nb-muted);
+        flex: none;
+    }
+
+    @media (max-width: 640px) {
+        .server-panel-side,
+        .server-panel-side form,
+        .server-panel-side .btn {
+            width: 100%;
+        }
+
+        .panel-rule {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--nb-line);
+        }
+
+        .panel-inline-field {
+            flex-basis: 100%;
+        }
+
+        .chart-plot {
+            height: 160px;
+            margin-inline-start: 46px;
+        }
+
+        .chart-axis-y {
+            width: 46px;
+        }
+    }
+
+    /* The console page: a bar, the server's screen filling the window, and the noVNC credit. */
+    .console-body {
+        min-height: 100vh;
+        min-height: 100dvh;
+        margin: 0;
+        background: var(--nb-chrome-2);
+        color: var(--nb-chrome-ink);
+    }
+
+    .console-page {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+        min-height: 100dvh;
+    }
+
+    .console-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 14px;
+        padding: 8px 14px;
+        background: var(--nb-chrome);
+        border-bottom: 1px solid var(--nb-chrome-line);
+    }
+
+    .console-name {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        color: var(--nb-chrome-ink);
+        font-weight: 600;
+        text-decoration: none;
+        overflow-wrap: anywhere;
+    }
+
+    .console-name svg {
+        width: 16px;
+        height: 16px;
+        flex: none;
+    }
+
+    .console-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        color: var(--nb-chrome-muted);
+        font-size: 0.86rem;
+        flex: 1 1 220px;
+    }
+
+    .console-dot {
+        width: 9px;
+        height: 9px;
+        flex: none;
+        border-radius: 999px;
+        background: var(--nb-warn);
+    }
+
+    .console-dot[data-state='connected'] {
+        background: var(--nb-good);
+    }
+
+    .console-dot[data-state='disconnected'] {
+        background: var(--nb-chrome-faint);
+    }
+
+    .console-dot[data-state='failed'] {
+        background: var(--nb-crit);
+    }
+
+    .console-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .console-again {
+        margin: 0;
+    }
+
+    .console-screen {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 320px;
+        overflow: hidden;
+        background: #000;
+    }
+
+    .console-screen:focus-visible {
+        outline-offset: -2px;
+    }
+
+    .console-noscript {
+        margin: 0;
+        padding: 16px;
+        text-align: center;
+    }
+
+    .console-expired {
+        display: grid;
+        gap: 12px;
+        width: min(560px, calc(100% - 32px));
+        margin: 48px auto;
+        color: var(--nb-ink);
+    }
+
+    .console-expired h1 {
+        font-size: 1.2rem;
+    }
+
+    .console-expired p {
+        margin: 0;
+    }
+
+    .console-dialog {
+        width: min(520px, calc(100% - 32px));
+        padding: 18px;
+        border: 1px solid var(--nb-line);
+        border-radius: var(--nb-radius);
+        background: var(--nb-surface);
+        color: var(--nb-ink);
+        box-shadow: var(--nb-shadow-lg);
+    }
+
+    .console-dialog::backdrop {
+        background: var(--nb-overlay);
+    }
+
+    .console-dialog h2 {
+        font-size: 1.05rem;
+    }
+
+    .console-foot {
+        padding: 6px 14px;
+        color: var(--nb-chrome-faint);
+        font-size: 0.75rem;
+        text-align: end;
+    }
+
+    .console-foot a {
+        color: var(--nb-chrome-muted);
+    }
+}

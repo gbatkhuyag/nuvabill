@@ -38,3 +38,19 @@ COMMERCIAL LICENSE
 
 A commercial White-label License that removes the attribution requirement
 is available from RapidNet Ltd at https://nuvabill.com.
+
+
+THIRD-PARTY SOFTWARE
+--------------------
+
+The browser console of the client server panel bundles this library. Its
+files are used as published, without changes, and are built into
+public/build by Vite.
+
+noVNC 1.7.0 (npm package @novnc/novnc)
+  Copyright (C) The noVNC authors (see the AUTHORS file in its source)
+  License: Mozilla Public License 2.0 (MPL-2.0),
+  https://www.mozilla.org/MPL/2.0/
+  Source code: https://github.com/novnc/noVNC (tag v1.7.0)
+  noVNC includes pako, Copyright (C) 2014-2016 by Vitaly Puzrin,
+  under the MIT License (https://github.com/nodeca/pako).

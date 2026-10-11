@@ -1,9 +1,19 @@
 /**
- * The server panel on a client's service page (theme view client/services/vps-panel). Power buttons
- * post in the background, show a pending state such as "Starting…", and the panel checks the
- * server's status until it gets there. Without JavaScript the same buttons post as a normal form.
+ * The power buttons of a server panel on a client's service page (theme views client/services/vps-panel
+ * and server-panel). Power buttons post in the background, show a pending state such as "Starting…",
+ * and the panel checks the server's status until it gets there. Without JavaScript the same buttons
+ * post as a normal form.
+ *
+ * Other power actions (such as "wol" for Wake on LAN) have no state to wait for: they show the
+ * server's message only. A button with data-destructive sends confirm=1 once the client said yes.
  */
-const EXPECTED = { start: 'running', restart: 'running', stop: 'stopped', poweroff: 'stopped' };
+const EXPECTED = { start: 'running', restart: 'running', stop: 'stopped', poweroff: 'stopped', reset: 'running', 'power-cycle': 'running' };
+
+/** Actions that only make sense on a stopped server. */
+const WHEN_STOPPED = ['start', 'wol'];
+
+/** Answers that carry a message for the client. Others, such as an expired session (419), do not. */
+const READABLE = [403, 404, 409, 413, 422, 429, 503];
 const TONES = { running: 'good', stopped: 'crit', suspended: 'warn' };
 
 /**
@@ -62,7 +72,12 @@ export function vpsPanel(config) {
                 return false;
             }
 
-            return action === 'start' ? this.state === 'stopped' : this.state === 'running';
+            if (WHEN_STOPPED.includes(action)) {
+                return this.state === 'stopped';
+            }
+
+            // An action without a state to reach, such as pressing the power button, always fits.
+            return EXPECTED[action] ? this.state === 'running' : true;
         },
 
         /**
@@ -78,7 +93,7 @@ export function vpsPanel(config) {
             const button = event.submitter;
             const action = button?.dataset.action;
 
-            if (!button || !EXPECTED[action]) {
+            if (!button || typeof action !== 'string' || action === '') {
                 return;
             }
 
@@ -97,12 +112,18 @@ export function vpsPanel(config) {
 
             let response = null;
             let data = {};
+            const body = new FormData(event.target);
+
+            // A destructive action is refused without its confirm field; the client just said yes.
+            if (button.dataset.destructive !== undefined) {
+                body.append('confirm', '1');
+            }
 
             try {
                 response = await fetch(button.formAction, {
                     method: 'POST',
                     headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                    body: new FormData(event.target),
+                    body,
                     credentials: 'same-origin',
                     redirect: 'error',
                 });
@@ -111,9 +132,10 @@ export function vpsPanel(config) {
                 response = null;
             }
 
-            // A refusal (422) and a locked action (403, as on the demo) come with a message for the
-            // client. Other answers, such as an expired session (419), get the general message.
-            const readable = response && (response.ok || response.status === 403 || response.status === 422);
+            // A refusal (422), a locked action (403, as on the demo), a busy server (409) or too many
+            // tries (429) come with a message for the client. Other answers, such as an expired
+            // session (419), get the general message.
+            const readable = response && (response.ok || READABLE.includes(response.status));
 
             if (!readable || typeof data.message !== 'string') {
                 this.busy = false;
@@ -126,6 +148,13 @@ export function vpsPanel(config) {
 
             if (!data.ok) {
                 this.busy = false;
+
+                return;
+            }
+
+            if (!EXPECTED[action]) {
+                this.busy = false;
+                this.state = ['running', 'stopped', 'suspended', 'unknown'].includes(data.state) ? data.state : this.state;
 
                 return;
             }

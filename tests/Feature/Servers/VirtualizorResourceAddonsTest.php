@@ -763,6 +763,8 @@ class VirtualizorResourceAddonsTest extends TestCase
             'addvs' => ['done' => 1, 'vs_info' => ['vpsid' => '90', 'uid' => '58', 'ips' => ['203.0.113.9']]],
             'plans' => ['plans' => ['3' => $this->plan()]],
             'vps' => $this->vps([]),
+            // The create-time check for a Virtualizor user with the client's email finds none.
+            'users' => ['users' => []],
         ];
 
         if ($this->api === null) {
@@ -777,7 +779,11 @@ class VirtualizorResourceAddonsTest extends TestCase
                     isset($query['vpsid']) => 'vps',
                     default => 'vs',
                 };
-                $this->api->calls[] = ['kind' => $kind, 'query' => $query, 'data' => $request->data(), 'url' => $request->url()];
+                // The email check runs before every new create; these tests are about the add-ons.
+                if ($kind !== 'users') {
+                    $this->api->calls[] = ['kind' => $kind, 'query' => $query, 'data' => $request->data(), 'url' => $request->url()];
+                }
+
                 $answer = $this->api->answers[$kind] ?? ['error' => ['Unexpected request: '.$kind]];
                 $answer = $answer instanceof Closure ? $answer($query, $request->data()) : $answer;
 
