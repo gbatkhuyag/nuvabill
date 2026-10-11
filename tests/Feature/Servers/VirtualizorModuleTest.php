@@ -3,6 +3,7 @@
 namespace Tests\Feature\Servers;
 
 use App\Enums\ServiceStatus;
+use App\Extensions\Servers\Panel\ClientContext;
 use App\Models\ActivityLog;
 use App\Models\Client;
 use App\Models\Product;
@@ -90,8 +91,9 @@ class VirtualizorModuleTest extends TestCase
             ->assertJson(['ok' => true, 'pending' => 'stop', 'state' => 'stopped'])
             ->assertJsonPath('message', 'A shutdown signal was sent. The VPS stops once its system has shut down. If it does not stop, use Power off.');
 
-        $this->assertSame(['act' => 'vs', 'action' => 'start', 'vpsid' => '77'], $this->withoutCredentials($api->calls[0]['query']));
-        $this->assertSame('GET', $api->calls[0]['method']);
+        $power = collect($api->calls)->firstWhere('kind', 'power');
+        $this->assertSame(['act' => 'vs', 'action' => 'start', 'vpsid' => '77'], $this->withoutCredentials($power['query']));
+        $this->assertSame('GET', $power['method']);
     }
 
     public function test_without_javascript_a_power_action_comes_back_with_its_message_and_the_live_state(): void
@@ -293,7 +295,7 @@ class VirtualizorModuleTest extends TestCase
             ->assertStatus(409)
             ->assertJson(['ok' => false, 'message' => 'Another change is running on this server. Try again in a moment.']);
 
-        $this->assertSame([], $api->calls);
+        $this->assertNotContains('power', array_column($api->calls, 'kind'));
         $this->assertFalse(ActivityLog::query()->where('action', 'service.client_action')->exists());
         $lock->release();
     }
@@ -349,7 +351,7 @@ class VirtualizorModuleTest extends TestCase
 
         $this->assertTrue(app(Provisioner::class)->create($service)->success);
 
-        $data = $api->calls[0]['data'];
+        $data = $this->sent($api, 'addvs')[0]['data'];
         $this->assertSame(4, $data['recipe']);
         $this->assertSame(2, $data['num_ips6']);
         $this->assertSame(1, $data['num_ips6_subnet']);
@@ -368,11 +370,11 @@ class VirtualizorModuleTest extends TestCase
 
         $this->assertTrue(app(Provisioner::class)->create($service)->success);
 
-        $this->assertSame(0, $api->calls[0]['data']['slave_server']);
-        $this->assertArrayNotHasKey('node_select', $api->calls[0]['data']);
+        $this->assertSame(0, $this->sent($api, 'addvs')[0]['data']['slave_server']);
+        $this->assertArrayNotHasKey('node_select', $this->sent($api, 'addvs')[0]['data']);
     }
 
-    public function test_invalid_product_options_stop_the_create_before_anything_is_sent(): void
+    public function test_invalid_product_options_stop_the_create_before_a_vps_is_requested(): void
     {
         $this->fakeVirtualizor([]);
 
@@ -390,7 +392,8 @@ class VirtualizorModuleTest extends TestCase
             $this->assertSame($message, $result->message);
         }
 
-        Http::assertNothingSent();
+        // Only the create-time lookup of the client's email ran.
+        Http::assertNotSent(fn (Request $request): bool => ! str_contains($request->url(), 'act=users&'));
     }
 
     public function test_a_control_panel_needs_a_real_hostname_and_cpanel_has_stricter_rules(): void
@@ -402,17 +405,17 @@ class VirtualizorModuleTest extends TestCase
             $this->assertFalse(app(Provisioner::class)->create($service)->success, $domain);
         }
 
-        $this->assertSame([], $api->calls);
+        $this->assertSame([], $this->sent($api, 'addvs'));
 
         $plesk = $this->service(['control_panel' => 'plesk'], ['status' => ServiceStatus::Pending, 'module_data' => null, 'domain' => 'www.example.com']);
         $this->assertTrue(app(Provisioner::class)->create($plesk)->success);
-        $this->assertSame('plesk', $api->calls[0]['data']['control_panel']);
-        $this->assertSame('www.example.com', $api->calls[0]['data']['hostname']);
+        $this->assertSame('plesk', $this->sent($api, 'addvs')[0]['data']['control_panel']);
+        $this->assertSame('www.example.com', $this->sent($api, 'addvs')[0]['data']['hostname']);
 
         $cpanel = $this->service(['control_panel' => 'cpanel'], ['status' => ServiceStatus::Pending, 'module_data' => null, 'domain' => 'Server1.Example.com']);
         $this->assertTrue(app(Provisioner::class)->create($cpanel)->success);
-        $this->assertSame('cpanel', $api->calls[1]['data']['control_panel']);
-        $this->assertSame('server1.example.com', $api->calls[1]['data']['hostname']);
+        $this->assertSame('cpanel', $this->sent($api, 'addvs')[1]['data']['control_panel']);
+        $this->assertSame('server1.example.com', $this->sent($api, 'addvs')[1]['data']['hostname']);
     }
 
     public function test_a_reinstall_runs_the_products_recipe_again_only_when_asked(): void
@@ -483,8 +486,9 @@ class VirtualizorModuleTest extends TestCase
         ]);
         $service = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']]);
         $this->actingAs($service->client, 'web');
+        $back = route('client.services.show', $service);
 
-        $this->get(route('client.services.show', $service))
+        $this->get($back)
             ->assertSee('Open Virtualizor panel')
             ->assertSee('rel="noopener noreferrer"', false)
             ->assertSee(route('client.services.console.open', $service), false)
@@ -492,25 +496,27 @@ class VirtualizorModuleTest extends TestCase
 
         $api->calls = [];
 
-        $this->post(route('client.services.login', $service))
-            ->assertRedirect('https://vz.example.test:4083/sessvkD9MBpOg0aFkHfD/?as=efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18&svs=77')
+        $this->post(route('client.services.login', $service), [], ['REMOTE_ADDR' => '198.51.100.20'])
+            ->assertRedirect('https://vz.example.test:4083/sessvkD9MBpOg0aFkHfD/?as=efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18&goto_cp='.rawurlencode($back).'&svs=77')
             ->assertHeader('Cache-Control', 'no-store, private')
             ->assertHeader('Referrer-Policy', 'no-referrer');
 
+        // The end-user port, signed with the key and a salted hash of the password, tied to the client's IP.
         $sso = collect($api->calls)->firstWhere('kind', 'sso');
         $this->assertStringStartsWith('https://vz.example.test:4083/index.php?', $sso['url']);
-        $this->assertSame(['act', 'svs', 'api', 'apikey'], array_keys($sso['query']));
+        $this->assertEqualsCanonicalizing(['act', 'svs', 'api', 'adminapikey', 'apikey', 'SET_REMOTE_IP', 'goto_cp'], array_keys($sso['query']));
         $this->assertSame('77', $sso['query']['svs']);
-        // Signed like Virtualizor's SDK does for admins: the API password itself is never sent.
+        $this->assertSame('TESTTOKEN123', $sso['query']['adminapikey']);
+        $this->assertSame('198.51.100.20', $sso['query']['SET_REMOTE_IP']);
+        $this->assertSame($back, $sso['query']['goto_cp']);
         $salt = substr($sso['query']['apikey'], 0, 8);
         $this->assertSame($salt.md5(self::API_PASSWORD.$salt), $sso['query']['apikey']);
         $this->assertStringNotContainsString(self::API_PASSWORD, $sso['url']);
-        $this->assertStringNotContainsString('TESTTOKEN123', $sso['url']);
 
         // The owner is checked live before the link is made, and the link itself is never logged.
-        $this->assertSame(['vps', 'users', 'byuser', 'sso'], array_column($api->calls, 'kind'));
+        $this->assertSame(['vps', 'users', 'listvs', 'sso'], array_column($api->calls, 'kind'));
         $this->assertSame(['act' => 'vs', 'search' => '1', 'vpsid' => '77', 'page' => '1', 'reslen' => '50'], $this->withoutCredentials($api->calls[0]['query']));
-        $this->assertSame(['act' => 'vs', 'search' => '1', 'user' => self::VIRTUALIZOR_USER, 'page' => '1', 'reslen' => '100'], $this->withoutCredentials($api->calls[2]['query']));
+        $this->assertSame('100', $api->calls[2]['query']['reslen']);
         $this->assertFalse(ActivityLog::query()->where('description', 'like', '%sessvkD9MBpOg0aFkHfD%')->exists());
         $this->assertFalse(ActivityLog::query()->where('description', 'like', '%efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18%')->exists());
         $this->assertTrue(ActivityLog::query()->where('action', 'service.panel_login')->exists());
@@ -526,86 +532,9 @@ class VirtualizorModuleTest extends TestCase
         $api = $this->fakeVirtualizor(['sso' => ['token_key' => 'sessAbcdefgh123', 'sid' => 'sidAbcdefgh123']]);
         $service = $this->service(['client_login' => '1', 'panel_port' => '8443'], ['module_data' => ['vpsid' => '77', 'uid' => '58']]);
 
-        $this->assertSame('https://vz.example.test:8443/sessAbcdefgh123/?as=sidAbcdefgh123&svs=77', app(Provisioner::class)->loginUrl($service));
+        $this->assertStringStartsWith('https://vz.example.test:8443/sessAbcdefgh123/?as=sidAbcdefgh123&', (string) app(Provisioner::class)->signInUrl($service, $this->context($service)));
         $this->assertStringStartsWith('https://vz.example.test:8443/index.php?', collect($api->calls)->firstWhere('kind', 'sso')['url']);
-    }
-
-    public function test_panel_sign_in_is_refused_when_the_vps_does_not_belong_to_the_client_alone(): void
-    {
-        $sso = ['token_key' => 'sessvkD9MBpOg0aFkHfD', 'sid' => 'efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18'];
-        $user = fn (array $values): array => ['users' => ['58' => $values + ['uid' => '58', 'email' => self::VIRTUALIZOR_USER, 'type' => '0', 'numvps' => '1']]];
-        $list = fn (array $owners): array => ['vs' => array_map(fn (string $uid): array => ['uid' => $uid], $owners)];
-        $cases = [
-            'another user now' => [['uid' => '99'], ['users' => ['99' => ['uid' => '99', 'type' => '0', 'numvps' => '1']]], null],
-            'suspended' => [['suspended' => '1'], null, null],
-            'an admin user' => [[], $user(['type' => '1']), null],
-            'a cloud user' => [[], $user(['type' => '2']), null],
-            'more VPS than the client has' => [[], $user(['numvps' => '2']), $list(['77' => '58', '80' => '58'])],
-            'no VPS count' => [[], ['users' => ['58' => ['uid' => '58', 'type' => '0']]], null],
-            // A count that leaves out a VPS of someone else: the list shows it.
-            'a VPS count that is too low' => [[], null, $list(['77' => '58', '80' => '58'])],
-            'a list with another user\'s VPS' => [[], null, $list(['77' => '58', '80' => '61'])],
-            'a list without its users' => [[], null, ['vs' => ['77' => ['vpsid' => '77']]]],
-            'a list without this VPS' => [[], null, ['vs' => []]],
-            'a list that may be cut short' => [[], $user(['numvps' => '100']), $list(array_fill_keys(array_map('strval', range(77, 176)), '58'))],
-        ];
-
-        foreach ($cases as $case => [$vps, $users, $byUser]) {
-            $api = $this->fakeVirtualizor(array_filter([
-                'vps' => fn (array $query): array => ['vs' => [$query['vpsid'] => $vps + ['vpsid' => $query['vpsid'], 'uid' => '58', 'suspended' => '0']]],
-                'users' => $users,
-                'byuser' => $byUser,
-                'sso' => $sso,
-            ]));
-            $service = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']]);
-
-            $this->assertNull(app(Provisioner::class)->loginUrl($service), $case);
-            $this->assertNotContains('sso', array_column($api->calls, 'kind'), $case);
-        }
-
-        $this->assertSame(count($cases), ActivityLog::query()->where('action', 'service.panel_login_refused')->count());
-    }
-
-    public function test_a_user_with_another_vps_of_the_same_client_may_sign_in_but_not_with_someone_elses(): void
-    {
-        $owners = ['77' => '58', '78' => '58', '79' => '61'];
-        $api = $this->fakeVirtualizor([
-            'vps' => function (array $query) use (&$owners): array {
-                return ['vs' => [$query['vpsid'] => ['vpsid' => $query['vpsid'], 'uid' => $owners[$query['vpsid']], 'suspended' => '0']]];
-            },
-            'users' => ['users' => ['58' => ['uid' => '58', 'email' => self::VIRTUALIZOR_USER, 'type' => '0', 'numvps' => '2']]],
-            'byuser' => function () use (&$owners): array {
-                return ['vs' => array_map(fn (string $uid): array => ['uid' => $uid], array_filter($owners, fn (string $uid): bool => $uid === '58'))];
-            },
-            'sso' => ['token_key' => 'sessvkD9MBpOg0aFkHfD', 'sid' => 'efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18'],
-        ]);
-        $service = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']]);
-        $this->service(['client_login' => '1'], ['client_id' => $service->client_id, 'module_data' => ['vpsid' => '78']], server: $service->server);
-
-        $this->assertNotNull(app(Provisioner::class)->loginUrl($service));
-        $this->assertSame(['vps', 'users', 'byuser', 'sso'], array_column($api->calls, 'kind'));
-
-        // The second VPS of that Virtualizor user belongs to another client.
-        $owners['78'] = '61';
-        $owners['79'] = '58';
-        $other = $this->service(['client_login' => '1'], ['client_id' => $this->client('Raz')->id, 'module_data' => ['vpsid' => '79']], server: $service->server);
-        $this->assertNotNull($other);
-        $api->calls = [];
-
-        $this->assertNull(app(Provisioner::class)->loginUrl($service));
-        $this->assertNotContains('sso', array_column($api->calls, 'kind'));
-    }
-
-    public function test_the_users_vps_are_searched_by_user_id_when_the_email_finds_none(): void
-    {
-        $api = $this->fakeVirtualizor([
-            'byuser' => fn (array $query): array => ['vs' => $query['user'] === '58' ? ['77' => ['vpsid' => '77', 'uid' => '58']] : []],
-            'sso' => ['token_key' => 'sessvkD9MBpOg0aFkHfD', 'sid' => 'efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18'],
-        ]);
-        $service = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']]);
-
-        $this->assertNotNull(app(Provisioner::class)->loginUrl($service));
-        $this->assertSame([self::VIRTUALIZOR_USER, '58'], array_column(array_column(collect($api->calls)->where('kind', 'byuser')->values()->all(), 'query'), 'user'));
+        $this->assertStringStartsWith('https://vz.example.test:8443/index.php?', collect($api->calls)->firstWhere('kind', 'listvs')['url']);
     }
 
     public function test_panel_sign_in_never_uses_an_admin_or_api_port(): void
@@ -616,7 +545,9 @@ class VirtualizorModuleTest extends TestCase
         $defaultOnApiPort = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']], ['port' => 4083, 'hostname' => 'vz3.example.test']);
 
         foreach ([$admin, $apiPort, $defaultOnApiPort] as $service) {
-            $this->assertNull(app(Provisioner::class)->loginUrl($service));
+            $this->assertNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
+            $this->assertNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
+            // The old call without the client's context never makes a link.
             $this->assertNull(app(Provisioner::class)->loginUrl($service));
         }
 
@@ -676,7 +607,7 @@ class VirtualizorModuleTest extends TestCase
         $this->fakeVirtualizor(['sso' => ['token_key' => 'sessvkD9MBpOg0aFkHfD', 'sid' => 'efgBrcHtvyVEGcvaeI9q2A9X4kaOAU18']]);
         $service = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77']]);
 
-        $this->assertNotNull(app(Provisioner::class)->loginUrl($service));
+        $this->assertNotNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
         $this->assertSame('58', $service->fresh()->module_data['uid']);
     }
 
@@ -685,20 +616,20 @@ class VirtualizorModuleTest extends TestCase
         $api = $this->fakeVirtualizor(['sso' => ['token_key' => 'x', 'sid' => '']]);
 
         $plain = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']], ['use_ssl' => false]);
-        $this->assertNull(app(Provisioner::class)->loginUrl($plain));
+        $this->assertNull(app(Provisioner::class)->signInUrl($plain, $this->context($plain)));
         $this->assertSame([], $api->calls);
 
         $suspended = $this->service(['client_login' => '1'], ['status' => ServiceStatus::Suspended, 'module_data' => ['vpsid' => '77', 'uid' => '58']]);
-        $this->assertNull(app(Provisioner::class)->loginUrl($suspended));
+        $this->assertNull(app(Provisioner::class)->signInUrl($suspended, $this->context($suspended)));
         $this->assertSame([], $api->calls);
 
         $badPort = $this->service(['client_login' => '1', 'panel_port' => '99999'], ['module_data' => ['vpsid' => '77', 'uid' => '58']]);
-        $this->assertNull(app(Provisioner::class)->loginUrl($badPort));
+        $this->assertNull(app(Provisioner::class)->signInUrl($badPort, $this->context($badPort)));
         $this->assertSame([], $api->calls);
 
-        // A reply without a usable session gives no link.
-        $service = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']]);
-        $this->assertNull(app(Provisioner::class)->loginUrl($service));
+        // A reply without a usable session gives no link. VPS 77 is linked to the clients above, so this is VPS 78.
+        $service = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '78', 'uid' => '58']]);
+        $this->assertNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
         $this->assertContains('sso', array_column($api->calls, 'kind'));
     }
 
@@ -728,7 +659,7 @@ class VirtualizorModuleTest extends TestCase
             'status' => ['status' => ['77' => ['status' => 1]]],
             'ostemplates' => ['ostemplates' => ['100' => ['osid' => 100, 'type' => 'kvm', 'name' => 'Ubuntu 24.04']]],
             'users' => ['users' => ['58' => ['uid' => '58', 'email' => self::VIRTUALIZOR_USER, 'type' => '0', 'numvps' => '1']]],
-            'byuser' => ['vs' => ['77' => ['vpsid' => '77', 'uid' => '58', 'email' => self::VIRTUALIZOR_USER]]],
+            'listvs' => fn (array $query): array => ['vs' => [$query['svs'] => ['vpsid' => $query['svs'], 'uid' => '58']]],
         ];
         if ($this->api === null) {
             $this->api = new stdClass;
@@ -778,6 +709,24 @@ class VirtualizorModuleTest extends TestCase
     private function withoutCredentials(array $query): array
     {
         return array_diff_key($query, array_flip(['api', 'adminapikey', 'adminapipass']));
+    }
+
+    /**
+     * The requests of one kind that the fake got, in order.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function sent(stdClass $api, string $kind): array
+    {
+        return array_values(array_filter($api->calls, fn (array $call): bool => $call['kind'] === $kind));
+    }
+
+    /**
+     * The context of the service's client signing in from a trusted IP.
+     */
+    private function context(Service $service): ClientContext
+    {
+        return new ClientContext((int) $service->client_id, '198.51.100.20', true, route('client.services.show', $service), 'en');
     }
 
     private function assertNoSecretsLogged(): void

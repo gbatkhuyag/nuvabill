@@ -69,13 +69,16 @@ class VirtualizorAdminSectionsTest extends TestCase
         $this->assertArrayNotHasKey('vnc', $module->clientActions());
 
         $sections = $module->panelSections(new Product(['server_module' => 'virtualizor', 'module_config' => ['virt' => 'kvm']]));
-        $this->assertSame(['overview', 'console', 'reinstall', 'settings', 'power'], array_map(fn (PanelSection $section): string => $section->key, $sections));
+        $this->assertSame(
+            ['overview', 'console', 'graphs', 'reinstall', 'network', 'firewall', 'backups', 'rescue', 'ssh-keys', 'media', 'settings', 'activity', 'power'],
+            array_map(fn (PanelSection $section): string => $section->key, $sections),
+        );
 
         foreach ($sections as $section) {
             $this->assertSame([], $section->problems(), $section->key);
         }
 
-        [, $console, $reinstall, $settings, $power] = $sections;
+        ['console' => $console, 'reinstall' => $reinstall, 'settings' => $settings, 'power' => $power] = collect($sections)->keyBy('key')->all();
         $this->assertSame(['start', 'stop', 'restart', 'poweroff'], array_keys($power->actions));
         $this->assertTrue($power->actions['poweroff']->destructive);
         $this->assertTrue($console->actions['details']->reveals);
@@ -147,7 +150,8 @@ class VirtualizorAdminSectionsTest extends TestCase
             ->assertJsonPath('data.ips', [['ip' => '203.0.113.7', 'version' => 4, 'primary' => true]])
             ->assertJsonPath('data.resources.0', ['label' => 'CPU cores', 'value' => '2'])
             ->assertJsonPath('live', true);
-        $this->assertSame(['vps', 'status'], array_column($api->calls, 'kind'));
+        // The end-user port does not answer here: the panel keeps its Admin API sections.
+        $this->assertSame(['vpsmanage', 'vps', 'status'], array_column($api->calls, 'kind'));
 
         // A live refresh asks only for the figures while the details are fresh.
         $api->calls = [];
