@@ -92,7 +92,9 @@ A BMC controls the machine below its operating system. Never put a BMC on the op
 
 Clients can also add extra IPv4 addresses and monthly traffic with [resource options](resource-options.md). Extra IPv4
 addresses come from the free extra IPs of the client's machine, so a client can never buy more than the machine has.
-Traffic is billing only: Nuvabill emails your team to set the new limit.
+Traffic is billing only: Nuvabill emails your team to set the new limit, and the change waits until staff press
+**Mark done** on the service page. Only then does the client get the **Resources changed** email. A service with no
+machine in use cannot add extras until you assign one.
 
 ## 2. Add the machines
 
