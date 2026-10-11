@@ -21,6 +21,9 @@ difference for the days left in the current period; an upgrade happens once its 
 **Settings → General → Billing** decides: change now and add the unused amount to the client's wallet, or change on
 the next renewal date. Staff can change any service's plan from its page, with or without an invoice.
 
+The same rules apply when clients add or remove extras with [resource options](resource-options.md). **Settings →
+General → Billing → Clients can add and remove resources** turns that on or off for all clients.
+
 ## Knowledge base, announcements and network status
 
 All three are under **Support** in the admin area.
@@ -63,6 +66,17 @@ the tax and both tax numbers.
 **Products**: product groups, plans with prices from monthly to three-yearly, setup fees, stock, and whether a plan
 needs a domain. Each plan can be set up automatically on a [server](integrations/servers.md) when its first invoice
 is paid. **Product add-ons** (for example backups or a dedicated IP) are billed and renewed with the service.
+
+- **Resource options**: sliders that let clients add CPU cores, RAM, disk space, IP addresses and more, with a price
+  for each step. See [Resource options](resource-options.md).
+- **Dedicated servers**: plans that sell your own machines take their stock from free machines under **Hardware**. See
+  [Dedicated servers](hardware.md).
+
+## Client server panel
+
+**Settings → General → Client server panel**: whether clients get a console in the browser, how often live figures
+refresh (every 10 seconds by default), and whether clients get an email when their server changes. Each product can
+turn single tabs off too. See [the client server panel](integrations/servers.md#the-client-server-panel).
 
 ## Coupons
 
@@ -112,5 +126,45 @@ credit must stay visible (see the [license](../LICENSE) and [NOTICE](../NOTICE))
 |---|---|
 | `APP_URL` | Your site address, with `https://` |
 | `APP_DEBUG` | Keep `false` on a live site |
-| `NUVABILL_TRUSTED_PROXIES` | `cloudflare`, a list of proxy IPs, or `*` |
+| `NUVABILL_TRUSTED_PROXIES` | `cloudflare`, a list of proxy IPs, or `*` (see [below](#behind-cloudflare-or-another-proxy)) |
 | `DB_*` | Database connection, written by the installer |
+
+## Behind Cloudflare or another proxy
+
+When a proxy sits in front of Nuvabill (Cloudflare, a load balancer or a web firewall), every request seems to come from
+the proxy's IP address. The proxy writes the visitor's real address in the `X-Forwarded-For` header. Nuvabill reads
+that header only from proxies you trust: anyone can send it, so trusting it from everyone would let any visitor fake
+their address.
+
+**Why the client's IP address matters:**
+
+- **Sign-in limits** and other limits count tries per address. With the proxy's address, all visitors count as one,
+  so the limits can block real clients.
+- **Logs** show the address: the activity log, and the "From IP address" line of the **Server change** email that
+  tells a client their server changed.
+- **The Virtualizor panel sign-in** ties the client's panel session to the client's address. With the wrong address
+  the sign-in fails, or every client is tied to the proxy's address.
+- **The console and panel limits** of some server modules count per address.
+
+**Set it in `.env`:**
+
+| Value | When |
+|---|---|
+| `NUVABILL_TRUSTED_PROXIES=cloudflare` | The site is behind Cloudflare. Nuvabill knows Cloudflare's address ranges. |
+| `NUVABILL_TRUSTED_PROXIES=10.0.0.5,10.1.0.0/16` | Your own proxies: their IP addresses or ranges, separated by commas. Behind Cloudflare **and** your own proxy, list Cloudflare's ranges ([cloudflare.com/ips](https://www.cloudflare.com/ips/)) and your proxy here. |
+| `NUVABILL_TRUSTED_PROXIES=*` | Any proxy. Use it only when nobody can reach the server directly, for example when its firewall allows only the load balancer. Otherwise anyone can fake their address. |
+
+Leave it out when no proxy sits in front of Nuvabill. Nuvabill reads only `X-Forwarded-For` (the visitor's address)
+and `X-Forwarded-Proto` (whether the visitor used HTTPS) from trusted proxies. It never reads `X-Forwarded-Host`,
+`X-Real-IP` or `Forwarded`, so make sure your proxy sends `X-Forwarded-For`. If you cache the configuration
+(`php artisan config:cache`), run that command again after you change `.env`.
+
+**How to check it:**
+
+- **Site health** warns when your site is behind Cloudflare but Cloudflare's addresses are not trusted.
+- On a service page, **Test panel sign-in** shows **Proxy in front of this site** when your own request came through a
+  proxy that Nuvabill does not trust. Its **Client IP address** line fails when a client's panel sign-in was refused in
+  the last day because Nuvabill saw a Cloudflare address.
+- Behind Cloudflare without this setting, Nuvabill never sends a Cloudflare address to Virtualizor as the client's
+  address: it refuses the panel sign-in, and notes why in the activity log once a day. Nuvabill cannot detect other
+  proxies by itself, so set this whenever you add one.

@@ -7,11 +7,13 @@ These pages cover running your own copy. The same guides, and the developer and 
 | Guide | What it covers |
 |---|---|
 | [Installation](installation.md) | Server requirements, the one-line installer, installing on shared hosting, the cron job |
-| [Configuration](configuration.md) | Company details, currencies, taxes, email, automation, security, languages, look and feel |
-| [Control panels and VPS](integrations/servers.md) | cPanel & WHM, DirectAdmin, Plesk, Proxmox VE, Virtualizor, and CyberPanel, HestiaCP, VirtFusion and SolusVM from the Marketplace |
+| [Configuration](configuration.md) | Company details, currencies, taxes, email, automation, security, proxies and the client IP address, languages, look and feel |
+| [Control panels and VPS](integrations/servers.md) | cPanel & WHM, DirectAdmin, Plesk, Proxmox VE, Virtualizor, dedicated servers, and CyberPanel, HestiaCP, VirtFusion, SolusVM, Hetzner Cloud and Hetzner Dedicated from the Marketplace; the client server panel and console; notes for module authors |
+| [Resource options](resource-options.md) | Sliders for extra CPU, RAM, disk, IP addresses and more: prices per step, changes on live services, and how they reach the server |
+| [Dedicated servers](hardware.md) | Selling your own machines: stock, BMC power control with Redfish or IPMI, certificate checks and the disk wipe before resale |
 | [Payment gateways](integrations/payment-gateways.md) | Stripe, PayPal, FIB, FastPay, Wayl, bank transfer |
 | [Domain registrars](integrations/domain-registrars.md) | ResellerClub, Namecheap, Enom, OpenSRS |
-| [Migrating from WHMCS](whmcs-migration.md) | What the importer copies, what it leaves out, and a safe switch-over plan |
+| [Migrating from WHMCS](whmcs-migration.md) | What the importer copies, configurable options, what it leaves out, and a safe switch-over plan |
 | [Moving from Blesta, FOSSBilling or Paymenter](importing.md) | The dry run, what each importer copies, and what to do after the import |
 | [AI help](ai-help.md) | Reply drafts, two-way ticket translation, summaries and product texts with Claude and your own key; spending limit and privacy |
 | [Telegram and WhatsApp](chat-apps.md) | Invoices, reminders and ticket replies in chat apps, WhatsApp by QR code or your own Meta app, message templates, client commands, tickets from chats |
