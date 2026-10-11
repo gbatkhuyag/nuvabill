@@ -45,6 +45,8 @@ class PackageReleaseFilesTest extends TestCase
             'installed marketplace gateway' => ['extensions/gateways/nowpayments/src/NowPaymentsGateway.php', true],
             'installed marketplace registrar' => ['extensions/registrars/some-registrar/extension.json', true],
             'built-in server module' => ['extensions/servers/cpanel/src/CpanelModule.php', false],
+            'built-in dedicated server module' => ['extensions/servers/dedicated/src/DedicatedModule.php', false],
+            'built-in dedicated server manifest' => ['extensions/servers/dedicated/extension.json', false],
             'built-in gateway' => ['extensions/gateways/stripe/extension.json', false],
             'built-in registrar' => ['extensions/registrars/enom/extension.json', false],
             'local database' => ['database/database.sqlite', true],

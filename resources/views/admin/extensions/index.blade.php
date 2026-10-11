@@ -144,7 +144,14 @@
                                 @if ($item['page'])
                                     <a class="btn btn-sm" href="{{ $item['page'] }}"><x-icon name="external" />{{ __('Open') }}</a>
                                 @endif
-                                @if ($isServer && $canChange)
+                                @if ($isServer && $item['inventory'])
+                                    @if ($hardware['power'])
+                                        <a class="btn btn-sm" href="{{ route('admin.machines.index') }}">{{ __('Hardware') }}</a>
+                                    @endif
+                                    @if ($hardware['manage'])
+                                        <a class="btn btn-sm" href="{{ route('admin.machines.create') }}"><x-icon name="plus" />{{ __('Add a machine') }}</a>
+                                    @endif
+                                @elseif ($isServer && $canChange)
                                     @if ($item['state'] === ExtensionOverview::STATE_ON)
                                         <a class="btn btn-sm" href="{{ route('admin.servers.index') }}">{{ __('Servers') }}</a>
                                     @endif

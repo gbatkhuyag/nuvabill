@@ -3,6 +3,7 @@
 use App\Chat\WhatsAppSetup;
 use App\Extensions\ExtensionManager;
 use App\Jobs\TranslateTicketReply;
+use App\Models\Machine;
 use App\Support\Demo;
 use App\Support\Installation;
 use Illuminate\Support\Facades\Schedule;
@@ -47,6 +48,11 @@ if (Installation::isInstalled()) {
         // Network status: can each server be reached? Staff get an email when one goes down.
         Schedule::command('nuvabill:server-status')->everyFiveMinutes()->withoutOverlapping(10)
             ->when(fn (): bool => (bool) setting('status.checks'));
+
+        // Dedicated servers: free machines whose service ended, and switch off suspended or released
+        // ones. Nothing runs until a machine exists (or while an update has not made the table yet).
+        Schedule::command('nuvabill:hardware')->everyFiveMinutes()->withoutOverlapping(10)
+            ->when(fn (): bool => (bool) rescue(fn (): bool => Machine::query()->exists(), false, false));
 
         // Site health: the nightly check, then database clean-up and the weekly optimize when switched on.
         Schedule::command('nuvabill:security-check --quiet-if-healthy')->dailyAt('04:30')->withoutOverlapping(60)

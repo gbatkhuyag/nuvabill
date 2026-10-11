@@ -2,14 +2,17 @@
 
 namespace App\Extensions;
 
+use App\Contracts\UsesMachineInventory;
 use App\Marketplace\MarketplaceClient;
 use App\Models\Domain;
+use App\Models\Machine;
 use App\Models\MarketplaceInstall;
 use App\Models\Product;
 use App\Models\Server;
 use App\Models\TldPrice;
 use App\Models\Transaction;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Throwable;
 
@@ -44,10 +47,17 @@ final class ExtensionOverview
      */
     public const BUILT_IN = [
         ExtensionManifest::TYPE_GATEWAY => ['banktransfer', 'fastpay', 'fib', 'paypal', 'stripe', 'wayl'],
-        ExtensionManifest::TYPE_SERVER => ['cpanel', 'directadmin', 'plesk', 'proxmox', 'virtualizor'],
+        ExtensionManifest::TYPE_SERVER => ['cpanel', 'dedicated', 'directadmin', 'plesk', 'proxmox', 'virtualizor'],
         ExtensionManifest::TYPE_REGISTRAR => ['enom', 'namecheap', 'opensrs', 'resellerclub'],
         ExtensionManifest::TYPE_ADDON => [],
     ];
+
+    /**
+     * Which server modules sell machines from Admin → Hardware, by slug, as found in this request.
+     *
+     * @var array<string, bool>
+     */
+    private array $inventory = [];
 
     public function __construct(
         private ExtensionManager $extensions,
@@ -55,7 +65,10 @@ final class ExtensionOverview
     ) {}
 
     /**
-     * @return Collection<string, array{manifest: ExtensionManifest, state: string, origin: string, removable: bool, update: string|null, unlicensed: bool, usage: string|null, page: string|null}>
+     * "inventory" is true for a server module whose services run on machines from Admin →
+     * Hardware instead of on servers.
+     *
+     * @return Collection<string, array{manifest: ExtensionManifest, state: string, origin: string, removable: bool, update: string|null, unlicensed: bool, usage: string|null, page: string|null, inventory: bool}>
      */
     public function all(): Collection
     {
@@ -80,6 +93,7 @@ final class ExtensionOverview
                 'page' => $manifest->type === ExtensionManifest::TYPE_ADDON && $this->extensions->isEnabled($manifest->slug) && Route::has('admin.addons.'.$manifest->slug.'.index')
                     ? route('admin.addons.'.$manifest->slug.'.index')
                     : null,
+                'inventory' => $this->usesMachines($manifest),
             ];
         });
     }
@@ -149,24 +163,47 @@ final class ExtensionOverview
     }
 
     /**
-     * @param  array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, domains: array<string, int>}  $usage
+     * Whether the extension is a server module whose services run on machines from Admin →
+     * Hardware (it implements UsesMachineInventory). A module that cannot be loaded is not.
+     */
+    public function usesMachines(ExtensionManifest $manifest): bool
+    {
+        if ($manifest->type !== ExtensionManifest::TYPE_SERVER) {
+            return false;
+        }
+
+        if (! array_key_exists($manifest->slug, $this->inventory)) {
+            try {
+                $this->inventory[$manifest->slug] = $this->extensions->serverModule($manifest->slug) instanceof UsesMachineInventory;
+            } catch (Throwable) {
+                $this->inventory[$manifest->slug] = false;
+            }
+        }
+
+        return $this->inventory[$manifest->slug];
+    }
+
+    /**
+     * @param  array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, machines: array<string, array{total: int, used: int}>, domains: array<string, int>}  $usage
      */
     private function inUse(ExtensionManifest $manifest, array $usage): bool
     {
         return match ($manifest->type) {
-            ExtensionManifest::TYPE_SERVER => isset($usage['servers'][$manifest->slug]) || Product::query()->where('server_module', $manifest->slug)->exists(),
+            ExtensionManifest::TYPE_SERVER => isset($usage['servers'][$manifest->slug]) || isset($usage['machines'][$manifest->slug]) || Product::query()->where('server_module', $manifest->slug)->exists(),
             ExtensionManifest::TYPE_REGISTRAR => ($usage['domains'][$manifest->slug] ?? 0) > 0 || TldPrice::query()->where('registrar', $manifest->slug)->exists(),
             default => false,
         };
     }
 
     /**
-     * @param  array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, domains: array<string, int>}  $usage
+     * @param  array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, machines: array<string, array{total: int, used: int}>, domains: array<string, int>}  $usage
      */
     private function state(ExtensionManifest $manifest, array $usage): string
     {
         if ($manifest->type === ExtensionManifest::TYPE_SERVER) {
-            return isset($usage['servers'][$manifest->slug]) ? self::STATE_ON : self::STATE_UNUSED;
+            $used = $this->usesMachines($manifest) ? isset($usage['machines'][$manifest->slug]) : isset($usage['servers'][$manifest->slug]);
+
+            return $used ? self::STATE_ON : self::STATE_UNUSED;
         }
 
         if (! $this->extensions->isEnabled($manifest->slug)) {
@@ -177,10 +214,16 @@ final class ExtensionOverview
     }
 
     /**
-     * @param  array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, domains: array<string, int>}  $usage
+     * @param  array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, machines: array<string, array{total: int, used: int}>, domains: array<string, int>}  $usage
      */
     private function describeUsage(ExtensionManifest $manifest, array $usage): ?string
     {
+        if ($this->usesMachines($manifest)) {
+            return isset($usage['machines'][$manifest->slug])
+                ? __('Machines: :total · In use: :used', ['total' => number_format($usage['machines'][$manifest->slug]['total']), 'used' => number_format($usage['machines'][$manifest->slug]['used'])])
+                : __('No machine is sold with it yet');
+        }
+
         return match ($manifest->type) {
             ExtensionManifest::TYPE_GATEWAY => __('Payments in the last 30 days: :count', ['count' => number_format($usage['payments'][$manifest->slug] ?? 0)]),
             ExtensionManifest::TYPE_SERVER => isset($usage['servers'][$manifest->slug])
@@ -192,7 +235,7 @@ final class ExtensionOverview
     }
 
     /**
-     * @return array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, domains: array<string, int>}
+     * @return array{payments: array<string, int>, servers: array<string, array{servers: int, accounts: int}>, machines: array<string, array{total: int, used: int}>, domains: array<string, int>}
      */
     private function usage(): array
     {
@@ -207,7 +250,44 @@ final class ExtensionOverview
             'payments' => Transaction::query()->where('type', 'payment')->where('paid_at', '>=', now()->subDays(30))
                 ->groupBy('gateway')->selectRaw('gateway, COUNT(*) as total')->pluck('total', 'gateway')->map(fn (mixed $total): int => (int) $total)->all(),
             'servers' => $servers,
+            'machines' => $this->machineUsage(),
             'domains' => Domain::query()->whereNotNull('registrar')->groupBy('registrar')->selectRaw('registrar, COUNT(*) as total')->pluck('total', 'registrar')->map(fn (mixed $total): int => (int) $total)->all(),
         ];
+    }
+
+    /**
+     * Per server module: the machines linked to its products, and how many of those a service of
+     * its products holds. Only modules with at least one machine are listed. Empty while an update
+     * has not made the hardware tables yet.
+     *
+     * @return array<string, array{total: int, used: int}>
+     */
+    private function machineUsage(): array
+    {
+        return rescue(function (): array {
+            $machines = [];
+
+            $linked = DB::table('machine_product')
+                ->join('products', 'products.id', '=', 'machine_product.product_id')
+                ->whereNotNull('products.server_module')
+                ->groupBy('products.server_module')
+                ->selectRaw('products.server_module as module, COUNT(DISTINCT machine_product.machine_id) as total')
+                ->pluck('total', 'module');
+
+            $held = Machine::query()
+                ->join('services', 'services.id', '=', 'machines.service_id')
+                ->join('products', 'products.id', '=', 'services.product_id')
+                ->whereNotNull('products.server_module')
+                ->groupBy('products.server_module')
+                ->selectRaw('products.server_module as module, COUNT(*) as used')
+                ->toBase()
+                ->pluck('used', 'module');
+
+            foreach ($linked->keys()->merge($held->keys())->unique() as $module) {
+                $machines[(string) $module] = ['total' => max((int) ($linked[$module] ?? 0), (int) ($held[$module] ?? 0)), 'used' => (int) ($held[$module] ?? 0)];
+            }
+
+            return $machines;
+        }, [], report: false);
     }
 }
