@@ -3,10 +3,16 @@
 namespace Nuvabill\Extensions\Proxmox;
 
 use App\Contracts\HasClientPanel;
+use App\Contracts\HasResourceOptions;
 use App\Enums\ServiceStatus;
 use App\Extensions\Servers\Module;
 use App\Extensions\Servers\ModuleResult;
+use App\Extensions\Servers\Resources\ResourceCheck;
+use App\Extensions\Servers\Resources\ResourceExtras;
+use App\Extensions\Servers\Resources\ResourceKind;
+use App\Extensions\Servers\Resources\ResourceLimit;
 use App\Models\Product;
+use App\Models\ResourceOption;
 use App\Models\Server;
 use App\Models\Service;
 use Carbon\CarbonInterface;
@@ -20,13 +26,30 @@ use RuntimeException;
 /**
  * Proxmox VE through its API with an API token. New servers are full clones of a cloud-init
  * template; cloud-init sets the root password and network on first boot.
+ *
+ * Clients can buy extra CPU cores, RAM and disk space with sliders (HasResourceOptions). The VM
+ * always gets the product's cores, memory and disk plus the service's extras. CPU and memory
+ * changes on a running VM wait in Proxmox until the next restart; the disk only grows.
  */
-class ProxmoxModule extends Module implements HasClientPanel
+class ProxmoxModule extends Module implements HasClientPanel, HasResourceOptions
 {
     /**
      * How long to wait for a Proxmox task (stop, start, delete), in seconds.
      */
     private const TASK_TIMEOUT = 600;
+
+    /**
+     * How long applyResources() waits for a disk resize, in seconds. It may run in a staff request,
+     * so a slower resize is reported as pending and core checks the server again later.
+     */
+    private const RESIZE_WAIT = 30;
+
+    /**
+     * The most extra units each kind may add: cores, MB of RAM, and GB of disk (no limit of its own).
+     *
+     * @var array<string, int|null>
+     */
+    private const MAX_EXTRA = ['cpu' => 64, 'ram' => 262144, 'disk' => null];
 
     /**
      * create() runs in the setup job, which is stopped after 900 seconds. So all its tasks
@@ -45,7 +68,7 @@ class ProxmoxModule extends Module implements HasClientPanel
             'storage' => ['label' => 'Storage', 'type' => 'text', 'help' => 'Where to put the new disk, for example "local-lvm". Empty uses the template\'s storage.'],
             'cores' => ['label' => 'CPU cores', 'type' => 'text', 'required' => true],
             'memory' => ['label' => 'RAM (MB)', 'type' => 'text', 'required' => true],
-            'disk' => ['label' => 'Disk size (GB)', 'type' => 'text', 'help' => 'The disk grows to this size. Empty keeps the template size.'],
+            'disk' => ['label' => 'Disk size (GB)', 'type' => 'text', 'help' => 'The disk grows to this size. Empty keeps the template size, and then extra disk space cannot be sold.'],
             'disk_device' => ['label' => 'Disk device', 'type' => 'text', 'help' => 'Default "scsi0".'],
             'ip_config' => ['label' => 'Network (ipconfig0)', 'type' => 'text', 'help' => 'Default "ip=dhcp". Every VPS of this product gets this setting, so a fixed IP such as "ip=203.0.113.10/24,gw=203.0.113.1" only works for one VPS: set the product stock to 1.'],
         ];
@@ -75,6 +98,10 @@ class ProxmoxModule extends Module implements HasClientPanel
         });
     }
 
+    /**
+     * Clones the template, then sets the plan's cores and memory plus the service's extras and
+     * grows the disk to the plan's size plus extra disk space.
+     */
     public function create(Service $service): ModuleResult
     {
         return $this->attempt(function () use ($service): ModuleResult {
@@ -86,6 +113,14 @@ class ProxmoxModule extends Module implements HasClientPanel
                 return ModuleResult::fail(__('Set the template VM ID on the product first.'));
             }
 
+            $extras = $service->resourceExtras();
+            $refusal = $this->refusal($service->product, $extras);
+
+            if ($refusal !== null) {
+                return ModuleResult::fail($refusal);
+            }
+
+            $totals = $this->totals($service->product, $extras);
             $ipConfig = (string) ($this->productSetting($service, 'ip_config') ?: 'ip=dhcp');
             $fixedIp = $this->fixedIp($ipConfig);
 
@@ -118,15 +153,15 @@ class ProxmoxModule extends Module implements HasClientPanel
             // store its ID, so it would be left on the node, and the next try clones a new one.
             try {
                 $this->call($server, 'put', "nodes/{$node}/qemu/{$vmId}/config", [
-                    'cores' => max(1, (int) $this->productSetting($service, 'cores', 1)),
-                    'memory' => max(256, (int) $this->productSetting($service, 'memory', 1024)),
+                    'cores' => $totals['cpu'],
+                    'memory' => $totals['ram'],
                     'ciuser' => 'root',
                     'cipassword' => $password,
                     'ipconfig0' => $ipConfig,
                     'onboot' => 1,
                 ]);
 
-                $this->resizeDisk($service, $node, $vmId, $deadline);
+                $this->resizeDisk($service, $node, $vmId, $totals['disk'], $deadline);
                 $this->waitFor($server, $node, $this->call($server, 'post', "nodes/{$node}/qemu/{$vmId}/status/start"), $deadline);
             } catch (RuntimeException $exception) {
                 if (! $this->removeVm($server, $node, $vmId)) {
@@ -221,20 +256,174 @@ class ProxmoxModule extends Module implements HasClientPanel
         });
     }
 
+    /**
+     * Sets the new plan's cores, memory and disk plus the service's extras, which it keeps after a
+     * plan change. When the new plan has no disk size, the disk is left as it is (it never shrinks).
+     */
     public function changePackage(Service $service): ModuleResult
     {
         return $this->attempt(function () use ($service): ModuleResult {
             [$node, $vmId] = $this->vm($service);
+            $extras = $service->resourceExtras();
+            $refusal = $this->tooLarge($extras);
+
+            if ($refusal !== null) {
+                return ModuleResult::fail($refusal);
+            }
+
+            $totals = $this->totals($service->product, $extras);
 
             $this->call($service->server, 'put', "nodes/{$node}/qemu/{$vmId}/config", [
-                'cores' => max(1, (int) $this->productSetting($service, 'cores', 1)),
-                'memory' => max(256, (int) $this->productSetting($service, 'memory', 1024)),
+                'cores' => $totals['cpu'],
+                'memory' => $totals['ram'],
             ]);
 
-            $this->resizeDisk($service, $node, $vmId);
+            $this->resizeDisk($service, $node, $vmId, $totals['disk']);
 
             return ModuleResult::ok(__('New plan saved. CPU and memory change after the next restart.'));
         });
+    }
+
+    /**
+     * CPU cores, RAM and, when the product has a disk size, disk space. Without a disk size the VM
+     * keeps the template's disk, so there is no base to add to and staff cannot add a disk option.
+     * Read from this module only, never from the server.
+     *
+     * @return array<string, ResourceKind>
+     */
+    public function resourceKinds(Product $product): array
+    {
+        $kinds = [
+            'cpu' => new ResourceKind(key: 'cpu', label: ResourceOption::kindLabel('cpu'), unit: 'core', maxExtra: self::MAX_EXTRA['cpu'], restarts: true),
+            'ram' => new ResourceKind(key: 'ram', label: ResourceOption::kindLabel('ram'), unit: 'MB', minStep: 128, maxExtra: self::MAX_EXTRA['ram'], restarts: true),
+        ];
+
+        if ($this->planBase($product)['disk'] !== null) {
+            $kinds['disk'] = new ResourceKind(
+                key: 'disk',
+                label: ResourceOption::kindLabel('disk'),
+                unit: 'GB',
+                maxExtra: self::MAX_EXTRA['disk'],
+                canShrink: false,
+                note: __('Grow the partition inside your server to use the new space.'),
+            );
+        }
+
+        return $kinds;
+    }
+
+    /**
+     * The product's cores, memory (MB) and disk size (GB, null when it keeps the template's size),
+     * as create() sets them. It does not ask the server.
+     *
+     * @return array{cpu: int, ram: int, disk: int|null}
+     */
+    public function baseResources(Product $product, ?Server $server): array
+    {
+        return $this->planBase($product);
+    }
+
+    /**
+     * The disk cannot go below what the VM has now, as Proxmox cannot shrink a disk. Asks the node
+     * for the VM's config; a service without a VM yet has no limit.
+     *
+     * @return array<string, ResourceLimit>
+     */
+    public function resourceLimits(Service $service): array
+    {
+        $base = $this->planBase($service->product)['disk'];
+
+        if ($base === null || (int) $this->moduleValue($service, 'vmid', 0) === 0) {
+            return [];
+        }
+
+        [$node, $vmId] = $this->vm($service);
+        $live = $this->diskSize($this->config($service, $node, $vmId), $this->diskDevice($service));
+
+        if ($live === null) {
+            return [];
+        }
+
+        return ['disk' => new ResourceLimit(minUnits: max(0, $live - $base), reason: __('Disk space can only grow.'))];
+    }
+
+    /**
+     * Sets cores and memory for the kinds in $extras (only when they differ, so running it again
+     * changes nothing) and grows the disk when it is smaller than the plan plus its extras. Then it
+     * reads the config again: Proxmox returns changes that wait for a restart as already set. A disk
+     * that is bigger than expected is fine, as it cannot shrink. A resize that takes longer than
+     * RESIZE_WAIT gives 'pending', and core checks the server later.
+     */
+    public function applyResources(Service $service, ResourceExtras $extras): ModuleResult
+    {
+        return $this->attempt(function () use ($service, $extras): ModuleResult {
+            $refusal = $this->refusal($service->product, $extras);
+
+            if ($refusal !== null) {
+                return ModuleResult::fail($refusal);
+            }
+
+            [$node, $vmId] = $this->vm($service);
+            $server = $service->server;
+            $totals = $this->totals($service->product, $extras);
+            $device = $this->diskDevice($service);
+            $config = $this->config($service, $node, $vmId);
+            $changes = [];
+
+            if ($extras->has('cpu') && $this->cores($config) !== $totals['cpu']) {
+                $changes['cores'] = $totals['cpu'];
+            }
+
+            if ($extras->has('ram') && $this->memory($config) !== $totals['ram']) {
+                $changes['memory'] = $totals['ram'];
+            }
+
+            $growTo = $extras->has('disk') && $totals['disk'] !== null && ($this->diskSize($config, $device) ?? 0) < $totals['disk'] ? $totals['disk'] : null;
+
+            if ($changes !== []) {
+                $this->call($server, 'put', "nodes/{$node}/qemu/{$vmId}/config", $changes);
+            }
+
+            if ($growTo !== null) {
+                $task = $this->call($server, 'put', "nodes/{$node}/qemu/{$vmId}/resize", ['disk' => $device, 'size' => $growTo.'G']);
+
+                if (! $this->taskFinished($server, $node, $task, now()->addSeconds(self::RESIZE_WAIT))) {
+                    return ModuleResult::ok(__('The disk is still growing. It is checked again in a few minutes.'), ['pending' => true, 'restart' => $changes !== []]);
+                }
+            }
+
+            $problems = $this->compare($extras, $totals, $this->config($service, $node, $vmId), $device, diskMayBeBigger: true)['problems'];
+
+            if ($problems !== []) {
+                return ModuleResult::fail(__('The server does not match yet: :problems', ['problems' => implode('; ', $problems)]));
+            }
+
+            return match (true) {
+                $changes !== [] => ModuleResult::ok(__('Saved. CPU and memory change after the next restart.'), ['restart' => true]),
+                $growTo !== null => ModuleResult::ok(__('Saved. The disk grew to :size.', ['size' => ResourceOption::formatUnits('GB', $growTo)])),
+                default => ModuleResult::ok(__('The server already has these resources.')),
+            };
+        });
+    }
+
+    /**
+     * Compares the VM's config with the plan plus the extras, for the kinds in $extras. Proxmox
+     * returns changes that wait for a restart as already set. Changes nothing.
+     *
+     * @throws RuntimeException When the node does not answer or the service has no VM.
+     */
+    public function checkResources(Service $service, ResourceExtras $extras): ResourceCheck
+    {
+        [$node, $vmId] = $this->vm($service);
+        $result = $this->compare($extras, $this->totals($service->product, $extras), $this->config($service, $node, $vmId), $this->diskDevice($service), diskMayBeBigger: false);
+        $problems = $result['problems'];
+        $refusal = $this->refusal($service->product, $extras);
+
+        if ($refusal !== null) {
+            array_unshift($problems, $refusal);
+        }
+
+        return new ResourceCheck($result['expected'], $result['live'], $problems);
     }
 
     public function clientPanelView(): string
@@ -316,26 +505,182 @@ class ProxmoxModule extends Module implements HasClientPanel
         });
     }
 
-    private function resizeDisk(Service $service, string $node, int $vmId, ?CarbonInterface $deadline = null): void
+    /**
+     * Grow the VM's disk to this many GB. Nothing happens when the size is null (the template's
+     * size is kept) or the disk is already as big: Proxmox cannot shrink a disk.
+     */
+    private function resizeDisk(Service $service, string $node, int $vmId, ?int $size, ?CarbonInterface $deadline = null): void
     {
-        $size = (int) $this->productSetting($service, 'disk', 0);
-
-        if ($size <= 0) {
+        if ($size === null || $size <= 0) {
             return;
         }
 
-        $device = (string) ($this->productSetting($service, 'disk_device') ?: 'scsi0');
-        $config = (array) $this->call($service->server, 'get', "nodes/{$node}/qemu/{$vmId}/config");
+        $device = $this->diskDevice($service);
+        $current = $this->diskSize($this->config($service, $node, $vmId), $device);
 
-        if (preg_match('/size=(\d+(?:\.\d+)?)([KMGT])/', (string) ($config[$device] ?? ''), $match)) {
-            $currentGb = (float) $match[1] * ['K' => 1 / 1048576, 'M' => 1 / 1024, 'G' => 1, 'T' => 1024][$match[2]];
-
-            if ($currentGb >= $size) {
-                return;
-            }
+        if ($current !== null && $current >= $size) {
+            return;
         }
 
         $this->waitFor($service->server, $node, $this->call($service->server, 'put', "nodes/{$node}/qemu/{$vmId}/resize", ['disk' => $device, 'size' => $size.'G']), $deadline);
+    }
+
+    /**
+     * What the product's plan gives, as create() sets it: cores (at least 1), memory in MB (at
+     * least 256) and the disk size in GB, or null when the VM keeps the template's disk.
+     *
+     * @return array{cpu: int, ram: int, disk: int|null}
+     */
+    private function planBase(Product $product): array
+    {
+        $config = (array) ($product->module_config ?? []);
+        $disk = (int) ($config['disk'] ?? 0);
+
+        return [
+            'cpu' => max(1, (int) ($config['cores'] ?? 1)),
+            'ram' => max(256, (int) ($config['memory'] ?? 1024)),
+            'disk' => $disk > 0 ? $disk : null,
+        ];
+    }
+
+    /**
+     * The plan plus the extras, per kind this module sets. Disk is null when the product keeps the
+     * template's disk.
+     *
+     * @return array{cpu: int, ram: int, disk: int|null}
+     */
+    private function totals(Product $product, ResourceExtras $extras): array
+    {
+        $base = $this->planBase($product);
+
+        return [
+            'cpu' => $base['cpu'] + max(0, $extras->get('cpu')),
+            'ram' => $base['ram'] + max(0, $extras->get('ram')),
+            'disk' => $base['disk'] === null ? null : $base['disk'] + max(0, $extras->get('disk')),
+        ];
+    }
+
+    /**
+     * Why these extras cannot be set at all, for staff, or null when they can. Checked before
+     * anything is sent, so nothing changes.
+     */
+    private function refusal(Product $product, ResourceExtras $extras): ?string
+    {
+        if ($extras->get('disk') > 0 && $this->planBase($product)['disk'] === null) {
+            return __('Set the disk size on the product first.');
+        }
+
+        return $this->tooLarge($extras);
+    }
+
+    /**
+     * A message for staff when an extra is more than this module adds, or null.
+     */
+    private function tooLarge(ResourceExtras $extras): ?string
+    {
+        foreach (self::MAX_EXTRA as $kind => $max) {
+            if ($max !== null && $extras->get($kind) > $max) {
+                return __(':kind: :amount is more than Proxmox can add. Nothing was changed.', [
+                    'kind' => ResourceOption::kindLabel($kind),
+                    'amount' => ResourceOption::formatUnits($kind === 'ram' ? 'MB' : 'core', $extras->get($kind)),
+                ]);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * What each kind in $extras should be (expected) and is (live), with a line for staff for each
+     * kind that differs. With $diskMayBeBigger, a disk bigger than expected is not a problem: it
+     * cannot shrink, and the client has at least what they pay for.
+     *
+     * @param  array{cpu: int, ram: int, disk: int|null}  $totals
+     * @param  array<string, mixed>  $config
+     * @return array{expected: array<string, int>, live: array<string, int|null>, problems: list<string>}
+     */
+    private function compare(ResourceExtras $extras, array $totals, array $config, string $device, bool $diskMayBeBigger): array
+    {
+        $units = ['cpu' => 'core', 'ram' => 'MB', 'disk' => 'GB'];
+        $live = ['cpu' => $this->cores($config), 'ram' => $this->memory($config), 'disk' => $this->diskSize($config, $device)];
+        $result = ['expected' => [], 'live' => [], 'problems' => []];
+
+        foreach ($units as $kind => $unit) {
+            if (! $extras->has($kind) || $totals[$kind] === null) {
+                continue;
+            }
+
+            $result['expected'][$kind] = $totals[$kind];
+            $result['live'][$kind] = $live[$kind];
+            $label = ResourceOption::kindLabel($kind);
+
+            if ($live[$kind] === null) {
+                $result['problems'][] = __(':kind could not be read from the server.', ['kind' => $label]);
+            } elseif ($live[$kind] !== $totals[$kind] && ! ($diskMayBeBigger && $kind === 'disk' && $live[$kind] > $totals[$kind])) {
+                $result['problems'][] = __(':kind: :live, expected :expected', [
+                    'kind' => $label,
+                    'live' => ResourceOption::formatUnits($unit, $live[$kind]),
+                    'expected' => ResourceOption::formatUnits($unit, $totals[$kind]),
+                ]);
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * The VM's config. Proxmox returns changes that wait for a restart as already set.
+     *
+     * @return array<string, mixed>
+     */
+    private function config(Service $service, string $node, int $vmId): array
+    {
+        return (array) $this->call($service->server, 'get', "nodes/{$node}/qemu/{$vmId}/config");
+    }
+
+    /**
+     * The disk that grows, such as "scsi0".
+     */
+    private function diskDevice(Service $service): string
+    {
+        return trim((string) $this->productSetting($service, 'disk_device', '')) ?: 'scsi0';
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    private function cores(array $config): ?int
+    {
+        $cores = $config['cores'] ?? null;
+
+        return is_numeric($cores) ? (int) $cores : null;
+    }
+
+    /**
+     * Memory in MB. Newer Proxmox versions may write it as "current=4096".
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function memory(array $config): ?int
+    {
+        return preg_match('/^(?:current=)?(\d+)/', (string) ($config['memory'] ?? ''), $match) ? (int) $match[1] : null;
+    }
+
+    /**
+     * The size of a disk in whole GB (rounded down), from a value such as
+     * "local-lvm:vm-105-disk-0,size=40G", or null when it cannot be read.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function diskSize(array $config, string $device): ?int
+    {
+        if (! preg_match('/(?:^|,)size=(\d+(?:\.\d+)?)([KMGT]?)(?:,|$)/', (string) ($config[$device] ?? ''), $match)) {
+            return null;
+        }
+
+        $gb = (float) $match[1] * ['' => 1 / 1073741824, 'K' => 1 / 1048576, 'M' => 1 / 1024, 'G' => 1, 'T' => 1024][$match[2]];
+
+        return (int) floor($gb + 0.0005);
     }
 
     /**
@@ -448,11 +793,22 @@ class ProxmoxModule extends Module implements HasClientPanel
      */
     private function waitFor(?Server $server, string $node, mixed $task, ?CarbonInterface $deadline = null): void
     {
-        if (! is_string($task) || ! str_starts_with($task, 'UPID:')) {
-            return;
+        if (! $this->taskFinished($server, $node, $task, $deadline ?? now()->addSeconds(self::TASK_TIMEOUT))) {
+            throw new RuntimeException(__('Proxmox did not finish the task in time. Check the task log on the node.'));
         }
+    }
 
-        $deadline ??= now()->addSeconds(self::TASK_TIMEOUT);
+    /**
+     * Wait until a Proxmox task (a "UPID:..." string) has finished, up to the deadline. True when
+     * it is done (or there was no task), false when it still runs at the deadline.
+     *
+     * @throws RuntimeException When the task failed.
+     */
+    private function taskFinished(?Server $server, string $node, mixed $task, CarbonInterface $deadline): bool
+    {
+        if (! is_string($task) || ! str_starts_with($task, 'UPID:')) {
+            return true;
+        }
 
         do {
             $status = (array) $this->call($server, 'get', "nodes/{$node}/tasks/".rawurlencode($task).'/status');
@@ -464,13 +820,13 @@ class ProxmoxModule extends Module implements HasClientPanel
                     throw new RuntimeException('Proxmox: '.($exit !== '' ? $exit : __('the task failed')));
                 }
 
-                return;
+                return true;
             }
 
             Sleep::for(3)->seconds();
         } while (now()->lessThan($deadline));
 
-        throw new RuntimeException(__('Proxmox did not finish the task in time. Check the task log on the node.'));
+        return false;
     }
 
     /**
