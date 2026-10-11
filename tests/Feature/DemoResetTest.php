@@ -2,11 +2,26 @@
 
 namespace Tests\Feature;
 
+use App\Enums\BillingCycle;
+use App\Enums\MachineStatus;
+use App\Enums\ServiceStatus;
 use App\Models\Admin;
 use App\Models\Client;
+use App\Models\Machine;
+use App\Models\Product;
+use App\Models\Service;
+use App\Models\ServiceResourceOption;
+use App\Provisioning\Hardware\BmcException;
+use App\Provisioning\Hardware\Drivers\PowerDrivers;
+use App\Provisioning\Hardware\Tls\CertificateProbe;
+use App\Provisioning\Hardware\Tls\PinningSupport;
 use App\Support\Demo;
+use Closure;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Testing\TestResponse;
 use PDO;
 use Tests\TestCase;
 
@@ -19,25 +34,136 @@ class DemoResetTest extends TestCase
 
     public function test_the_reset_swaps_in_a_database_full_of_demo_data(): void
     {
-        $database = storage_path('framework/testing/demo-reset.sqlite');
-        File::ensureDirectoryExists(dirname($database));
-        File::put($database, 'old demo data');
-
-        config(['nuvabill.demo' => true, 'database.default' => 'sqlite', 'database.connections.sqlite.database' => $database]);
-        DB::purge('sqlite');
-
-        try {
-            $this->artisan('nuvabill:demo-reset')->assertSuccessful();
-
+        $this->inFreshDemo('demo-reset.sqlite', function (string $database): void {
             $this->assertFileDoesNotExist($database.'.next');
             $this->assertTrue(Admin::query()->where('email', Demo::ADMIN_EMAIL)->exists());
             $this->assertTrue(Client::query()->where('email', Demo::CLIENT_EMAIL)->exists());
             $this->assertTrue(Demo::hasData());
             $this->assertSame('ok', DB::selectOne('PRAGMA integrity_check')->integrity_check);
-        } finally {
-            DB::purge('sqlite');
-            File::delete($database);
-        }
+        });
+    }
+
+    public function test_the_demo_sells_resource_options_and_dedicated_servers(): void
+    {
+        $this->inFreshDemo('demo-reset-catalog.sqlite', function (): void {
+            foreach (['vps-2', 'vps-4', 'vps-8'] as $slug) {
+                $product = Product::query()->where('slug', $slug)->with('resourceOptions.prices')->sole();
+                $this->assertSame(['cpu', 'ram', 'disk', 'ipv4'], $product->resourceOptions->pluck('kind')->all(), $slug);
+
+                foreach ($product->resourceOptions as $option) {
+                    $this->assertNotNull($option->priceFor('USD', BillingCycle::Monthly), "{$slug} {$option->kind}");
+                    $this->assertNotNull($option->priceFor('USD', BillingCycle::Annually), "{$slug} {$option->kind}");
+                }
+
+                $disk = $product->resourceOptions->firstWhere('kind', 'disk');
+                $this->assertFalse($disk->can_shrink);
+                $this->assertFalse($disk->client_can_remove);
+            }
+
+            // The store shows the sliders and the dedicated servers without asking any server.
+            $vps = Product::query()->where('slug', 'vps-2')->with('group')->sole();
+            $this->get(route('store.product', [$vps->group, $vps]))->assertOk()->assertSee('Customize your server')->assertSee('The plan includes 4 GB.');
+
+            // "Mer Las" has one more RAM step on a VPS, renewed at the price of one step.
+            $ram = ServiceResourceOption::query()->with('service.client', 'service.product')->sole();
+            $this->assertSame(['ram', 1, 1024, 300], [$ram->kind, $ram->steps, $ram->step_size, $ram->recurring_amount]);
+            $this->assertSame(['Mer', 'Las'], [$ram->service->client->first_name, $ram->service->client->last_name]);
+            $this->assertSame('virtualizor', $ram->service->product->server_module);
+
+            $product = Product::query()->where('name', 'Dedicated E-2388G')->with('group')->sole();
+            $this->assertSame('Dedicated servers', $product->group->name);
+            $this->assertSame('dedicated', $product->server_module);
+            $this->assertTrue($product->uses_machines);
+            $this->assertSame(1, $product->stockLeft());
+            $this->get(route('store.group', $product->group))->assertOk()->assertSee('Dedicated E-2388G');
+
+            $machines = Machine::query()->with('service.client', 'products')->get()->keyBy('name');
+            $this->assertSame(['DS-101', 'DS-102', 'DS-103'], $machines->keys()->sort()->values()->all());
+            $this->assertSame(MachineStatus::Active, $machines['DS-101']->status);
+            $this->assertSame(MachineStatus::Available, $machines['DS-102']->status);
+            $this->assertSame(MachineStatus::Wiping, $machines['DS-103']->status);
+            $this->assertSame('192.0.2.21', $machines['DS-101']->bmc_host);
+            $this->assertSame(ServiceStatus::Active, $machines['DS-101']->service->status);
+            $this->assertSame(['Mer', 'Las'], [$machines['DS-101']->service->client->first_name, $machines['DS-101']->service->client->last_name]);
+            $this->assertNotNull($machines['DS-101']->provisioned_at);
+
+            foreach ($machines as $machine) {
+                $this->assertTrue($machine->products->contains($product), $machine->name);
+                $this->assertTrue($machine->bmcIsTrusted(), $machine->name);
+                // The BMC login is kept encrypted, never as plain text.
+                $raw = (string) DB::table('machines')->where('id', $machine->id)->value('bmc_password');
+                $this->assertNotSame('', (string) $machine->bmc_password);
+                $this->assertStringNotContainsString((string) $machine->bmc_password, $raw);
+            }
+        });
+    }
+
+    public function test_the_demo_server_panels_read_from_the_fake_servers(): void
+    {
+        $this->inFreshDemo('demo-reset-panels.sqlite', function (): void {
+            $this->app->instance(PinningSupport::class, new PinningSupport(fn (string $function): bool => true, ['version' => '8.5.0', 'ssl_version' => 'OpenSSL/3.0.13']));
+            $this->app->forgetInstance(PowerDrivers::class);
+            Demo::fakeServers();
+
+            // The demo client's VPS shows every tab, read from the fake Virtualizor node.
+            $client = Client::query()->where('email', Demo::CLIENT_EMAIL)->sole();
+            $vps = $client->services()->whereHas('product', fn ($query) => $query->where('server_module', 'virtualizor'))->sole();
+            $this->actingAs($client, 'web');
+
+            $page = $this->get(route('client.services.show', $vps))->assertOk();
+
+            foreach (['overview', 'console', 'graphs', 'reinstall', 'network', 'firewall', 'backups', 'rescue', 'ssh-keys', 'media', 'settings', 'activity'] as $key) {
+                $page->assertSee('aria-controls="panel-'.$key.'"', false);
+            }
+
+            $graphs = $this->section($vps, 'graphs')->json('data');
+            $this->assertSame(['cpu', 'ram', 'disk', 'net_in', 'net_out', 'io_read', 'io_write'], array_column($graphs['series'], 'key'));
+
+            foreach ($graphs['series'] as $series) {
+                $this->assertNotEmpty($series['points'], $series['key']);
+            }
+
+            $this->assertNotEmpty($graphs['bars']['points']);
+            $this->assertCount(6, $graphs['period']['options']);
+
+            $this->section($vps, 'overview')->assertJsonPath('data.state', 'running');
+            $this->section($vps, 'network')->assertJsonPath('data.ips.0.rdns', $vps->domain);
+            $this->section($vps, 'ssh-keys')->assertJsonPath('data.keys.0.name', 'Raz laptop');
+            $this->section($vps, 'firewall')->assertJsonPath('data.plans.0.name', 'Web server')->assertJsonPath('data.plans.0.own', true);
+            $this->section($vps, 'backups')->assertJsonCount(2, 'data.items');
+            $this->section($vps, 'media')->assertJsonCount(2, 'data.isos');
+            $this->section($vps, 'rescue')->assertJsonPath('data.enabled', false);
+            $this->section($vps, 'activity')->assertJsonCount(2, 'data.tasks')->assertJsonCount(2, 'data.logs');
+
+            // "Mer Las" sees the dedicated server's power state from its fake BMC, and none of the BMC details.
+            $machine = Machine::query()->where('name', 'DS-101')->sole();
+            $dedicated = $machine->service;
+            $this->flushSession();
+            $this->actingAs($dedicated->client, 'web');
+
+            $this->get(route('client.services.show', $dedicated))->assertOk()
+                ->assertSee('aria-controls="panel-network"', false)
+                ->assertSee('aria-controls="panel-reinstall"', false);
+            $overview = $this->section($dedicated, 'overview')->assertJsonPath('data.state', 'running');
+            $this->assertStringNotContainsString('192.0.2.21', $overview->getContent());
+            $this->assertStringNotContainsString('DS-101', $overview->getContent());
+
+            // Staff see the power state of each machine from its fake BMC.
+            $this->actingAs(Admin::query()->where('email', Demo::ADMIN_EMAIL)->sole(), 'admin');
+            $this->get(route('admin.machines.index'))->assertOk()->assertSee('DS-103');
+            $this->getJson(route('admin.machines.power.show', $machine))->assertOk()->assertJsonPath('state', 'on');
+            $this->getJson(route('admin.machines.power.show', Machine::query()->where('name', 'DS-102')->sole()))->assertOk()->assertJsonPath('state', 'off');
+
+            // Every call went to a demo fake, and none was a change.
+            $hosts = Http::recorded()->map(fn (array $pair): string => (string) parse_url($pair[0]->url(), PHP_URL_HOST))->unique()->sort()->values()->all();
+            $this->assertSame(['192.0.2.21', '192.0.2.22', Demo::VPS_HOST], $hosts);
+            $this->assertEmpty(Http::recorded(fn (Request $request): bool => $request->method() === 'POST' && ! str_contains($request->url(), 'act=users')));
+
+            // A change that reaches the fake end-user panel anyway is refused, and a BMC certificate is never read.
+            $this->assertSame(['This is turned off in the demo.'], Http::asForm()->post('https://'.Demo::VPS_HOST.':4083/index.php?act=rdns&svs=101&api=json', ['rdns' => 1])->json('error'));
+            $this->expectException(BmcException::class);
+            app(CertificateProbe::class)->fetch('192.0.2.21', 443, '192.0.2.21');
+        });
     }
 
     public function test_the_reset_waits_for_a_change_that_is_still_being_saved(): void
@@ -79,5 +205,37 @@ class DemoResetTest extends TestCase
             DB::purge('sqlite');
             File::delete([$database, $database.'-journal', $database.'.next']);
         }
+    }
+
+    /**
+     * Run the demo reset into a new SQLite file, then the checks against the fresh demo data.
+     *
+     * @param  Closure(string): void  $checks  Given the database file.
+     */
+    private function inFreshDemo(string $file, Closure $checks): void
+    {
+        $database = storage_path('framework/testing/'.$file);
+        File::ensureDirectoryExists(dirname($database));
+        File::put($database, 'old demo data');
+
+        config(['nuvabill.demo' => true, 'database.default' => 'sqlite', 'database.connections.sqlite.database' => $database]);
+        DB::purge('sqlite');
+
+        try {
+            $this->artisan('nuvabill:demo-reset')->assertSuccessful();
+
+            $checks($database);
+        } finally {
+            DB::purge('sqlite');
+            File::delete([$database, $database.'-journal', $database.'.next']);
+        }
+    }
+
+    /**
+     * One section of the client server panel, read as the browser reads it.
+     */
+    private function section(Service $service, string $section): TestResponse
+    {
+        return $this->getJson(route('client.services.sections.show', [$service, $section]))->assertOk();
     }
 }
