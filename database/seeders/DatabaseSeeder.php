@@ -593,9 +593,10 @@ class DatabaseSeeder extends Seeder
     }
 
     /**
-     * Dedicated servers from the hardware inventory: one product sold from three machines whose
+     * Dedicated servers from the hardware inventory: one product sold from six machines whose
      * BMCs are fakes (Demo::fakeServers() answers for them). DS-101 runs a "Mer Las" server,
-     * DS-102 is free stock and DS-103 waits for its disks to be wiped.
+     * DS-103 waits for its disks to be wiped, and DS-102, DS-104, DS-105 and DS-106 are free stock,
+     * so one visitor's order does not sell the product out for everyone until the next reset.
      *
      * The BMC passwords are random and the certificate pins are dummies: the fake BMCs check
      * neither, and the demo locks every hardware change.
@@ -644,6 +645,9 @@ class DatabaseSeeder extends Seeder
             ['DS-101', Demo::BMC_HOSTS[0], 'U7', 8, MachineStatus::Active],
             ['DS-102', Demo::BMC_HOSTS[1], 'U8', 16, MachineStatus::Available],
             ['DS-103', Demo::BMC_HOSTS[2], 'U9', 24, MachineStatus::Wiping],
+            ['DS-104', Demo::BMC_HOSTS[3], 'U10', 32, MachineStatus::Available],
+            ['DS-105', Demo::BMC_HOSTS[4], 'U11', 40, MachineStatus::Available],
+            ['DS-106', Demo::BMC_HOSTS[5], 'U12', 48, MachineStatus::Available],
         ] as $index => [$name, $bmc, $unit, $network, $status]) {
             $machine = new Machine([
                 'name' => $name,

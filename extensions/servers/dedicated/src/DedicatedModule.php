@@ -49,7 +49,7 @@ use Illuminate\Support\Facades\DB;
  * Clients get a server panel (Sections): facts and power state, power buttons, the IP addresses and
  * a reinstall request that opens a ticket. They never see the machine's name, rack or anything
  * about its BMC. Extra IPv4 addresses and monthly traffic are sold as resource options: extra IPs
- * come from the machine's own free extra IPs, and a traffic change asks staff to set the limit.
+ * come from the machine's own free extra IPs, and a traffic change waits for staff to set the limit.
  *
  * Every machine status change goes through MachineInventory and every power action through
  * PowerControl, which hold the locks, pauses and the activity log.
@@ -462,13 +462,20 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
 
     /**
      * A service can rent at most the extra IPs it has plus the free extra IPs of its machine.
+     * Without a machine in use (an imported service before "Assign machine", or a machine staff
+     * took back) nothing can be set on the server, so additions wait and removals stay open.
      */
     public function resourceLimits(Service $service): array
     {
         $machine = $this->inventory()->machineFor($service);
 
-        if ($machine === null) {
-            return [];
+        if ($machine === null || ! in_array($machine->status, [MachineStatus::Active, MachineStatus::Suspended], true)) {
+            $extras = $service->resourceExtras();
+
+            return [
+                'ipv4' => new ResourceLimit(maxUnits: $extras->get('ipv4'), reason: __('Your server is not ready for more IP addresses yet. Contact us.')),
+                'bandwidth' => new ResourceLimit(maxUnits: $extras->get('bandwidth'), reason: __('Your server is not ready for more traffic yet. Contact us.')),
+            ];
         }
 
         $extras = MachineIp::query()->where('machine_id', $machine->getKey())->where('kind', MachineIp::KIND_EXTRA)->where('version', 4);
@@ -478,6 +485,11 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
         return ['ipv4' => new ResourceLimit(maxUnits: $rented + $free, reason: __('No more extra IPs are free on your server. Contact us for more.'))];
     }
 
+    /**
+     * Rent the paid extra IPs and remember the paid extra traffic. Only staff can set a traffic
+     * limit, so a new traffic value comes back as 'manual': the change waits until staff press
+     * "Mark done", and only then is the client told. The same traffic again is not a change.
+     */
     public function applyResources(Service $service, ResourceExtras $extras): ModuleResult
     {
         $machine = $this->inventory()->machineFor($service);
@@ -486,7 +498,14 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
             return ModuleResult::fail(__('This service has no machine in use. Assign one on the service page.'));
         }
 
-        return $this->applyExtras($service, $machine, $extras);
+        $trafficChanged = false;
+        $applied = $this->applyExtras($service, $machine, $extras, $trafficChanged);
+
+        if (! $applied->success || ! $trafficChanged) {
+            return $applied;
+        }
+
+        return ModuleResult::ok(__('Set the new traffic limit of :machine by hand, then press Mark done.', ['machine' => $machine->name]), ['manual' => true]);
     }
 
     /**
@@ -635,9 +654,15 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
 
     /**
      * Rent the paid extra IPv4 addresses on the machine, and ask staff to set a new traffic limit.
+     *
+     * @param  bool  $trafficChanged  Set to whether staff were asked to set a new traffic limit.
+     *
+     * @param-out bool $trafficChanged
      */
-    private function applyExtras(Service $service, Machine $machine, ResourceExtras $extras): ModuleResult
+    private function applyExtras(Service $service, Machine $machine, ResourceExtras $extras, bool &$trafficChanged = false): ModuleResult
     {
+        $trafficChanged = false;
+
         if ($extras->has('ipv4')) {
             try {
                 $this->inventory()->syncExtraIps($service, max(0, $extras->get('ipv4')));
@@ -649,7 +674,7 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
         }
 
         if ($extras->has('bandwidth')) {
-            $this->askForTrafficLimit($service, $machine, max(0, $extras->get('bandwidth')));
+            $trafficChanged = $this->askForTrafficLimit($service, $machine, max(0, $extras->get('bandwidth')));
         }
 
         return ModuleResult::ok(__('The extras are set on :machine.', ['machine' => $machine->name]));
@@ -657,12 +682,12 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
 
     /**
      * Traffic is a limit staff set on their own network: they get an alert when the extra traffic
-     * changed, and the new value is remembered for checkResources().
+     * changed, and the new value is remembered for checkResources(). Returns whether it changed.
      */
-    private function askForTrafficLimit(Service $service, Machine $machine, int $units): void
+    private function askForTrafficLimit(Service $service, Machine $machine, int $units): bool
     {
         if ((int) ($service->module_data[self::TRAFFIC] ?? 0) === $units) {
-            return;
+            return false;
         }
 
         self::remember($service, [self::TRAFFIC => $units]);
@@ -675,17 +700,22 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
                 'traffic' => ResourceOption::formatUnits('GB', $units),
             ]),
         ]);
+
+        return true;
     }
 
     /**
-     * The power part of a suspend, as the message for staff.
+     * The power part of a suspend, as the message for staff. A BMC without a shutdown signal but
+     * with a forced power off is switched off by the scheduler after the wait time.
      */
     private function suspendPower(Machine $machine, Service $service, PowerAction $action): string
     {
         $result = $this->switchPower($machine, $service, $action);
 
         if ($result === null) {
-            return __('Marked suspended. This server has no power control, so switch it off by hand.');
+            return $action !== PowerAction::Off && in_array(PowerAction::Off, $this->power()->actions($machine), true)
+                ? __('Suspended. The server is forced off after the wait time.')
+                : __('Marked suspended. This server has no power control, so switch it off by hand.');
         }
 
         return $result->ok

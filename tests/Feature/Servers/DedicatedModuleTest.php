@@ -189,6 +189,42 @@ class DedicatedModuleTest extends TestCase
         $this->assertSame('Off', $this->bmcStates['10.20.0.11']);
     }
 
+    public function test_suspend_without_a_shutdown_signal_forces_off_after_the_wait(): void
+    {
+        $service = $this->dedicatedService();
+        $machine = $this->machineFor($service, 'On');
+        // This BMC can only switch the power on and force it off.
+        $machine->forceFill(['bmc_reset_types' => ['On', 'ForceOff']])->save();
+
+        $result = app(Provisioner::class)->suspend($service, 'Overdue on payment');
+
+        $this->assertTrue($result->success);
+        $this->assertSame('Suspended. The server is forced off after the wait time.', $result->message);
+        $this->assertTrue($machine->fresh()->power_check_at->between(now()->addMinutes(9), now()->addMinutes(11)));
+        Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+
+        $this->travel(11)->minutes();
+        $this->artisan('nuvabill:hardware')->assertSuccessful();
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST' && $request->data() === ['ResetType' => 'ForceOff']);
+        $this->assertSame('Off', $this->bmcStates['10.20.0.11']);
+        $this->assertSame([], $this->mailsTo('staff@example.test', 'DS-101: Switch it off by hand'));
+    }
+
+    public function test_suspend_without_power_control_asks_staff_to_switch_it_off(): void
+    {
+        $service = $this->dedicatedService();
+        $machine = $this->machineFor($service, 'On');
+        $machine->forceFill(['bmc_type' => 'none'])->save();
+
+        $result = app(Provisioner::class)->suspend($service, 'Overdue on payment');
+
+        $this->assertTrue($result->success);
+        $this->assertSame('Marked suspended. This server has no power control, so switch it off by hand.', $result->message);
+        $this->assertSame(MachineStatus::Suspended, $machine->fresh()->status);
+        Http::assertNothingSent();
+    }
+
     public function test_suspend_works_while_the_bmc_is_down_and_power_is_retried(): void
     {
         $service = $this->dedicatedService();

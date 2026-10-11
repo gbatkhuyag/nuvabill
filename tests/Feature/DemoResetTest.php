@@ -2,9 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Contracts\HasResourceOptions;
 use App\Enums\BillingCycle;
 use App\Enums\MachineStatus;
 use App\Enums\ServiceStatus;
+use App\Extensions\ExtensionManager;
+use App\Extensions\Servers\Resources\ResourceKind;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Machine;
@@ -22,6 +25,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
+use LogicException;
 use PDO;
 use Tests\TestCase;
 
@@ -58,6 +62,16 @@ class DemoResetTest extends TestCase
                 $disk = $product->resourceOptions->firstWhere('kind', 'disk');
                 $this->assertFalse($disk->can_shrink);
                 $this->assertFalse($disk->client_can_remove);
+
+                // The kind details saved on each option are what the module declares, so the store
+                // never shows other restart notes or maximums than the module works with.
+                $kinds = $this->virtualizorKinds($product);
+
+                foreach ($kinds === null ? [] : $product->resourceOptions as $option) {
+                    $kind = $kinds[$option->kind] ?? null;
+                    $this->assertNotNull($kind, "{$slug} {$option->kind}");
+                    $this->assertSame([$kind->canShrink, $kind->restarts, $kind->maxExtra], [$option->can_shrink, $option->restarts, $option->max_extra], "{$slug} {$option->kind}");
+                }
             }
 
             // The store shows the sliders and the dedicated servers without asking any server.
@@ -74,14 +88,21 @@ class DemoResetTest extends TestCase
             $this->assertSame('Dedicated servers', $product->group->name);
             $this->assertSame('dedicated', $product->server_module);
             $this->assertTrue($product->uses_machines);
-            $this->assertSame(1, $product->stockLeft());
+            // Several free machines, so one visitor's order does not sell it out for everyone.
+            $this->assertSame(4, $product->stockLeft());
             $this->get(route('store.group', $product->group))->assertOk()->assertSee('Dedicated E-2388G');
 
             $machines = Machine::query()->with('service.client', 'products')->get()->keyBy('name');
-            $this->assertSame(['DS-101', 'DS-102', 'DS-103'], $machines->keys()->sort()->values()->all());
+            $this->assertSame(['DS-101', 'DS-102', 'DS-103', 'DS-104', 'DS-105', 'DS-106'], $machines->keys()->sort()->values()->all());
             $this->assertSame(MachineStatus::Active, $machines['DS-101']->status);
-            $this->assertSame(MachineStatus::Available, $machines['DS-102']->status);
             $this->assertSame(MachineStatus::Wiping, $machines['DS-103']->status);
+
+            foreach (['DS-102', 'DS-104', 'DS-105', 'DS-106'] as $free) {
+                $this->assertSame(MachineStatus::Available, $machines[$free]->status, $free);
+            }
+
+            // Every BMC is a TEST-NET address the demo fakes answer for, and no two machines share one.
+            $this->assertSame(Demo::BMC_HOSTS, $machines->sortKeys()->pluck('bmc_host')->values()->all());
             $this->assertSame('192.0.2.21', $machines['DS-101']->bmc_host);
             $this->assertSame(ServiceStatus::Active, $machines['DS-101']->service->status);
             $this->assertSame(['Mer', 'Las'], [$machines['DS-101']->service->client->first_name, $machines['DS-101']->service->client->last_name]);
@@ -228,6 +249,28 @@ class DemoResetTest extends TestCase
         } finally {
             DB::purge('sqlite');
             File::delete([$database, $database.'-journal', $database.'.next']);
+        }
+    }
+
+    /**
+     * The Virtualizor module's resource kinds for a demo VPS plan, or null while the module does not
+     * build them yet. Any other failure fails the test.
+     *
+     * @return array<string, ResourceKind>|null
+     */
+    private function virtualizorKinds(Product $product): ?array
+    {
+        $module = app(ExtensionManager::class)->serverModule('virtualizor');
+        $this->assertInstanceOf(HasResourceOptions::class, $module);
+
+        try {
+            return $module->resourceKinds($product);
+        } catch (LogicException $exception) {
+            if ($exception->getMessage() !== 'Not built yet.') {
+                throw $exception;
+            }
+
+            return null;
         }
     }
 

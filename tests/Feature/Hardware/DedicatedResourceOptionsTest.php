@@ -17,8 +17,10 @@ use App\Models\Service;
 use App\Models\ServiceResourceOption;
 use App\Provisioning\Hardware\MachineInventory;
 use App\Provisioning\Provisioner;
+use App\Support\AttentionList;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Validation\ValidationException;
 use Nuvabill\Extensions\Dedicated\DedicatedModule;
 use Tests\TestCase;
 
@@ -26,7 +28,7 @@ use Tests\TestCase;
  * Extra IPv4 addresses and monthly traffic of dedicated servers sold as resource options: a service
  * can never rent more extra IPs than its machine has free, rented IPs follow the extras paid for
  * (newest freed first), "Server is ready" refuses when the paid IPs do not fit, and a traffic change
- * asks staff to set the new limit.
+ * waits for staff to set the new limit. A service without a machine in use cannot add extras.
  */
 class DedicatedResourceOptionsTest extends TestCase
 {
@@ -158,35 +160,98 @@ class DedicatedResourceOptionsTest extends TestCase
         $this->assertSame(['203.0.113.11'], $this->rentedBy($service));
     }
 
-    public function test_bandwidth_change_alerts_staff_and_verifies(): void
+    public function test_bandwidth_change_waits_for_staff_to_set_the_limit(): void
     {
         $traffic = ResourceOption::factory()->kind('bandwidth', 1000)->priced(500)->create(['product_id' => $this->product->id]);
         $service = $this->dedicatedService();
-        $this->machineFor($service, 'On');
+        $this->machineFor($service, 'On', extras: ['203.0.113.11']);
+        $changes = app(ResourceChanges::class);
+
         ServiceResourceOption::factory()->create(['service_id' => $service->id, 'resource_option_id' => $traffic->id, 'steps' => 2, 'recurring_amount' => 1000]);
+        $change = ResourceChange::factory()->applied()->withItem($traffic, 0, 2, 0, 1000)->create([
+            'service_id' => $service->id,
+            'mode' => ResourceChange::MODE_NOW,
+            'server_state' => ResourceChange::SERVER_QUEUED,
+        ]);
 
-        $result = app(Provisioner::class)->applyResources($service);
+        $changes->applyToServer($change->id);
 
-        $this->assertTrue($result->success);
+        // Only staff can set the limit: the change waits for them, and the client is not told yet.
+        $change->refresh();
+        $this->assertSame(ResourceChange::SERVER_MANUAL, $change->server_state);
+        $this->assertSame('Set the new traffic limit of DS-101 by hand, then press Mark done.', $change->server_message);
+        $this->assertCount(1, $this->mailsTo('staff@example.test', "Set resources by hand on service #{$service->id}"));
         $alerts = $this->mailsTo('staff@example.test', 'DS-101: Set the traffic limit');
         $this->assertCount(1, $alerts);
         $this->assertStringContainsString("Service #{$service->id} on DS-101 now has 2 TB of extra monthly traffic.", $alerts[0]->bodyHtml);
+        $this->assertSame([], $this->mailsTo('mer.las@example.test', 'Your server resources changed'));
         $this->assertSame(2000, $service->fresh()->module_data[DedicatedModule::TRAFFIC]);
-        $this->assertTrue(app(Provisioner::class)->checkResources($service)->matches());
+        $this->assertTrue(app(Provisioner::class)->checkResources($service->fresh())->matches());
 
-        // The same extras again change nothing and send nothing.
-        app(Provisioner::class)->applyResources($service);
+        $this->signInAdmin(Admin::factory()->create(['name' => 'Raz']));
+        $this->assertSame('1 resource change needs staff.', collect(AttentionList::items())->firstWhere('key', 'resources.staff')['text'] ?? null);
+
+        // Staff set the limit and press Mark done: now the client is told.
+        $this->post(route('admin.services.resources.done', $service))->assertSessionHas('status', 'The change is marked as done. The client got an email.');
+        $this->assertSame(ResourceChange::SERVER_DONE, $change->fresh()->server_state);
+        $this->assertCount(1, $this->mailsTo('mer.las@example.test', 'Your server resources changed'));
+
+        // An extra IP with the same traffic is set by the module alone and done at once.
+        $this->travel(1)->minutes();
+        $ips = $this->appliedChange($service, 0, 1);
+        $changes->applyToServer($ips->id);
+
+        $this->assertSame(ResourceChange::SERVER_DONE, $ips->fresh()->server_state);
+        $this->assertSame(['203.0.113.11'], $this->rentedBy($service));
+        $this->assertCount(2, $this->mailsTo('mer.las@example.test', 'Your server resources changed'));
         $this->assertCount(1, $this->mailsTo('staff@example.test', 'DS-101: Set the traffic limit'));
+        $this->assertCount(1, $this->mailsTo('staff@example.test', "Set resources by hand on service #{$service->id}"));
 
-        // Back to the plan: staff are told again.
+        // Back to the plan: the check sees the old limit, and staff are asked again.
+        $this->travel(1)->minutes();
         ServiceResourceOption::query()->where('service_id', $service->id)->where('kind', 'bandwidth')->update(['steps' => 0, 'status' => ServiceResourceOption::STATUS_CANCELLED]);
         $check = app(Provisioner::class)->checkResources($service->fresh());
         $this->assertFalse($check->matches());
         $this->assertSame(['Monthly traffic: 2 TB, expected 0 GB'], $check->problems);
 
-        app(Provisioner::class)->applyResources($service->fresh());
+        $back = ResourceChange::factory()->applied()->withItem($traffic, 2, 0, 1000, 0)->create([
+            'service_id' => $service->id,
+            'mode' => ResourceChange::MODE_NOW,
+            'server_state' => ResourceChange::SERVER_QUEUED,
+        ]);
+        $changes->applyToServer($back->id);
+
+        $this->assertSame(ResourceChange::SERVER_MANUAL, $back->fresh()->server_state);
         $this->assertCount(2, $this->mailsTo('staff@example.test', 'DS-101: Set the traffic limit'));
+        $this->assertCount(2, $this->mailsTo('mer.las@example.test', 'Your server resources changed'));
         $this->assertTrue(app(Provisioner::class)->checkResources($service->fresh())->matches());
+        Http::assertNothingSent();
+    }
+
+    public function test_an_active_service_without_a_machine_cannot_add_extras(): void
+    {
+        ResourceOption::factory()->kind('bandwidth', 1000)->priced(500)->create(['product_id' => $this->product->id, 'max_steps' => 5]);
+        // An imported service before staff assign its machine: one extra IP from the old system.
+        $service = $this->dedicatedService();
+        $this->row($service, 1);
+        $this->machineFor(null, 'Off', extras: ['203.0.113.11', '203.0.113.12']);
+
+        $sliders = collect(app(ResourceOptions::class)->forService($service->fresh()))->keyBy('kind');
+
+        $this->assertSame([1, 1, false, true], [$sliders['ipv4']['current'], $sliders['ipv4']['max'], $sliders['ipv4']['can_add'], $sliders['ipv4']['can_remove']]);
+        $this->assertSame('Your server is not ready for more IP addresses yet. Contact us.', $sliders['ipv4']['limit_reason']);
+        $this->assertSame([0, 0, false], [$sliders['bandwidth']['current'], $sliders['bandwidth']['max'], $sliders['bandwidth']['can_add']]);
+        $this->assertSame('Your server is not ready for more traffic yet. Contact us.', $sliders['bandwidth']['limit_reason']);
+
+        // Nothing more can be bought until the machine is in use.
+        try {
+            app(ResourceChanges::class)->quote($service->fresh(), ['ipv4' => 2]);
+            $this->fail('An extra IP was quoted for a service without a machine.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['Your server is not ready for more IP addresses yet. Contact us.'], $exception->errors()['steps.ipv4']);
+        }
+
+        $this->assertSame(0, ResourceChange::query()->count());
         Http::assertNothingSent();
     }
 

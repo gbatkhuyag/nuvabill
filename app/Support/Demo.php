@@ -37,7 +37,7 @@ class Demo
      *
      * @var list<string>
      */
-    public const BMC_HOSTS = ['192.0.2.21', '192.0.2.22', '192.0.2.23'];
+    public const BMC_HOSTS = ['192.0.2.21', '192.0.2.22', '192.0.2.23', '192.0.2.24', '192.0.2.25', '192.0.2.26'];
 
     /**
      * The Redfish path of the one system each demo BMC lists.
