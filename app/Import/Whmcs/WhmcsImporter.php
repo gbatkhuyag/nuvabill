@@ -25,6 +25,7 @@ use App\Models\ActivityLog;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Domain;
+use App\Models\ImportMapping;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Product;
@@ -45,6 +46,7 @@ use App\Provisioning\Provisioner;
 use App\Support\Activity;
 use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -208,6 +210,12 @@ class WhmcsImporter extends ImportSource
      * Activity entry for a service whose extras came across inside its plan price.
      */
     private const EXTRAS_IN_PLAN = 'service.resources_imported';
+
+    /**
+     * Mapping entity of the resource rows the import made: a WHMCS option value of a service
+     * (tblhostingconfigoptions) to the Nuvabill row it became.
+     */
+    private const RESOURCE_ROW = 'service_resource';
 
     /**
      * @var array<int, string>|null
@@ -671,8 +679,8 @@ class WhmcsImporter extends ImportSource
 
     /**
      * Services, with the extras of their configurable options (see importExtras()). Once a service's
-     * extras changed in Nuvabill (it has a resource change), a later run leaves its price and extras
-     * as Nuvabill has them.
+     * extras changed in Nuvabill (see managedHere()), a later run leaves its price, billing cycle
+     * and extras as Nuvabill has them, so the cycle and the prices billed for it stay together.
      *
      * @param  Collection<int, stdClass>  $rows
      */
@@ -695,7 +703,7 @@ class WhmcsImporter extends ImportSource
             $cycle = $this->cycle($row->billingcycle ?? '');
             $status = $this->serviceStatus($row->domainstatus ?? '');
             $localId = $this->localId('service', $row->id);
-            $managedHere = $localId !== null && ResourceChange::query()->where('service_id', $localId)->exists();
+            $managedHere = $localId !== null && $this->managedHere($localId);
             $attributes = [
                 'product_id' => $productId,
                 'server_id' => $this->localId('server', $row->server ?? 0),
@@ -712,7 +720,7 @@ class WhmcsImporter extends ImportSource
             ];
 
             if ($managedHere) {
-                unset($attributes['recurring_amount']);
+                unset($attributes['recurring_amount'], $attributes['billing_cycle']);
             }
 
             $service = $this->upsert('service', (int) $row->id, Service::class, $attributes, [
@@ -741,10 +749,32 @@ class WhmcsImporter extends ImportSource
     }
 
     /**
+     * Whether a service's extras changed in Nuvabill since it was imported: it has a resource change,
+     * or a resource row the import did not make (such as one staff added, or one the move from
+     * Virtualizor resource add-ons made).
+     */
+    private function managedHere(int $serviceId): bool
+    {
+        return ResourceChange::query()->where('service_id', $serviceId)->exists()
+            || ServiceResourceOption::query()->where('service_id', $serviceId)->whereNotIn('id', $this->importedRows())->exists();
+    }
+
+    /**
+     * The IDs of the resource rows the import made, as a subquery.
+     *
+     * @return EloquentBuilder<ImportMapping>
+     */
+    private function importedRows(): EloquentBuilder
+    {
+        return ImportMapping::query()->select('local_id')->where(['source' => static::key(), 'entity' => self::RESOURCE_ROW]);
+    }
+
+    /**
      * Split a service's WHMCS price into its plan and the extras from its configurable options, so
-     * its renewal total stays exactly the WHMCS amount. Rows of kinds that no longer come across
-     * are cancelled. When the extras would cost more than the whole price (prices went up since),
-     * they come across at no charge and the plan keeps the price, which is logged once.
+     * its renewal total stays exactly the WHMCS amount. Rows the import made for kinds that no
+     * longer come across are cancelled. When the extras would cost more than the whole price
+     * (prices went up since), they come across at no charge and the plan keeps the price, which is
+     * logged once.
      *
      * @param  array<int, stdClass>  $values  The service's option values, by WHMCS option ID.
      *
@@ -763,18 +793,25 @@ class WhmcsImporter extends ImportSource
 
         foreach ($split['rows'] as $kind => $extra) {
             $option = $options[$kind];
-            ($rows->get($kind) ?? new ServiceResourceOption(['service_id' => $service->id, 'kind' => $kind]))->fill([
+            $row = ($rows->get($kind) ?? new ServiceResourceOption(['service_id' => $service->id, 'kind' => $kind]))->fill([
                 'resource_option_id' => $option->id,
                 'unit' => $option->unit,
                 'step_size' => $option->step_size,
                 'steps' => $extra['steps'],
                 'recurring_amount' => $extra['amount'],
                 'status' => ServiceResourceOption::STATUS_ACTIVE,
-            ])->save();
+            ]);
+            $row->save();
+
+            if ($extra['source'] > 0) {
+                $this->remember(self::RESOURCE_ROW, $extra['source'], (int) $row->id);
+            }
         }
 
+        $made = $rows->isEmpty() ? [] : $this->importedRows()->whereIn('local_id', $rows->pluck('id'))->pluck('local_id')->map(fn (mixed $id): int => (int) $id)->all();
+
         foreach ($rows as $kind => $row) {
-            if (! isset($split['rows'][$kind]) && $row->status === ServiceResourceOption::STATUS_ACTIVE) {
+            if (! isset($split['rows'][$kind]) && $row->status === ServiceResourceOption::STATUS_ACTIVE && in_array((int) $row->id, $made, true)) {
                 $row->fill(['steps' => 0, 'recurring_amount' => 0, 'status' => ServiceResourceOption::STATUS_CANCELLED])->save();
             }
         }
@@ -798,7 +835,7 @@ class WhmcsImporter extends ImportSource
      *
      * @param  array<string, array{id: int, units: int, option: stdClass}>  $resources
      * @param  array<int, stdClass>  $values  Option values by WHMCS option ID.
-     * @return array{rows: array<string, array{steps: int, amount: int}>, plan: int, included: bool}
+     * @return array{rows: array<string, array{steps: int, amount: int, source: int}>, plan: int, included: bool} Each row's source is the ID of its WHMCS option value.
      */
     private function splitPrice(int $amount, BillingCycle $cycle, string $currency, array $resources, array $values): array
     {
@@ -815,14 +852,14 @@ class WhmcsImporter extends ImportSource
 
             $choice = $choices[$resource['id']] ?? null;
             $price = $cycle->isRecurring() && $choice !== null ? ($this->optionPrice($choice, $currency, $cycle) ?? 0) : 0;
-            $rows[$kind] = ['steps' => $steps, 'amount' => $steps * $price];
+            $rows[$kind] = ['steps' => $steps, 'amount' => $steps * $price, 'source' => (int) ($values[$resource['id']]->id ?? 0)];
         }
 
         $sum = array_sum(array_column($rows, 'amount'));
         $included = $sum > $amount;
 
         if ($included) {
-            $rows = array_map(fn (array $row): array => ['steps' => $row['steps'], 'amount' => 0], $rows);
+            $rows = array_map(fn (array $row): array => ['amount' => 0] + $row, $rows);
         }
 
         return ['rows' => $rows, 'plan' => $included ? $amount : $amount - $sum, 'included' => $included];
@@ -1668,7 +1705,7 @@ class WhmcsImporter extends ImportSource
      * Option values of these WHMCS services for the options brought across.
      *
      * @param  list<int>  $serviceIds
-     * @return array<int, array<int, stdClass>> WHMCS service ID => option ID => value (qty, optionid).
+     * @return array<int, array<int, stdClass>> WHMCS service ID => option ID => value (id, qty, optionid).
      */
     private function optionValues(array $serviceIds): array
     {
@@ -1681,7 +1718,7 @@ class WhmcsImporter extends ImportSource
 
         foreach (array_chunk($serviceIds, 400) as $services) {
             foreach (array_chunk($optionIds, 400) as $options) {
-                foreach ($this->db()->table('tblhostingconfigoptions')->whereIn('relid', $services)->whereIn('configid', $options)->orderBy('id')->get(['relid', 'configid', 'optionid', 'qty']) as $value) {
+                foreach ($this->db()->table('tblhostingconfigoptions')->whereIn('relid', $services)->whereIn('configid', $options)->orderBy('id')->get(['id', 'relid', 'configid', 'optionid', 'qty']) as $value) {
                     $values[(int) $value->relid][(int) $value->configid] ??= $value;
                 }
             }

@@ -501,7 +501,8 @@ class VirtualizorResourcesTest extends TestCase
         $this->assertSame(['plans', 'vps', 'managevps', 'vps'], array_column($api->calls, 'kind'));
         $this->assertSame(['editvps' => 1, 'cores' => 3, 'ram' => 6144], $api->calls[2]['data']);
         $this->assertSame(['act' => 'managevps', 'vpsid' => '77'], $this->withoutCredentials($api->calls[2]['query']));
-        $this->assertSame(['cores' => 3, 'ram' => 6144, 'disk' => 80, 'num_ips' => 1], $service->fresh()->module_data[ResourceTotals::DATA]['totals']);
+        // Disk and IPv4 have options but no extras and no rows: they are left as the VPS has them.
+        $this->assertSame(['cores' => 3, 'ram' => 6144], $service->fresh()->module_data[ResourceTotals::DATA]['totals']);
 
         // Running it again changes nothing.
         $api = $this->fakeVirtualizor();
@@ -513,7 +514,67 @@ class VirtualizorResourcesTest extends TestCase
         // The check reads the VPS only and finds it matches.
         $check = app(Provisioner::class)->checkResources($service->fresh());
         $this->assertTrue($check->matches(), implode('; ', $check->problems));
-        $this->assertSame(['cpu' => 3, 'ram' => 6144, 'disk' => 80, 'ipv4' => 1], $check->expected);
+        $this->assertSame(['cpu' => 3, 'ram' => 6144], $check->expected);
+    }
+
+    public function test_apply_resources_leaves_kinds_nuvabill_never_raised_as_the_vps_has_them(): void
+    {
+        // Staff gave this VPS two more IPv4 addresses and 8 GB RAM in Virtualizor. The product sells
+        // IPv4 and RAM, but the service only has a CPU row.
+        $api = $this->fakeVirtualizor();
+        $live = ['ips' => ['1' => '203.0.113.7', '2' => '203.0.113.8', '3' => '203.0.113.9'], 'ram' => '8192'];
+        $service = $this->activeVps(['cpu' => 1], '79', live: $live, config: ['ipv4_pool_id' => '5']);
+
+        $result = app(Provisioner::class)->applyResources($service);
+
+        $this->assertTrue($result->success, $result->message);
+        $this->assertSame(['plans', 'vps', 'managevps', 'vps'], array_column($api->calls, 'kind'));
+        $this->assertSame(['editvps' => 1, 'cores' => 3], $api->calls[2]['data']);
+        $this->assertSame(['203.0.113.7', '203.0.113.8', '203.0.113.9'], array_values($this->live['79']['ips']));
+        $this->assertSame('8192', $this->live['79']['ram']);
+        $this->assertSame(['cores' => 3], $service->fresh()->module_data[ResourceTotals::DATA]['totals']);
+
+        $check = app(Provisioner::class)->checkResources($service->fresh());
+        $this->assertTrue($check->matches(), implode('; ', $check->problems));
+        $this->assertSame(['cpu' => 3], $check->expected);
+
+        // Once the client had extra IPv4 and removed it, the cancelled row takes IPv4 back to the plan.
+        ServiceResourceOption::factory()->create(['service_id' => $service->id, 'resource_option_id' => $this->option($service, 'ipv4')->id, 'steps' => 0, 'recurring_amount' => 0, 'status' => ServiceResourceOption::STATUS_CANCELLED]);
+        $api = $this->fakeVirtualizor();
+
+        $this->assertTrue(app(Provisioner::class)->applyResources($service->fresh())->success);
+        $this->assertSame(['editvps' => 1, 'num_ips' => 1, 'ips' => ['203.0.113.7']], collect($api->calls)->firstWhere('kind', 'managevps')['data']);
+    }
+
+    public function test_an_imported_vps_without_noted_addresses_checks_only_the_new_address_against_the_pool(): void
+    {
+        // The main address comes from another pool; new addresses come from pool 5.
+        $api = $this->fakeVirtualizor(['ips' => fn (array $query): array => ['ips' => ['7' => ['ip' => $query['ipsearch'], 'ippid' => $query['ipsearch'] === '203.0.113.7' ? '9' : '5', 'vpsid' => '78', 'ipv6' => '0', 'internal' => '0', 'nat' => '0']]]]);
+        $service = $this->activeVps(['ipv4' => 1], '78', config: ['ipv4_pool_id' => '5']);
+        // A VPS imported from WHMCS notes only its ID.
+        $service->update(['module_data' => ['vpsid' => '78']]);
+
+        $result = app(Provisioner::class)->applyResources($service->fresh());
+
+        $this->assertTrue($result->success, $result->message);
+        // IPv4's base is the product's (1 when empty), so the plan is not read.
+        $this->assertSame(['vps', 'managevps', 'vps', 'ips'], array_column($api->calls, 'kind'));
+        $this->assertSame(['203.0.113.21'], array_column(array_column(array_filter($api->calls, fn (array $call): bool => $call['kind'] === 'ips'), 'query'), 'ipsearch'));
+        $this->assertSame(['203.0.113.7', '203.0.113.21'], $service->fresh()->module_data['ips']);
+        $this->assertSame(['num_ips' => 2], $service->fresh()->module_data[ResourceTotals::DATA]['totals']);
+
+        // Addresses staff changed in Virtualizor are noted again before the next change: the new
+        // main address is not checked, and a RAM change with an IPv4 row still goes through.
+        $this->live['78']['ips'] = ['1' => '198.51.100.4', '2' => '203.0.113.21'];
+        ServiceResourceOption::factory()->create(['service_id' => $service->id, 'resource_option_id' => $this->option($service, 'ram')->id, 'steps' => 1, 'recurring_amount' => 500]);
+        $api = $this->fakeVirtualizor(['ips' => fn (array $query): array => ['ips' => []]]);
+
+        $result = app(Provisioner::class)->applyResources($service->fresh());
+
+        $this->assertTrue($result->success, $result->message);
+        $this->assertSame(['plans', 'vps', 'managevps', 'vps'], array_column($api->calls, 'kind'));
+        $this->assertSame(['editvps' => 1, 'ram' => 6144], $api->calls[2]['data']);
+        $this->assertSame(['198.51.100.4', '203.0.113.21'], $service->fresh()->module_data['ips']);
     }
 
     public function test_apply_resources_grows_the_single_disk_and_refuses_to_shrink(): void
@@ -603,15 +664,21 @@ class VirtualizorResourcesTest extends TestCase
 
     public function test_limits_keep_the_disk_from_shrinking_and_sell_no_extras_on_unlimited_traffic(): void
     {
-        $api = $this->fakeVirtualizor();
+        // Plan 3 lists no IPv6 addresses here, and the product does not set them either.
+        $api = $this->fakeVirtualizor(['plans' => ['plans' => ['3' => array_diff_key($this->plan(), ['ips6' => true])]]]);
         $service = $this->activeVps(['disk' => 1], live: ['space' => '120'], config: ['bandwidth' => '0']);
         ResourceOption::factory()->kind('bandwidth', 1000)->priced(500)->create(['product_id' => $service->product_id]);
+        $ipv6 = ResourceOption::factory()->kind('ipv6', 1)->priced(100)->create(['product_id' => $service->product_id, 'included' => null]);
+        ServiceResourceOption::factory()->create(['service_id' => $service->id, 'resource_option_id' => $ipv6->id, 'steps' => 2, 'recurring_amount' => 200]);
 
         $limits = app(Provisioner::class)->resourceLimits($service);
 
         $this->assertSame([40, 'Disk space can only grow.'], [$limits['disk']->minUnits, $limits['disk']->reason]);
         $this->assertSame([0, 'Your plan has no limit here, so extras add nothing.'], [$limits['bandwidth']->maxUnits, $limits['bandwidth']->reason]);
         $this->assertSame([62, 15], [$limits['cpu']->maxUnits, $limits['ipv4']->maxUnits]);
+        // The plan amount of IPv6 is not known, so the server step would refuse more: the client
+        // keeps or removes the 2 addresses they have, and cannot buy more.
+        $this->assertSame([null, 2, 'We cannot add more of this right now.'], [$limits['ipv6']->minUnits, $limits['ipv6']->maxUnits, $limits['ipv6']->reason]);
         $this->assertSame(['plans', 'vps'], array_column($api->calls, 'kind'));
     }
 

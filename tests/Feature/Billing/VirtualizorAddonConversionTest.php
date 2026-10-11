@@ -232,10 +232,53 @@ class VirtualizorAddonConversionTest extends TestCase
         $this->assertSame($before, $mixed->fresh()->renewalTotal());
         $this->assertStringContainsString("totals differ for service #{$mixed->id}", (string) ActivityLog::query()->where('action', 'resource_options.convert_failed')->where('subject_id', $handMade->id)->value('description'));
 
-        // The other product moved; the add-ons it shares are hidden for both.
+        // The other product moved. The add-ons it shares stay on sale for the product that could not
+        // move, and are taken off only the moved one.
         $this->assertSame(4, ResourceOption::query()->where('product_id', $fine->id)->count());
         $this->assertSame(['ram' => [1, 700]], $this->rows($moved));
-        $this->assertFalse(ProductAddon::query()->findOrFail(6)->is_visible);
+        $ram = ProductAddon::query()->findOrFail(6);
+        $this->assertTrue($ram->is_visible);
+        $this->assertSame([$handMade->id], $ram->product_ids);
+        $this->assertTrue($ram->appliesTo($handMade->fresh()));
+        $this->assertFalse($ram->appliesTo($fine->fresh()));
+        $this->assertSame(
+            'Product VPS 4: other products still sell Extra CPU core, Extra 2 GB RAM, Extra 40 GB disk, Extra IPv4 address. Only this product no longer offers them; check their product lists.',
+            ActivityLog::query()->where('action', 'resource_options.converted')->where('subject_id', $fine->id)->orderByDesc('id')->value('description'),
+        );
+    }
+
+    public function test_add_ons_other_products_sell_stay_on_sale_for_them(): void
+    {
+        $this->rapidnetAddons();
+        $hosting = Product::factory()->priced(500)->create(['name' => 'Web Hosting', 'server_module' => null]);
+        $vps = $this->vpsProduct('VPS 2', ['resource_addons' => '{"version":1,"ids":{"cpu":5,"ram":6,"disk":7,"ipv4":8}}']);
+        $other = $this->vpsProduct('VPS 4', []);
+        // CPU is listed for the VPS and for hosting, RAM for every product (an empty list), disk only
+        // for the VPS, and IPv4 for the VPS and a product that is gone.
+        ProductAddon::query()->whereKey(5)->update(['product_ids' => json_encode([(string) $vps->id, (string) $hosting->id])]);
+        ProductAddon::query()->whereKey(7)->update(['product_ids' => json_encode([$vps->id])]);
+        ProductAddon::query()->whereKey(8)->update(['product_ids' => json_encode([$vps->id, 999])]);
+        $service = $this->service($vps, ['cpu' => 500, 'disk' => 900]);
+
+        $this->migrate();
+
+        $addons = ProductAddon::query()->orderBy('id')->get()->keyBy('id');
+        $this->assertSame([5 => true, 6 => true, 7 => false, 8 => false], $addons->map(fn (ProductAddon $addon): bool => $addon->is_visible)->all());
+        $this->assertSame([$hosting->id], $addons[5]->product_ids);
+        $this->assertEqualsCanonicalizing([$hosting->id, $other->id], $addons[6]->product_ids);
+        $this->assertSame([$vps->id], $addons[7]->product_ids, 'A hidden add-on keeps its list');
+        $this->assertTrue($addons[5]->appliesTo($hosting) && $addons[6]->appliesTo($hosting) && $addons[6]->appliesTo($other));
+        $this->assertFalse($addons[5]->appliesTo($vps) || $addons[6]->appliesTo($vps));
+        $this->assertSame(['cpu' => [1, 500], 'disk' => [1, 900]], $this->rows($service));
+        $this->assertSame(
+            'Product VPS 2: other products still sell Extra CPU core, Extra 2 GB RAM. Only this product no longer offers them; check their product lists.',
+            ActivityLog::query()->where('action', 'resource_options.converted')->where('subject_id', $vps->id)->orderByDesc('id')->value('description'),
+        );
+
+        // A second run changes nothing.
+        $first = $this->snapshot();
+        $this->migrate();
+        $this->assertSame($first, $this->snapshot());
     }
 
     /**
@@ -390,6 +433,7 @@ class VirtualizorAddonConversionTest extends TestCase
             'addons' => DB::table('service_addons')->orderBy('id')->get()->map(fn ($row): array => (array) $row)->all(),
             'products' => DB::table('products')->orderBy('id')->pluck('module_config', 'id')->all(),
             'visible' => DB::table('product_addons')->orderBy('id')->pluck('is_visible', 'id')->all(),
+            'listed' => DB::table('product_addons')->orderBy('id')->pluck('product_ids', 'id')->all(),
             'logs' => DB::table('activity_logs')->orderBy('id')->get(['action', 'subject_id', 'description'])->map(fn ($row): array => (array) $row)->all(),
         ];
     }

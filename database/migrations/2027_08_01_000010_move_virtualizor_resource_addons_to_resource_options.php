@@ -13,11 +13,16 @@ use Illuminate\Support\Facades\Schema;
  *   many steps as a client could buy before (each add-on once);
  * - one resource row per kind for each pending, active or suspended service that has those add-ons,
  *   with the same price, so every renewal total stays exactly the same (checked per service);
- * - the add-ons are hidden, the service add-ons are marked "converted", and the JSON is kept under
- *   "resource_addons_converted".
+ * - the service add-ons are marked "converted", and the JSON is kept under
+ *   "resource_addons_converted";
+ * - the add-ons are taken off the product. An add-on no other product offers is hidden. One that
+ *   other products offer too (its product list names them, or is empty, which means every product)
+ *   stays on sale for them: the product is removed from its list, and an empty list becomes every
+ *   other product. Staff get an activity entry for each product whose add-ons stayed on sale.
  *
  * Each product moves in its own transaction: a product that cannot move (JSON that is not valid, or
- * totals that would change) is left exactly as it was and logged as resource_options.convert_failed.
+ * totals that would change) is left as it was, keeps selling its add-ons, and is logged as
+ * resource_options.convert_failed.
  * An option is shown to clients only when every add-on was shown, it has a price in the default
  * currency, and its prices were not worked out from a bigger add-on; otherwise staff check it first.
  *
@@ -99,6 +104,7 @@ return new class extends Migration
         $ids = array_unique(array_merge(...array_map(fn (array $policy): array => array_keys($policy['ids']), array_values($policies)) ?: [[]]));
         $visible = DB::table('product_addons')->whereIn('id', $ids)->pluck('is_visible', 'id')->map(fn (mixed $shown): bool => (bool) $shown)->all();
         $currency = $this->defaultCurrency();
+        $relisted = [];
 
         foreach ($products as $product) {
             $policy = $policies[$product['id']] ?? null;
@@ -108,7 +114,7 @@ return new class extends Migration
             }
 
             try {
-                [$addons, $services] = DB::transaction(fn (): array => $this->convert($product, $policy, $visible, $currency));
+                [$addons, $services, $kept] = DB::transaction(fn (): array => $this->convert($product, $policy, $visible, $currency));
             } catch (Throwable $exception) {
                 $this->failed($product, $exception->getCode() === self::REFUSED ? $exception->getMessage() : 'the database refused a change ('.class_basename($exception).')');
 
@@ -116,6 +122,16 @@ return new class extends Migration
             }
 
             $this->log($product['id'], 'resource_options.converted', "Product {$this->name($product)}: {$addons} add-ons became sliders for {$services} services. Check the prices and raise the maximum.");
+            $relisted[] = [$product, $kept];
+        }
+
+        // Only now: a product moved later may have hidden an add-on an earlier one left on sale.
+        foreach ($relisted as [$product, $kept]) {
+            $names = $kept === [] ? [] : DB::table('product_addons')->whereIn('id', $kept)->where('is_visible', true)->orderBy('id')->pluck('name')->all();
+
+            if ($names !== []) {
+                $this->log($product['id'], 'resource_options.converted', "Product {$this->name($product)}: other products still sell ".implode(', ', $names).'. Only this product no longer offers them; check their product lists.');
+            }
         }
     }
 
@@ -130,7 +146,8 @@ return new class extends Migration
      * @param  array{id: int, name: string, config: array<string, mixed>, raw: string}  $product
      * @param  array{ids: array<int, array{0: string, 1: int}>, base: array<string, int>, public_pool_id: int|null}  $policy
      * @param  array<int|string, bool>  $visible
-     * @return array{0: int, 1: int} The number of add-ons moved and of services with rows.
+     * @return array{0: int, 1: int, 2: list<int>} The number of add-ons moved, of services with rows,
+     *                                             and the add-ons left on sale for other products.
      */
     private function convert(array $product, array $policy, array $visible, string $currency): array
     {
@@ -207,8 +224,7 @@ return new class extends Migration
 
         $services = $this->moveServices($product['id'], $policy, $options, $now);
         $ids = array_keys($policy['ids']);
-
-        DB::table('product_addons')->whereIn('id', $ids)->update(['is_visible' => false, 'updated_at' => $now]);
+        $kept = $this->takeAddonsOff($product['id'], $ids, $now);
 
         $config = $product['config'];
         $config[self::CONVERTED] = $config[self::FIELD];
@@ -220,7 +236,58 @@ return new class extends Migration
 
         DB::table('products')->where('id', $product['id'])->update(['module_config' => json_encode($config), 'updated_at' => $now]);
 
-        return [count($ids), $services];
+        return [count($ids), $services, $kept];
+    }
+
+    /**
+     * Stop offering the moved product's add-ons with it. An add-on whose product list names no
+     * other product that still exists is hidden, as before. One that other products offer too stays
+     * on sale for them, and only its list changes: the product is removed from it, and an empty list
+     * (every product) becomes every other product. A product moved earlier has already taken itself
+     * off the list, so the last product to move hides a shared add-on.
+     *
+     * @param  list<int>  $ids
+     * @return list<int> The add-ons left on sale for other products.
+     */
+    private function takeAddonsOff(int $productId, array $ids, DateTimeInterface $now): array
+    {
+        $all = DB::table('products')->orderBy('id')->pluck('id')->map(fn (mixed $id): int => (int) $id)->all();
+        $kept = [];
+
+        foreach (DB::table('product_addons')->whereIn('id', $ids)->orderBy('id')->get(['id', 'product_ids']) as $addon) {
+            $listed = $this->productIds($addon->product_ids);
+            $others = array_values(array_diff($listed === [] ? $all : $listed, [$productId]));
+
+            if (array_intersect($others, $all) === []) {
+                DB::table('product_addons')->where('id', $addon->id)->update(['is_visible' => false, 'updated_at' => $now]);
+
+                continue;
+            }
+
+            if ($others !== $listed) {
+                DB::table('product_addons')->where('id', $addon->id)->update(['product_ids' => json_encode($others), 'updated_at' => $now]);
+                $kept[] = (int) $addon->id;
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * The product IDs an add-on's product list names, or an empty list when it names none (the
+     * add-on is for every product, the way ProductAddon::appliesTo() reads it).
+     *
+     * @return list<int>
+     */
+    private function productIds(mixed $raw): array
+    {
+        $list = is_string($raw) ? json_decode($raw, true) : null;
+
+        if (! is_array($list)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_map(fn (int|string $id): int => (int) $id, array_filter($list, fn (mixed $id): bool => (is_int($id) || is_string($id)) && ctype_digit((string) $id) && (int) $id > 0))));
     }
 
     /**

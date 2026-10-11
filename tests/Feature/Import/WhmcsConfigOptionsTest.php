@@ -2,9 +2,11 @@
 
 namespace Tests\Feature\Import;
 
+use App\Enums\BillingCycle;
 use App\Import\Whmcs\WhmcsImporter;
 use App\Jobs\RunImport;
 use App\Models\ActivityLog;
+use App\Models\ImportMapping;
 use App\Models\Product;
 use App\Models\ResourceChange;
 use App\Models\ResourceOption;
@@ -171,14 +173,51 @@ class WhmcsConfigOptionsTest extends TestCase
         ResourceChange::factory()->create(['service_id' => $service->id, 'client_id' => $service->client_id]);
         $service->resources()->update(['steps' => 4, 'recurring_amount' => 800]);
         $service->forceFill(['recurring_amount' => 2700])->save();
-        DB::connection(self::CONNECTION)->table('tblhostingconfigoptions')->where('relid', 10)->where('configid', 11)->update(['qty' => 1]);
+        $whmcs = DB::connection(self::CONNECTION);
+        $whmcs->table('tblhostingconfigoptions')->where('relid', 10)->where('configid', 11)->update(['qty' => 1]);
+        // The cycle changed in WHMCS too: the plan and extras prices are for a month, so it stays.
+        $whmcs->table('tblhosting')->where('id', 10)->update(['billingcycle' => 'Annually', 'amount' => '360.00']);
 
         $this->runImport();
 
         $service->refresh();
         $this->assertSame(2700, $service->recurring_amount);
+        $this->assertSame(BillingCycle::Monthly, $service->billing_cycle);
         $this->assertSame(4, $service->resources()->value('steps'));
         $this->assertSame(3500, $service->renewalTotal());
+    }
+
+    public function test_a_rerun_keeps_resource_rows_the_import_did_not_make(): void
+    {
+        $this->choose([11 => ['kind' => 'ram', 'units' => 1024]]);
+        $this->runImport();
+
+        $service = Service::query()->where('domain', 'vps.raz.example')->firstOrFail();
+        $ram = $service->resources()->sole();
+        $this->assertTrue(ImportMapping::query()->where(['source' => 'whmcs', 'entity' => 'service_resource', 'local_id' => $ram->id])->exists(), 'The import notes the rows it makes');
+
+        // Staff (or the move from Virtualizor resource add-ons) gave the service extra IPv4 in
+        // Nuvabill, and it pays for it.
+        $ipv4 = ResourceOption::factory()->kind('ipv4', 1)->create(['product_id' => $service->product_id]);
+        ServiceResourceOption::factory()->create(['service_id' => $service->id, 'resource_option_id' => $ipv4->id, 'steps' => 1, 'recurring_amount' => 300]);
+        $before = $service->fresh()->renewalTotal();
+
+        // WHMCS no longer has the RAM option, and its cycle and price changed.
+        $this->choose([]);
+        DB::connection(self::CONNECTION)->table('tblhosting')->where('id', 10)->update(['billingcycle' => 'Annually', 'amount' => '360.00']);
+
+        $this->runImport();
+
+        $service->refresh();
+        $this->assertSame(3200, $service->recurring_amount);
+        $this->assertSame(BillingCycle::Monthly, $service->billing_cycle);
+        $this->assertSame(['ipv4' => [1, 300, $ipv4->id], 'ram' => [2, 400, $ram->resource_option_id]], $this->rows($service));
+        $this->assertSame($before, $service->renewalTotal());
+
+        // A service with only rows the import made still follows WHMCS.
+        $other = Service::query()->where('domain', 'vps.mer.example')->firstOrFail();
+        $this->assertSame(1200, $other->recurring_amount, 'Not chosen any more: the plan takes the price back');
+        $this->assertSame(ServiceResourceOption::STATUS_CANCELLED, $other->resources()->value('status'));
     }
 
     public function test_staff_choose_the_options_after_the_dry_run(): void

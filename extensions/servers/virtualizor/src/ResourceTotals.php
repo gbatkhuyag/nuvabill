@@ -12,6 +12,7 @@ use App\Models\ResourceOption;
 use App\Models\Server;
 use App\Models\Service;
 use App\Models\ServiceAddon;
+use Closure;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -135,14 +136,17 @@ final class ResourceTotals
     /**
      * Live limits for one service, in extra units per kind: no kind may go above what Virtualizor
      * allows in total, extras on a plan without a limit are not sold, and disk space cannot go
-     * below what the VPS has now. May call the server. A service without a VPS has no limits.
+     * below what the VPS has now. A kind whose plan amount is not known cannot grow, because the
+     * server step would refuse it after payment; its extras can still be removed. May call the
+     * server. A service without a VPS has no limits.
      *
      * @return array<string, ResourceLimit>
      */
     public function limits(Service $service): array
     {
         $vpsId = (string) (((array) $service->module_data)['vpsid'] ?? '');
-        $kinds = array_keys(array_intersect_key($service->resourceExtras()->units, self::KINDS));
+        $units = self::known($service->resourceExtras());
+        $kinds = array_keys($units);
 
         if (! ctype_digit($vpsId) || $kinds === []) {
             return [];
@@ -153,6 +157,8 @@ final class ResourceTotals
 
         foreach ($kinds as $kind) {
             if ($base[$kind] === null) {
+                $limits[$kind] = new ResourceLimit(maxUnits: max(0, $units[$kind]), reason: __('We cannot add more of this right now.'));
+
                 continue;
             }
 
@@ -177,10 +183,11 @@ final class ResourceTotals
     }
 
     /**
-     * Set the live VPS to its plan's base plus these extras, then check it. Only the fields that
-     * differ are sent, without the plan, so running it again changes nothing. Fewer IPv4 or IPv6
-     * addresses keep the first ones. Disk space only grows: a bigger disk is left as it is, and a
-     * disk that cannot grow here (more than one disk, or no storage ID) is left for staff.
+     * Set the live VPS to its plan's base plus these extras, then check it. Only kinds Nuvabill
+     * raised are set (see raised()), and only the fields that differ are sent, without the plan, so
+     * running it again changes nothing. Fewer IPv4 or IPv6 addresses keep the first ones. Disk space
+     * only grows: a bigger disk is left as it is, and a disk that cannot grow here (more than one
+     * disk, or no storage ID) is left for staff.
      */
     public function apply(Service $service, ResourceExtras $extras): ModuleResult
     {
@@ -188,7 +195,7 @@ final class ResourceTotals
             $this->guardLegacy($service);
             $server = $service->server;
             $vpsId = AdminApi::vpsId($service);
-            [$totals, $refusals] = $this->totalsFor($service, self::known($extras));
+            [$totals, $refusals] = $this->totalsFor($service, self::raised($service, $extras));
 
             if ($refusals !== []) {
                 return ModuleResult::fail($refusals[0]);
@@ -203,6 +210,10 @@ final class ResourceTotals
 
             if ($before === []) {
                 return ModuleResult::fail(__('Virtualizor has no VPS #:id.', ['id' => $vpsId]));
+            }
+
+            if ($pool !== null) {
+                $this->noteAddresses($service, $before);
             }
 
             [$post, $unset] = $this->edits($totals, $before, $before, $this->growsDisk($totals, $before) ? $this->disks($server, $vpsId) : []);
@@ -243,15 +254,16 @@ final class ResourceTotals
     }
 
     /**
-     * Compare the live VPS with its plan's base plus these extras. Changes nothing. Traffic and
-     * network speed without a limit are expected to stay 0.
+     * Compare the live VPS with its plan's base plus these extras, for the kinds Nuvabill raised
+     * (see raised()). Changes nothing. Traffic and network speed without a limit are expected to
+     * stay 0.
      *
      * @throws \Throwable When the server does not answer.
      */
     public function check(Service $service, ResourceExtras $extras): ResourceCheck
     {
         $vpsId = AdminApi::vpsId($service);
-        [$totals, $problems] = $this->totalsFor($service, self::known($extras), unlimitedAsZero: true);
+        [$totals, $problems] = $this->totalsFor($service, self::raised($service, $extras), unlimitedAsZero: true);
         $info = $this->admin->vpsInfo($service->server, $vpsId);
 
         if ($info === []) {
@@ -813,8 +825,9 @@ final class ResourceTotals
 
     /**
      * IPv4 addresses the VPS got since its addresses were last noted that are not from the pool,
-     * as lines for staff. The noted addresses only change after a change that checked out, so a
-     * new try checks the same addresses again.
+     * as lines for staff. The noted addresses change only after a change that checked out, or in
+     * noteAddresses() when they are missing or out of date, so a new try checks the same addresses
+     * again.
      *
      * @param  array<string, mixed>  $info
      * @return list<string>
@@ -836,22 +849,40 @@ final class ResourceTotals
     }
 
     /**
-     * Note the totals the VPS has now, and its addresses. Only these keys change: the row is read
-     * again under a lock, so other module data saved meanwhile stays.
+     * Before a change whose new IPv4 addresses are checked against the pool: when the service has
+     * no noted addresses (a VPS imported from WHMCS notes only its ID), or the VPS no longer has all
+     * of them (staff changed its addresses in Virtualizor), note the addresses it has now. Then only
+     * the addresses this change adds are checked, never the main address, which may come from
+     * another pool. Noted addresses the VPS still has are kept, so a new try after a failed check
+     * checks the same new addresses again.
+     *
+     * @param  array<string, mixed>  $before  The VPS before the change.
+     */
+    private function noteAddresses(Service $service, array $before): void
+    {
+        $noted = array_filter((array) (((array) $service->module_data)['ips'] ?? []), 'is_string');
+        $addresses = AdminApi::addresses($before);
+
+        if ($addresses === [] || ($noted !== [] && array_diff($noted, $addresses) === [])) {
+            return;
+        }
+
+        $this->saveData($service, function (array $data) use ($addresses): array {
+            $data['ips'] = $addresses;
+
+            return $data;
+        });
+    }
+
+    /**
+     * Note the totals the VPS has now, and its addresses.
      *
      * @param  array<string, int>  $totals
      * @param  array<string, mixed>  $info
      */
     private function remember(Service $service, array $totals, array $info): void
     {
-        $data = DB::transaction(function () use ($service, $totals, $info): ?array {
-            $fresh = Service::query()->lockForUpdate()->find($service->id);
-
-            if ($fresh === null) {
-                return null;
-            }
-
-            $data = (array) $fresh->module_data;
+        $this->saveData($service, function (array $data) use ($totals, $info): array {
             $earlier = is_array($data[self::DATA]['totals'] ?? null) ? $data[self::DATA]['totals'] : [];
             $data[self::DATA] = ['totals' => array_merge($earlier, $totals), 'checked_at' => now()->getTimestamp()];
             $addresses = AdminApi::addresses($info);
@@ -860,6 +891,26 @@ final class ResourceTotals
                 $data['ips'] = $addresses;
             }
 
+            return $data;
+        });
+    }
+
+    /**
+     * Change some keys of the service's module data. The row is read again under a lock, so other
+     * module data saved meanwhile stays, and the model is kept in step.
+     *
+     * @param  Closure(array<string, mixed>): array<string, mixed>  $change
+     */
+    private function saveData(Service $service, Closure $change): void
+    {
+        $data = DB::transaction(function () use ($service, $change): ?array {
+            $fresh = Service::query()->lockForUpdate()->find($service->id);
+
+            if ($fresh === null) {
+                return null;
+            }
+
+            $data = $change((array) $fresh->module_data);
             $fresh->module_data = $data;
             $fresh->save();
 
@@ -919,6 +970,22 @@ final class ResourceTotals
     private static function known(ResourceExtras $extras): array
     {
         return array_map('intval', array_intersect_key($extras->units, self::KINDS));
+    }
+
+    /**
+     * The extras of the kinds Nuvabill sets on a live VPS: kinds with extras above 0, and kinds the
+     * service has a resource row for, active or cancelled (a cancelled row takes its kind back to
+     * the plan, so removals still reach the server). A kind at 0 without a row was never raised by
+     * Nuvabill, so the VPS keeps what it has there, such as addresses or memory staff gave it in
+     * Virtualizor, the same way a bigger disk is kept.
+     *
+     * @return array<string, int>
+     */
+    private static function raised(Service $service, ResourceExtras $extras): array
+    {
+        $rows = $service->resources()->distinct()->pluck('kind')->map(fn (mixed $kind): string => (string) $kind)->all();
+
+        return array_filter(self::known($extras), fn (int $units, string $kind): bool => $units > 0 || in_array($kind, $rows, true), ARRAY_FILTER_USE_BOTH);
     }
 
     /**
