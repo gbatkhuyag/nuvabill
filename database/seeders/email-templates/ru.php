@@ -158,6 +158,50 @@ MD],
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['Ресурсы вашего сервера изменены', <<<'MD'
+Здравствуйте, {{ client.first_name }}!
+
+Ресурсы **{{ service.domain }}** изменены:
+
+{{ resources.list }}
+
+Со следующего продления вы платите {{ resources.amount }} ({{ resources.cycle }}) за эти дополнительные ресурсы. {{ resources.note }}
+
+[Посмотреть услугу]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['Изменение на вашем сервере {{ service.domain }}', <<<'MD'
+Здравствуйте, {{ client.first_name }}!
+
+{{ change.text }}
+
+- Когда: {{ change.time }}
+- С IP-адреса: {{ change.ip }}
+
+Если это сделали не вы, сразу смените пароль от личного кабинета и свяжитесь с нами.
+
+[Посмотреть услугу]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['Ваш сервер {{ service.product }} готов', <<<'MD'
+Здравствуйте, {{ client.first_name }}!
+
+Ваш выделенный сервер **{{ service.product }}** готов.
+
+- IP-адрес: {{ machine.ip }}
+- Все IP-адреса: {{ machine.ips }}
+- Логин: {{ machine.username }}
+- Имя хоста: {{ machine.hostname }}
+- Расположение: {{ machine.location }}
+
+Пароль есть в вашем личном кабинете. Смените его после первого входа.
+
+[Открыть ваш сервер]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['Ваш домен {{ domain.name }} зарегистрирован', <<<'MD'
 Здравствуйте, {{ client.first_name }}!
 
@@ -277,6 +321,47 @@ MD],
 Для него создан счёт {{ invoice.number }}.
 
 [Открыть предложение]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['Ресурсы не заданы для услуги #{{ service.id }}', <<<'MD'
+Сервер не принял новые ресурсы **{{ service.product }}** (услуга #{{ service.id }}) для {{ client.name }}. Клиент их оплатил.
+
+Что не сработало: {{ error }}
+
+Откройте услугу и нажмите **Повторить**. Или задайте ресурсы на сервере вручную, затем нажмите **Отметить как выполненное**.
+
+[Открыть услугу]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['Задайте ресурсы вручную для услуги #{{ service.id }}', <<<'MD'
+Клиент {{ client.name }} изменил ресурсы **{{ service.product }}** (услуга #{{ service.id }}). Ни один серверный модуль не задаёт их для этой услуги, поэтому задайте их на сервере вручную:
+
+{{ resources.list }}
+
+Затем нажмите **Отметить как выполненное** на странице услуги.
+
+[Открыть услугу]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['Установите ОС на {{ machine.name }} для {{ client.name }}', <<<'MD'
+Клиент {{ client.name }} оплатил **{{ service.product }}** (услуга #{{ service.id }}).
+
+- Машина: {{ machine.name }}
+- Расположение: {{ machine.location }}, стойка {{ machine.rack }} {{ machine.rack_unit }}
+- Система: {{ machine.default_os }}
+
+Установите систему, затем нажмите **Сервер готов** на странице услуги. После этого клиент получит письмо.
+
+[Открыть услугу]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['Очистите {{ machine.name }} перед повторной продажей', <<<'MD'
+Услуга #{{ service.id }} завершена, поэтому машина **{{ machine.name }}** ({{ machine.location }}) выключена и ждёт очистки.
+
+Сотрите все её диски, затем нажмите **Подтвердить очистку**. До этого машина больше не продаётся.
+
+[Открыть машину]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }}: {{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[Открыть машину]({{ admin_url }})
 MD],
     'affiliate.commission' => ['Вы заработали {{ commission.amount }} за рекомендацию', <<<'MD'
 Здравствуйте, {{ client.first_name }}!

@@ -158,6 +158,50 @@ Buenas noticias: tu **{{ service.product }}** para **{{ service.domain }}** vuel
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['Los recursos de tu servidor cambiaron', <<<'MD'
+Hola, {{ client.first_name }}:
+
+Los recursos de **{{ service.domain }}** cambiaron:
+
+{{ resources.list }}
+
+Desde tu próxima renovación pagas {{ resources.amount }} ({{ resources.cycle }}) por estos extras. {{ resources.note }}
+
+[Ver tu servicio]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['Cambio en tu servidor {{ service.domain }}', <<<'MD'
+Hola, {{ client.first_name }}:
+
+{{ change.text }}
+
+- Cuándo: {{ change.time }}
+- Desde la dirección IP: {{ change.ip }}
+
+Si no has sido tú, cambia ahora la contraseña de tu área de clientes y contacta con nosotros.
+
+[Ver tu servicio]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['Tu servidor {{ service.product }} está listo', <<<'MD'
+Hola, {{ client.first_name }}:
+
+Tu servidor dedicado **{{ service.product }}** está listo.
+
+- Dirección IP: {{ machine.ip }}
+- Todas las direcciones IP: {{ machine.ips }}
+- Nombre de usuario: {{ machine.username }}
+- Nombre de host: {{ machine.hostname }}
+- Ubicación: {{ machine.location }}
+
+Tu contraseña está en tu área de clientes. Cámbiala después de iniciar sesión por primera vez.
+
+[Abrir tu servidor]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['Tu dominio {{ domain.name }} está registrado', <<<'MD'
 Hola, {{ client.first_name }}:
 
@@ -277,6 +321,47 @@ MD],
 Se ha creado la factura {{ invoice.number }} para él.
 
 [Abrir el presupuesto]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['Recursos no aplicados en el servicio #{{ service.id }}', <<<'MD'
+El servidor no aceptó los nuevos recursos de **{{ service.product }}** (servicio #{{ service.id }}) de {{ client.name }}. El cliente ya los ha pagado.
+
+Qué falló: {{ error }}
+
+Abre el servicio y pulsa **Reintentar**. O aplica los recursos a mano en el servidor y luego pulsa **Marcar como hecho**.
+
+[Abrir el servicio]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['Aplica los recursos a mano en el servicio #{{ service.id }}', <<<'MD'
+{{ client.name }} cambió los recursos de **{{ service.product }}** (servicio #{{ service.id }}). Ningún módulo de servidor los aplica en este servicio, así que aplícalos a mano en el servidor:
+
+{{ resources.list }}
+
+Después pulsa **Marcar como hecho** en la página del servicio.
+
+[Abrir el servicio]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['Instala el sistema operativo en {{ machine.name }} para {{ client.name }}', <<<'MD'
+{{ client.name }} ha pagado **{{ service.product }}** (servicio #{{ service.id }}).
+
+- Máquina: {{ machine.name }}
+- Ubicación: {{ machine.location }}, rack {{ machine.rack }} {{ machine.rack_unit }}
+- Sistema: {{ machine.default_os }}
+
+Instala el sistema y luego pulsa **El servidor está listo** en la página del servicio. Entonces el cliente recibe un correo.
+
+[Abrir el servicio]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['Borra {{ machine.name }} antes de volver a venderla', <<<'MD'
+El servicio #{{ service.id }} terminó, así que **{{ machine.name }}** ({{ machine.location }}) está apagada y espera un borrado.
+
+Borra todos sus discos y luego pulsa **Confirmar borrado**. Hasta entonces, la máquina no se vuelve a vender.
+
+[Abrir la máquina]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }}: {{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[Abrir la máquina]({{ admin_url }})
 MD],
     'affiliate.commission' => ['Has ganado {{ commission.amount }} por una recomendación', <<<'MD'
 Hola, {{ client.first_name }}:

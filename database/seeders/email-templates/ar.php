@@ -158,6 +158,50 @@ MD],
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['تغيّرت موارد خادمك', <<<'MD'
+مرحبًا {{ client.first_name }}،
+
+تغيّرت موارد **{{ service.domain }}**:
+
+{{ resources.list }}
+
+من التجديد القادم تدفع {{ resources.amount }} ({{ resources.cycle }}) مقابل هذه الموارد الإضافية. {{ resources.note }}
+
+[عرض خدمتك]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['تغيير على خادمك {{ service.domain }}', <<<'MD'
+مرحبًا {{ client.first_name }}،
+
+{{ change.text }}
+
+- الوقت: {{ change.time }}
+- من عنوان IP: {{ change.ip }}
+
+إذا لم تقم بذلك بنفسك، غيّر كلمة مرور منطقة العملاء الآن وتواصل معنا.
+
+[عرض خدمتك]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['خادمك {{ service.product }} جاهز', <<<'MD'
+مرحبًا {{ client.first_name }}،
+
+خادمك المخصص **{{ service.product }}** جاهز.
+
+- عنوان IP: {{ machine.ip }}
+- كل عناوين IP: {{ machine.ips }}
+- اسم الدخول: {{ machine.username }}
+- اسم المضيف: {{ machine.hostname }}
+- الموقع: {{ machine.location }}
+
+كلمة المرور موجودة في منطقة العملاء. غيّرها بعد أول تسجيل دخول.
+
+[افتح خادمك]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['تم تسجيل نطاقك {{ domain.name }}', <<<'MD'
 مرحبًا {{ client.first_name }}،
 
@@ -277,6 +321,47 @@ MD],
 أُنشئت له الفاتورة {{ invoice.number }}.
 
 [فتح عرض السعر]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['لم تُضبط الموارد على الخدمة #{{ service.id }}', <<<'MD'
+لم يقبل الخادم الموارد الجديدة لـ **{{ service.product }}** (الخدمة #{{ service.id }}) الخاصة بـ {{ client.name }}. دفع العميل ثمنها.
+
+ما الذي فشل: {{ error }}
+
+افتح الخدمة واضغط **حاول مرة أخرى**. أو اضبط الموارد على الخادم يدويًا، ثم اضغط **تعليم كمنجز**.
+
+[فتح الخدمة]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['اضبط الموارد يدويًا على الخدمة #{{ service.id }}', <<<'MD'
+غيّر {{ client.name }} موارد **{{ service.product }}** (الخدمة #{{ service.id }}). لا توجد وحدة خادم تضبطها لهذه الخدمة، لذا اضبطها على الخادم يدويًا:
+
+{{ resources.list }}
+
+ثم اضغط **تعليم كمنجز** في صفحة الخدمة.
+
+[فتح الخدمة]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['ثبّت نظام التشغيل على {{ machine.name }} لـ {{ client.name }}', <<<'MD'
+دفع {{ client.name }} ثمن **{{ service.product }}** (الخدمة #{{ service.id }}).
+
+- الجهاز: {{ machine.name }}
+- الموقع: {{ machine.location }}، الرف {{ machine.rack }} {{ machine.rack_unit }}
+- النظام: {{ machine.default_os }}
+
+ثبّت النظام، ثم اضغط **الخادم جاهز** في صفحة الخدمة. بعدها يتلقى العميل رسالة بريد.
+
+[فتح الخدمة]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['امسح {{ machine.name }} قبل بيعه مرة أخرى', <<<'MD'
+انتهت الخدمة #{{ service.id }}، لذا **{{ machine.name }}** ({{ machine.location }}) متوقف وينتظر المسح.
+
+امسح كل أقراصه، ثم اضغط **تأكيد المسح**. حتى ذلك الحين لن يُباع الجهاز مرة أخرى أبدًا.
+
+[فتح الجهاز]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }}: {{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[فتح الجهاز]({{ admin_url }})
 MD],
     'affiliate.commission' => ['ربحت {{ commission.amount }} من إحالة', <<<'MD'
 مرحبًا {{ client.first_name }}،

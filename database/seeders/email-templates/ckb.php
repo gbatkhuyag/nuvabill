@@ -158,6 +158,50 @@ MD],
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['سەرچاوەکانی سێرڤەرەکەت گۆڕدران', <<<'MD'
+سڵاو {{ client.first_name }}،
+
+سەرچاوەکانی **{{ service.domain }}** گۆڕدران:
+
+{{ resources.list }}
+
+لە نوێکردنەوەی داهاتووەوە {{ resources.amount }} ({{ resources.cycle }}) بۆ ئەم سەرچاوە زیادانە دەدەیت. {{ resources.note }}
+
+[خزمەتگوزارییەکەت ببینە]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['گۆڕانکاری لەسەر سێرڤەرەکەت {{ service.domain }}', <<<'MD'
+سڵاو {{ client.first_name }}،
+
+{{ change.text }}
+
+- کات: {{ change.time }}
+- لە ناونیشانی IP: {{ change.ip }}
+
+ئەگەر تۆ ئەمەت نەکردووە، ئێستا وشەی نهێنی ناوچەی کڕیارانەکەت بگۆڕە و پەیوەندیمان پێوە بکە.
+
+[خزمەتگوزارییەکەت ببینە]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['سێرڤەرەکەت {{ service.product }} ئامادەیە', <<<'MD'
+سڵاو {{ client.first_name }}،
+
+سێرڤەرە تایبەتەکەت **{{ service.product }}** ئامادەیە.
+
+- ناونیشانی IP: {{ machine.ip }}
+- هەموو ناونیشانەکانی IP: {{ machine.ips }}
+- ناوی چوونەژوورەوە: {{ machine.username }}
+- ناوی هۆست: {{ machine.hostname }}
+- شوێن: {{ machine.location }}
+
+وشەی نهێنییەکەت لە ناوچەی کڕیاراندایە. دوای یەکەم چوونەژوورەوەت بیگۆڕە.
+
+[سێرڤەرەکەت بکەرەوە]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['دۆمەینەکەت {{ domain.name }} تۆمار کرا', <<<'MD'
 سڵاو {{ client.first_name }}،
 
@@ -277,6 +321,47 @@ MD],
 پسوولەی {{ invoice.number }} بۆی دروست کرا.
 
 [نرخنامەکە بکەرەوە]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['سەرچاوەکان لەسەر خزمەتگوزاری #{{ service.id }} ڕێک نەخران', <<<'MD'
+سێرڤەرەکە سەرچاوە نوێیەکانی **{{ service.product }}** (خزمەتگوزاری #{{ service.id }}) ی {{ client.name }} وەرنەگرت. کڕیار پارەی بۆ داون.
+
+چی سەرنەکەوت: {{ error }}
+
+خزمەتگوزارییەکە بکەرەوە و **دووبارە هەوڵ بدەرەوە** دابگرە. یان سەرچاوەکان بە دەست لەسەر سێرڤەرەکە ڕێک بخە، پاشان **وەک تەواو نیشانە بکە** دابگرە.
+
+[خزمەتگوزارییەکە بکەرەوە]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['سەرچاوەکان بە دەست لەسەر خزمەتگوزاری #{{ service.id }} ڕێک بخە', <<<'MD'
+{{ client.name }} سەرچاوەکانی **{{ service.product }}** (خزمەتگوزاری #{{ service.id }}) ی گۆڕی. هیچ مۆدیوڵێکی سێرڤەر بۆ ئەم خزمەتگوزارییە ڕێکیان ناخات، بۆیە بە دەست لەسەر سێرڤەرەکە ڕێکیان بخە:
+
+{{ resources.list }}
+
+پاشان لە پەڕەی خزمەتگوزارییەکە **وەک تەواو نیشانە بکە** دابگرە.
+
+[خزمەتگوزارییەکە بکەرەوە]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['سیستەمی کارپێکردن لەسەر {{ machine.name }} بۆ {{ client.name }} دابمەزرێنە', <<<'MD'
+{{ client.name }} پارەی **{{ service.product }}** (خزمەتگوزاری #{{ service.id }}) ی دا.
+
+- ئامێر: {{ machine.name }}
+- شوێن: {{ machine.location }}، ڕاک {{ machine.rack }} {{ machine.rack_unit }}
+- سیستەم: {{ machine.default_os }}
+
+سیستەمەکە دابمەزرێنە، پاشان لە پەڕەی خزمەتگوزارییەکە **سێرڤەر ئامادەیە** دابگرە. ئەوکات کڕیار ئیمەیڵێک وەردەگرێت.
+
+[خزمەتگوزارییەکە بکەرەوە]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['{{ machine.name }} پاک بکەرەوە پێش ئەوەی دووبارە بیفرۆشیتەوە', <<<'MD'
+خزمەتگوزاری #{{ service.id }} کۆتایی هات، بۆیە **{{ machine.name }}** ({{ machine.location }}) کوژاوەتەوە و چاوەڕێی پاککردنەوەیە.
+
+هەموو دیسکەکانی بسڕەوە، پاشان **پشتڕاستکردنەوەی پاککردنەوە** دابگرە. تا ئەو کاتە ئامێرەکە هەرگیز دووبارە نافرۆشرێتەوە.
+
+[ئامێرەکە بکەرەوە]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }}: {{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[ئامێرەکە بکەرەوە]({{ admin_url }})
 MD],
     'affiliate.commission' => ['{{ commission.amount }} ت لە ناساندنێک قازانج کرد', <<<'MD'
 سڵاو {{ client.first_name }}،

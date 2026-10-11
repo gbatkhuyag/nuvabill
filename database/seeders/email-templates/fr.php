@@ -158,6 +158,50 @@ Bonne nouvelle : votre **{{ service.product }}** pour **{{ service.domain }}** e
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['Les ressources de votre serveur ont changé', <<<'MD'
+Bonjour {{ client.first_name }},
+
+Les ressources de **{{ service.domain }}** ont changé :
+
+{{ resources.list }}
+
+À partir de votre prochain renouvellement, vous payez {{ resources.amount }} ({{ resources.cycle }}) pour ces extras. {{ resources.note }}
+
+[Voir votre service]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['Changement sur votre serveur {{ service.domain }}', <<<'MD'
+Bonjour {{ client.first_name }},
+
+{{ change.text }}
+
+- Quand : {{ change.time }}
+- Depuis l’adresse IP : {{ change.ip }}
+
+Si ce n’est pas vous, changez maintenant le mot de passe de votre espace client et contactez-nous.
+
+[Voir votre service]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['Votre serveur {{ service.product }} est prêt', <<<'MD'
+Bonjour {{ client.first_name }},
+
+Votre serveur dédié **{{ service.product }}** est prêt.
+
+- Adresse IP : {{ machine.ip }}
+- Toutes les adresses IP : {{ machine.ips }}
+- Identifiant : {{ machine.username }}
+- Nom d’hôte : {{ machine.hostname }}
+- Emplacement : {{ machine.location }}
+
+Votre mot de passe se trouve dans votre espace client. Changez-le après votre première connexion.
+
+[Ouvrir votre serveur]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['Votre domaine {{ domain.name }} est enregistré', <<<'MD'
 Bonjour {{ client.first_name }},
 
@@ -277,6 +321,47 @@ MD],
 La facture {{ invoice.number }} a été créée pour ce devis.
 
 [Ouvrir le devis]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['Ressources non réglées sur le service n° {{ service.id }}', <<<'MD'
+Le serveur n’a pas accepté les nouvelles ressources de **{{ service.product }}** (service n° {{ service.id }}) pour {{ client.name }}. Le client les a payées.
+
+Ce qui a échoué : {{ error }}
+
+Ouvrez le service et appuyez sur **Réessayer**. Ou réglez les ressources à la main sur le serveur, puis appuyez sur **Marquer comme fait**.
+
+[Ouvrir le service]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['Réglez les ressources à la main sur le service n° {{ service.id }}', <<<'MD'
+{{ client.name }} a changé les ressources de **{{ service.product }}** (service n° {{ service.id }}). Aucun module serveur ne les règle pour ce service : réglez-les donc à la main sur le serveur :
+
+{{ resources.list }}
+
+Appuyez ensuite sur **Marquer comme fait** sur la page du service.
+
+[Ouvrir le service]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['Installez l’OS sur {{ machine.name }} pour {{ client.name }}', <<<'MD'
+{{ client.name }} a payé **{{ service.product }}** (service n° {{ service.id }}).
+
+- Machine : {{ machine.name }}
+- Emplacement : {{ machine.location }}, baie {{ machine.rack }} {{ machine.rack_unit }}
+- Système : {{ machine.default_os }}
+
+Installez le système, puis appuyez sur **Le serveur est prêt** sur la page du service. Le client reçoit alors un e-mail.
+
+[Ouvrir le service]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['Effacez {{ machine.name }} avant de la revendre', <<<'MD'
+Le service n° {{ service.id }} est terminé : **{{ machine.name }}** ({{ machine.location }}) est donc éteinte et attend un effacement.
+
+Effacez tous ses disques, puis appuyez sur **Confirmer l'effacement**. D’ici là, la machine n’est jamais revendue.
+
+[Ouvrir la machine]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }} : {{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[Ouvrir la machine]({{ admin_url }})
 MD],
     'affiliate.commission' => ['Vous avez gagné {{ commission.amount }} grâce à une recommandation', <<<'MD'
 Bonjour {{ client.first_name }},

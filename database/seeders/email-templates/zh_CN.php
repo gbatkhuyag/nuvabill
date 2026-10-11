@@ -158,6 +158,50 @@ MD],
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['你的服务器资源已更改', <<<'MD'
+{{ client.first_name }}，你好：
+
+**{{ service.domain }}** 的资源已更改：
+
+{{ resources.list }}
+
+从下次续费起，你需要为这些额外资源支付 {{ resources.amount }}（{{ resources.cycle }}）。{{ resources.note }}
+
+[查看你的服务]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['你的服务器 {{ service.domain }} 有更改', <<<'MD'
+{{ client.first_name }}，你好：
+
+{{ change.text }}
+
+- 时间：{{ change.time }}
+- 来源 IP 地址：{{ change.ip }}
+
+如果这不是你本人的操作，请立即修改客户中心密码并联系我们。
+
+[查看你的服务]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['你的服务器 {{ service.product }} 已就绪', <<<'MD'
+{{ client.first_name }}，你好：
+
+你的独立服务器 **{{ service.product }}** 已就绪。
+
+- IP 地址：{{ machine.ip }}
+- 所有 IP 地址：{{ machine.ips }}
+- 登录名：{{ machine.username }}
+- 主机名：{{ machine.hostname }}
+- 位置：{{ machine.location }}
+
+你的密码在客户中心里。首次登录后请修改密码。
+
+[打开你的服务器]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['你的域名 {{ domain.name }} 已注册', <<<'MD'
 {{ client.first_name }}，你好：
 
@@ -277,6 +321,47 @@ MD],
 已为其创建发票 {{ invoice.number }}。
 
 [打开报价]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['服务 #{{ service.id }} 的资源未设置', <<<'MD'
+服务器没有接受 {{ client.name }} 的 **{{ service.product }}**（服务 #{{ service.id }}）的新资源。客户已为其付款。
+
+失败原因：{{ error }}
+
+请打开服务并点击 **重试**。或者在服务器上手动设置资源，然后点击 **标记为完成**。
+
+[打开服务]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['请手动设置服务 #{{ service.id }} 的资源', <<<'MD'
+{{ client.name }} 更改了 **{{ service.product }}**（服务 #{{ service.id }}）的资源。没有服务器模块为此服务设置这些资源，因此请在服务器上手动设置：
+
+{{ resources.list }}
+
+然后在服务页面上点击 **标记为完成**。
+
+[打开服务]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['为 {{ client.name }} 在 {{ machine.name }} 上安装操作系统', <<<'MD'
+{{ client.name }} 已为 **{{ service.product }}**（服务 #{{ service.id }}）付款。
+
+- 机器：{{ machine.name }}
+- 位置：{{ machine.location }}，机柜 {{ machine.rack }} {{ machine.rack_unit }}
+- 系统：{{ machine.default_os }}
+
+请安装系统，然后在服务页面上点击 **服务器已就绪**。之后客户会收到一封邮件。
+
+[打开服务]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['再次销售前请擦除 {{ machine.name }}', <<<'MD'
+服务 #{{ service.id }} 已结束，因此 **{{ machine.name }}**（{{ machine.location }}）已关机，正在等待擦除。
+
+请擦除它的所有磁盘，然后点击 **确认擦除**。在此之前，这台机器绝不会再次销售。
+
+[打开机器]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }}：{{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[打开机器]({{ admin_url }})
 MD],
     'affiliate.commission' => ['你通过推荐赚取了 {{ commission.amount }}', <<<'MD'
 {{ client.first_name }}，你好：

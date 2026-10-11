@@ -158,6 +158,50 @@ gute Nachricht: Ihr **{{ service.product }}** für **{{ service.domain }}** ist 
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['Ihre Serverressourcen wurden geändert', <<<'MD'
+Hallo {{ client.first_name }},
+
+die Ressourcen von **{{ service.domain }}** wurden geändert:
+
+{{ resources.list }}
+
+Ab Ihrer nächsten Verlängerung bezahlen Sie {{ resources.amount }} ({{ resources.cycle }}) für diese Extras. {{ resources.note }}
+
+[Ihren Dienst ansehen]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['Änderung an Ihrem Server {{ service.domain }}', <<<'MD'
+Hallo {{ client.first_name }},
+
+{{ change.text }}
+
+- Wann: {{ change.time }}
+- Von IP-Adresse: {{ change.ip }}
+
+Wenn Sie das nicht waren, ändern Sie jetzt das Passwort für Ihren Kundenbereich und kontaktieren Sie uns.
+
+[Ihren Dienst ansehen]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['Ihr Server {{ service.product }} ist bereit', <<<'MD'
+Hallo {{ client.first_name }},
+
+Ihr dedizierter Server **{{ service.product }}** ist bereit.
+
+- IP-Adresse: {{ machine.ip }}
+- Alle IP-Adressen: {{ machine.ips }}
+- Anmeldename: {{ machine.username }}
+- Hostname: {{ machine.hostname }}
+- Standort: {{ machine.location }}
+
+Ihr Passwort finden Sie in Ihrem Kundenbereich. Ändern Sie es nach Ihrer ersten Anmeldung.
+
+[Ihren Server öffnen]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['Ihre Domain {{ domain.name }} ist registriert', <<<'MD'
 Hallo {{ client.first_name }},
 
@@ -277,6 +321,47 @@ MD],
 Dafür wurde Rechnung {{ invoice.number }} erstellt.
 
 [Angebot öffnen]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['Ressourcen bei Dienst #{{ service.id }} nicht eingestellt', <<<'MD'
+Der Server hat die neuen Ressourcen von **{{ service.product }}** (Dienst #{{ service.id }}) für {{ client.name }} nicht übernommen. Der Kunde hat dafür bezahlt.
+
+Fehler: {{ error }}
+
+Öffnen Sie den Dienst und klicken Sie auf **Erneut versuchen**. Oder stellen Sie die Ressourcen von Hand auf dem Server ein und klicken Sie dann auf **Als erledigt markieren**.
+
+[Dienst öffnen]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['Ressourcen bei Dienst #{{ service.id }} von Hand einstellen', <<<'MD'
+{{ client.name }} hat die Ressourcen von **{{ service.product }}** (Dienst #{{ service.id }}) geändert. Kein Servermodul stellt sie für diesen Dienst ein, stellen Sie sie also von Hand auf dem Server ein:
+
+{{ resources.list }}
+
+Klicken Sie dann auf der Dienstseite auf **Als erledigt markieren**.
+
+[Dienst öffnen]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['Betriebssystem auf {{ machine.name }} für {{ client.name }} installieren', <<<'MD'
+{{ client.name }} hat **{{ service.product }}** (Dienst #{{ service.id }}) bezahlt.
+
+- Maschine: {{ machine.name }}
+- Standort: {{ machine.location }}, Rack {{ machine.rack }} {{ machine.rack_unit }}
+- System: {{ machine.default_os }}
+
+Installieren Sie das System und klicken Sie dann auf der Dienstseite auf **Server ist bereit**. Der Kunde bekommt dann eine E-Mail.
+
+[Dienst öffnen]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['{{ machine.name }} löschen, bevor Sie sie wieder verkaufen', <<<'MD'
+Dienst #{{ service.id }} ist beendet, daher ist **{{ machine.name }}** ({{ machine.location }}) ausgeschaltet und wartet auf eine Löschung.
+
+Löschen Sie alle Festplatten und klicken Sie dann auf **Löschung bestätigen**. Bis dahin wird die Maschine nie wieder verkauft.
+
+[Maschine öffnen]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }}: {{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[Maschine öffnen]({{ admin_url }})
 MD],
     'affiliate.commission' => ['Sie haben {{ commission.amount }} durch eine Empfehlung verdient', <<<'MD'
 Hallo {{ client.first_name }},

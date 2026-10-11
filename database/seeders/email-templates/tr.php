@@ -158,6 +158,50 @@ Güzel haber: **{{ service.domain }}** için **{{ service.product }}** hizmetini
 
 {{ company.name }}
 MD],
+    'service.resources_changed' => ['Sunucu kaynaklarınız değişti', <<<'MD'
+Merhaba {{ client.first_name }},
+
+**{{ service.domain }}** hizmetinizin kaynakları değişti:
+
+{{ resources.list }}
+
+Bir sonraki yenilemenizden itibaren bu ek kaynaklar için {{ resources.amount }} ({{ resources.cycle }}) ödersiniz. {{ resources.note }}
+
+[Hizmetinizi görüntüleyin]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.server_change' => ['{{ service.domain }} sunucunuzda değişiklik', <<<'MD'
+Merhaba {{ client.first_name }},
+
+{{ change.text }}
+
+- Zaman: {{ change.time }}
+- İşlemin yapıldığı IP adresi: {{ change.ip }}
+
+Bu işlemi siz yapmadıysanız müşteri paneli şifrenizi hemen değiştirin ve bizimle iletişime geçin.
+
+[Hizmetinizi görüntüleyin]({{ service.url }})
+
+{{ company.name }}
+MD],
+    'service.dedicated_ready' => ['{{ service.product }} sunucunuz hazır', <<<'MD'
+Merhaba {{ client.first_name }},
+
+**{{ service.product }}** fiziksel sunucunuz hazır.
+
+- IP adresi: {{ machine.ip }}
+- Tüm IP adresleri: {{ machine.ips }}
+- Kullanıcı adı: {{ machine.username }}
+- Sunucu adı: {{ machine.hostname }}
+- Konum: {{ machine.location }}
+
+Şifreniz müşteri panelinizde. İlk girişinizden sonra şifrenizi değiştirin.
+
+[Sunucunuzu açın]({{ service.url }})
+
+{{ company.name }}
+MD],
     'domain.registered' => ['{{ domain.name }} alan adınız kaydedildi', <<<'MD'
 Merhaba {{ client.first_name }},
 
@@ -277,6 +321,47 @@ MD],
 Bunun için {{ invoice.number }} faturası oluşturuldu.
 
 [Teklifi açın]({{ admin_url }})
+MD],
+    'admin.resources_failed' => ['#{{ service.id }} numaralı hizmette kaynaklar ayarlanmadı', <<<'MD'
+Sunucu, {{ client.name }} için **{{ service.product }}** (hizmet #{{ service.id }}) hizmetinin yeni kaynaklarını almadı. Müşteri bunlar için ödeme yaptı.
+
+Hata: {{ error }}
+
+Hizmeti açın ve **Tekrar dene** düğmesine basın. Ya da kaynakları sunucuda elle ayarlayın, ardından **Tamamlandı olarak işaretle** düğmesine basın.
+
+[Hizmeti açın]({{ admin_url }})
+MD],
+    'admin.resources_by_hand' => ['#{{ service.id }} numaralı hizmette kaynakları elle ayarlayın', <<<'MD'
+{{ client.name }}, **{{ service.product }}** (hizmet #{{ service.id }}) hizmetinin kaynaklarını değiştirdi. Bu hizmet için bunları ayarlayan bir sunucu modülü yok, bu yüzden sunucuda elle ayarlayın:
+
+{{ resources.list }}
+
+Ardından hizmet sayfasında **Tamamlandı olarak işaretle** düğmesine basın.
+
+[Hizmeti açın]({{ admin_url }})
+MD],
+    'admin.machine_install' => ['{{ client.name }} için {{ machine.name }} üzerine işletim sistemini kurun', <<<'MD'
+{{ client.name }}, **{{ service.product }}** (hizmet #{{ service.id }}) için ödeme yaptı.
+
+- Makine: {{ machine.name }}
+- Konum: {{ machine.location }}, kabin {{ machine.rack }} {{ machine.rack_unit }}
+- Sistem: {{ machine.default_os }}
+
+Sistemi kurun, ardından hizmet sayfasında **Sunucu hazır** düğmesine basın. Müşteri o zaman bir e-posta alır.
+
+[Hizmeti açın]({{ admin_url }})
+MD],
+    'admin.machine_wipe' => ['{{ machine.name }} makinesini yeniden satmadan önce silin', <<<'MD'
+#{{ service.id }} numaralı hizmet sona erdi, bu yüzden **{{ machine.name }}** ({{ machine.location }}) kapatıldı ve silinmeyi bekliyor.
+
+Tüm disklerini silin, ardından **Silmeyi onayla** düğmesine basın. O zamana kadar makine asla yeniden satılmaz.
+
+[Makineyi açın]({{ admin_url }})
+MD],
+    'admin.machine_alert' => ['{{ machine.name }}: {{ alert.title }}', <<<'MD'
+{{ alert.message }}
+
+[Makineyi açın]({{ admin_url }})
 MD],
     'affiliate.commission' => ['Bir tavsiyeden {{ commission.amount }} kazandınız', <<<'MD'
 Merhaba {{ client.first_name }},
