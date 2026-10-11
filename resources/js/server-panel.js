@@ -6,7 +6,8 @@ import { barChart, formatBytes, formatNumber, formatTime, formatValue, isNumber,
  *
  * Remote data reaches the page only through x-text and attributes, never as HTML. A secret from a
  * "reveal" action (a new root password, console details) is kept in memory only, never in the page
- * address or storage, and is dropped after a minute or when the client hides it.
+ * address or storage, and is dropped after a minute (unless the client keeps it open) or when the
+ * client hides it.
  */
 
 /** Samples kept for each live sparkline. */
@@ -15,7 +16,7 @@ export const RING_SIZE = 60;
 /** Live updates pause after this long without input. */
 export const IDLE_MS = 10 * 60 * 1000;
 
-/** Seconds a secret stays on screen. */
+/** Seconds a secret stays on screen, unless the client keeps it open. */
 export const SECRET_SECONDS = 60;
 
 /** How often "Tasks and logs" refreshes while a task runs, and for how long at most. */
@@ -425,6 +426,15 @@ export function panelSection(config) {
                     this.hideSecret();
                 }
             }, 1000);
+        },
+
+        /**
+         * Keep the secret open until the client hides it or leaves the page: stops the countdown,
+         * for anyone who needs more than a minute to read or copy it. It stays in memory only.
+         */
+        keepSecret() {
+            clearInterval(this.timers.secret);
+            this.secretLeft = 0;
         },
 
         hideSecret() {

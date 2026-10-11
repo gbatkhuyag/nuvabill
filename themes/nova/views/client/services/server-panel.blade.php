@@ -14,9 +14,22 @@
 
     Without JavaScript the tabs are shown one under the other: the overview, power and settings forms
     post as normal forms; the other tabs say "Turn on JavaScript to see this."
+
+    An older theme's own client/services/show view includes this view with only panel, actions and
+    result, without $serverPanel. Then the older one-card panel (vps-panel) shows the module's panel
+    data instead, or a short notice when there is none, so the service page still opens.
 --}}
 @php
-    $sp = $serverPanel;
+    $sp = is_array($serverPanel ?? null) && (array_key_exists('sections', $serverPanel) || array_key_exists('power', $serverPanel)) ? $serverPanel : null;
+@endphp
+@if ($sp === null)
+    @if (is_array($panel ?? null) && view()->exists('theme::client.services.vps-panel'))
+        @include('theme::client.services.vps-panel', ['service' => $service, 'panel' => $panel, 'actions' => is_array($actions ?? null) ? $actions : [], 'result' => is_array($result ?? null) ? $result : null])
+    @else
+        <section class="card"><p class="muted">{{ __('Update your theme to show the server panel.') }}</p></section>
+    @endif
+@else
+@php
     $sections = array_values(array_filter(
         (array) ($sp['sections'] ?? []),
         fn (mixed $section): bool => is_array($section) && is_string($section['key'] ?? null) && is_string($section['view'] ?? null) && view()->exists($section['view']),
@@ -229,3 +242,4 @@
         @endforeach
     @endif
 </section>
+@endif

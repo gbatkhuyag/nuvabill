@@ -367,6 +367,29 @@ test('a secret is shown once and dropped after a minute or on Hide', async () =>
     section.destroy();
 });
 
+test('a secret the client keeps open stays until Hide, without a countdown', () => {
+    const section = panelSection(config());
+
+    section.showSecret([{ label: 'Root password', value: 'Kept-4471' }]);
+    mock.timers.tick(10000);
+    assert.equal(section.secretLeft, SECRET_SECONDS - 10);
+
+    section.keepSecret();
+    assert.equal(section.secretLeft, 0, 'The countdown text hides.');
+    mock.timers.tick(SECRET_SECONDS * 5 * 1000);
+    assert.deepEqual(section.secret, [{ label: 'Root password', value: 'Kept-4471' }]);
+    assert.equal(section.secretLeft, 0);
+
+    section.hideSecret();
+    assert.equal(section.secret, null);
+
+    // Leaving the page drops a kept secret too.
+    section.showSecret([{ label: 'Root password', value: 'Kept-4472' }]);
+    section.keepSecret();
+    section.destroy();
+    assert.equal(section.secret, null);
+});
+
 test('actions the module turns off are hidden, and links from the module stay on this site', () => {
     const section = panelSection(config({ initial: { can: { wipe: false } } }));
 

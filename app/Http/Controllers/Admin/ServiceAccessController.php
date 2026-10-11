@@ -25,9 +25,10 @@ class ServiceAccessController extends Controller
     public const FLASH = 'access_checks';
 
     /**
-     * Run the module's sign-in checks and show each result.
+     * Run the module's sign-in checks and show each result, with core's own check of the proxy in
+     * front of this site (a module cannot see the request).
      */
-    public function check(Service $service, Provisioner $provisioner): RedirectResponse
+    public function check(Request $request, Service $service, Provisioner $provisioner): RedirectResponse
     {
         $service->loadMissing('product');
         $back = redirect()->to(route('admin.services.show', $service).'#client-access');
@@ -35,6 +36,12 @@ class ServiceAccessController extends Controller
 
         if ($rows === []) {
             return $back->with('error', __('This server module has no sign-in checks.'));
+        }
+
+        $proxy = $this->untrustedProxyRow($request);
+
+        if ($proxy !== null) {
+            $rows[] = $proxy;
         }
 
         $count = fn (string $status): int => count(array_filter($rows, fn (array $row): bool => $row['status'] === $status));
@@ -95,5 +102,28 @@ class ServiceAccessController extends Controller
         $result = $provisioner->linkAccount($service, $input);
 
         return $back->with($result->success ? 'status' : 'error', $result->message !== '' ? $result->message : __('Done.'));
+    }
+
+    /**
+     * A warning when staff reach this site through a proxy that is not trusted: the request names a
+     * forwarded visitor address, but the IP Nuvabill uses is still the proxy's own. Clients come the
+     * same way, so a panel sign-in tied to the client's IP is tied to the proxy instead. The headers
+     * are only looked at; their values never reach the result.
+     *
+     * @return array{label: string, status: 'warn', detail: string}|null
+     */
+    private function untrustedProxyRow(Request $request): ?array
+    {
+        $forwarded = $request->headers->has('X-Forwarded-For') || $request->headers->has('X-Real-IP') || $request->headers->has('Forwarded');
+
+        if (! $forwarded || $request->ip() !== $request->server('REMOTE_ADDR')) {
+            return null;
+        }
+
+        return [
+            'label' => __('Proxy in front of this site'),
+            'status' => 'warn',
+            'detail' => __('This site is behind a proxy that is not trusted, so the panel sign-in sees the proxy\'s address, not the client\'s. Set NUVABILL_TRUSTED_PROXIES in .env.'),
+        ];
     }
 }

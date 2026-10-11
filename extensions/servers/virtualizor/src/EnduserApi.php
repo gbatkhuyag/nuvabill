@@ -97,6 +97,12 @@ final class EnduserApi
      */
     private const LIMITS = ['ctasks' => 50, 'logs' => 50, 'rdns' => 200, 'backup2' => 100, 'sshkeys' => 50, 'firewallplan' => 50, 'hvmsettings' => 200];
 
+    /**
+     * The most points of one monitor series that leave this class. A longer series is thinned by
+     * averaging neighbouring points, so it still covers the whole month.
+     */
+    private const MONITOR_POINTS = 5000;
+
     public function __construct(private AdminApi $admin) {}
 
     /**
@@ -324,8 +330,9 @@ final class EnduserApi
     }
 
     /**
-     * monitor: each series as [unix time, value] rows, from either shape Virtualizor may use: rows
-     * by time with a field per series, or a list of times per series.
+     * monitor: each series as [unix time, value] rows in time order, from either shape Virtualizor
+     * may use: rows by time with a field per series, or a list of times per series. A series of more
+     * than MONITOR_POINTS rows (a month at 5-minute or 1-minute steps) is thinned, never cut short.
      *
      * @return array<string, list<array{0: int, 1: float|null}>>
      */
@@ -368,10 +375,34 @@ final class EnduserApi
 
         foreach ($series as $name => $points) {
             usort($points, fn (array $a, array $b): int => $a[0] <=> $b[0]);
-            $series[$name] = array_slice($points, 0, 5000);
+            $series[$name] = self::thin($points, self::MONITOR_POINTS);
         }
 
         return $series;
+    }
+
+    /**
+     * At most $limit points in time order: neighbouring points are averaged in equal groups, each
+     * at the time of its first point. Empty values are left out of an average; a group of only
+     * empty values stays empty.
+     *
+     * @param  list<array{0: int, 1: float|null}>  $points  Sorted by time.
+     * @return list<array{0: int, 1: float|null}>
+     */
+    private static function thin(array $points, int $limit): array
+    {
+        if (count($points) <= $limit) {
+            return $points;
+        }
+
+        $thinned = [];
+
+        foreach (array_chunk($points, (int) ceil(count($points) / $limit)) as $group) {
+            $values = array_filter(array_column($group, 1), fn (?float $value): bool => $value !== null);
+            $thinned[] = [$group[0][0], $values === [] ? null : array_sum($values) / count($values)];
+        }
+
+        return $thinned;
     }
 
     /**

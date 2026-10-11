@@ -131,6 +131,30 @@ class VirtualizorPanelTest extends TestCase
         $this->assertSame(1, ActivityLog::query()->where('description', 'like', '%hides SSH keys, firewall plans and logs%')->count());
     }
 
+    public function test_an_action_on_the_whole_virtualizor_user_checks_its_vps_again_live(): void
+    {
+        $keys = fn (array $query, array $data): array => $data !== [] ? ['done' => 1] : ['ssh_keys' => ['3' => ['keyid' => 3, 'name' => 'Mer Las laptop']]];
+        $this->fakeVirtualizor(['sshkeys' => $keys]);
+
+        // Read while the user held only this client's VPS: that answer is kept for 10 minutes.
+        $this->read('ssh-keys')->assertOk()->assertJsonPath('data.keys.0.id', '3');
+
+        // Staff then put a VPS of another client under the same Virtualizor user.
+        $this->vpsService(attributes: ['module_data' => ['vpsid' => '80']], server: $this->service->server, client: $this->client('Raz'));
+        $this->fakeVirtualizor([
+            'sshkeys' => $keys,
+            'listvs' => ['vs' => ['77' => ['vpsid' => '77', 'uid' => '58'], '80' => ['vpsid' => '80', 'uid' => '58']]],
+        ]);
+
+        $this->postJson(route('client.services.sections.action', [$this->service, 'ssh-keys', 'delete']), ['id' => '3'])->assertForbidden();
+        $this->assertSame([], $this->sent('sshkeys'), 'Nothing of the user is read or changed.');
+        $this->assertCount(1, $this->sent('listvs'));
+
+        // The new answer is kept, so the tab hides too.
+        $this->get(route('client.services.show', $this->service))->assertOk()->assertDontSee('aria-controls="panel-ssh-keys"', false);
+        $this->read('ssh-keys')->assertForbidden();
+    }
+
     public function test_reverse_dns_only_for_the_vps_own_addresses(): void
     {
         $this->fakeVirtualizor(['rdns' => fn (array $query, array $data): array => $data !== [] || isset($query['delete']) ? ['done' => 1] : ['rdns' => [
@@ -214,6 +238,39 @@ class VirtualizorPanelTest extends TestCase
         $this->read('graphs', query: ['month' => $month->copy()->addMonth()->format('Ym')])->assertStatus(422);
         $this->read('graphs', query: ['month' => $month->copy()->subMonths(3)->format('Ym')])->assertStatus(422)->assertJsonPath('errors.month.0', 'Choose a month from the list.');
         $this->read('graphs', query: ['month' => $month->copy()->subMonths(13)->format('Ym')])->assertStatus(422);
+    }
+
+    public function test_graphs_of_a_month_at_five_minute_steps_reach_its_last_day(): void
+    {
+        $this->travelTo(Date::create(2026, 11, 30, 12));
+        $month = Date::now()->startOfMonth();
+        $lastDay = $month->copy()->endOfMonth()->startOfDay();
+        $rows = [];
+
+        // 8,640 rows: the whole of November. The last day has its own CPU figure.
+        foreach (range(0, 8639) as $step) {
+            $at = $month->copy()->addMinutes($step * 5);
+            $rows[(string) $at->getTimestamp()] = ['cpu' => $at->gte($lastDay) ? 90 : 10, 'ram' => 512, 'disk' => 10, 'net_in' => 100, 'net_out' => 50, 'io_read' => 1, 'io_write' => 2];
+        }
+
+        $this->fakeVirtualizor([
+            'monitor' => ['monthly_data' => $rows, 'vps_create_date' => $month->copy()->subMonths(2)->getTimestamp()],
+            'bandwidth' => ['bandwidth' => []],
+        ]);
+
+        $series = collect($this->read('graphs', query: ['month' => $month->format('Ym')])->assertOk()->json('data.series'))->keyBy('key')->all();
+        $this->assertCount(7, $series);
+
+        foreach ($series as $key => $one) {
+            $points = $one['points'];
+            $this->assertLessThanOrEqual(400, count($points), $key);
+            $this->assertSame($month->getTimestamp(), $points[0][0], $key);
+            $this->assertGreaterThanOrEqual($lastDay->getTimestamp(), $points[array_key_last($points)][0], "{$key}: the newest days are kept.");
+        }
+
+        $cpu = $series['cpu']['points'];
+        $this->assertEquals(10, $cpu[0][1]);
+        $this->assertEquals(90, $cpu[array_key_last($cpu)][1]);
     }
 
     public function test_mounting_an_iso_sends_the_settings_page_back_unchanged(): void

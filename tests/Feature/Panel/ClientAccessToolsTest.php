@@ -44,6 +44,32 @@ class ClientAccessToolsTest extends TestCase
         $this->assertCount(1, PanelFakeModule::calls('checkClientAccess'));
     }
 
+    public function test_the_check_warns_when_the_site_is_behind_a_proxy_that_is_not_trusted(): void
+    {
+        config(['trustedproxy.proxies' => []]);
+        $service = $this->panelService();
+        $this->signInAdmin(Admin::factory()->create(['name' => 'Raz']));
+        $warning = ['label' => 'Proxy in front of this site', 'status' => 'warn', 'detail' => 'This site is behind a proxy that is not trusted, so the panel sign-in sees the proxy\'s address, not the client\'s. Set NUVABILL_TRUSTED_PROXIES in .env.'];
+
+        foreach (['X-Forwarded-For' => '198.51.100.20', 'X-Real-IP' => '198.51.100.20', 'Forwarded' => 'for=198.51.100.20'] as $header => $value) {
+            $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.5'])->withHeaders([$header => $value])
+                ->post(route('admin.services.access-check', $service))
+                ->assertSessionHas(ServiceAccessController::FLASH.'.rows', fn (array $rows): bool => end($rows) === $warning);
+            $this->flushHeaders();
+        }
+
+        // A trusted proxy passes the client's address on: no warning.
+        config(['trustedproxy.proxies' => ['10.0.0.5']]);
+        $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.5'])->withHeaders(['X-Forwarded-For' => '198.51.100.20'])
+            ->post(route('admin.services.access-check', $service))
+            ->assertSessionHas(ServiceAccessController::FLASH.'.rows', fn (array $rows): bool => ! in_array('Proxy in front of this site', array_column($rows, 'label'), true));
+        $this->flushHeaders();
+
+        // Reached directly: no warning either, and the forwarded address is never shown.
+        $this->post(route('admin.services.access-check', $service))
+            ->assertSessionHas(ServiceAccessController::FLASH.'.rows', fn (array $rows): bool => count($rows) === 2 && ! str_contains((string) json_encode($rows), '198.51.100.20'));
+    }
+
     public function test_a_module_without_sign_in_checks_says_so(): void
     {
         $product = Product::factory()->create(['server_module' => null]);

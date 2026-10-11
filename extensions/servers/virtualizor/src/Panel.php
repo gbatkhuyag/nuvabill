@@ -654,13 +654,15 @@ final class Panel
 
     /**
      * Account-wide sections (SSH keys, firewall plans, logs) need a Virtualizor user that holds
-     * only this client's VPS.
+     * only this client's VPS. A read may use the answer kept for 10 minutes; an action that changes
+     * the whole user (SSH keys, firewall plans) checks again live, as staff may have put another
+     * client's VPS under that user since.
      *
-     * @throws PanelException When the user holds VPS of other clients.
+     * @throws PanelException When the user holds VPS of other clients, or could not be checked.
      */
-    private function requireExclusive(Service $service): void
+    private function requireExclusive(Service $service, bool $action = false): void
     {
-        if (! $this->signIn->exclusive($service)) {
+        if (! $this->signIn->exclusive($service, fresh: $action)) {
             throw new PanelException(__('This feature is not available on your server.'), 'The Virtualizor user of this VPS also has VPS of other clients.', 403);
         }
     }
@@ -1034,7 +1036,7 @@ final class Panel
      */
     private function applyFirewall(Service $service, string $planId, ClientContext $context): PanelResult
     {
-        $this->requireExclusive($service);
+        $this->requireExclusive($service, action: true);
         $plans = $this->endUserCall($service, $context, 'firewallplan')['plans'];
 
         if ($planId !== '0' && ! in_array($planId, array_column($plans, 'id'), true)) {
@@ -1055,7 +1057,7 @@ final class Panel
      */
     private function createFirewall(Service $service, string $name, string $policy, array $rules, ClientContext $context): PanelResult
     {
-        $this->requireExclusive($service);
+        $this->requireExclusive($service, action: true);
         $errors = [];
         $clean = [];
 
@@ -1105,7 +1107,7 @@ final class Panel
      */
     private function deleteFirewall(Service $service, string $planId, ClientContext $context): PanelResult
     {
-        $this->requireExclusive($service);
+        $this->requireExclusive($service, action: true);
         $uid = AdminApi::userId($service->module_data['uid'] ?? null);
         $plan = collect($this->endUserCall($service, $context, 'firewallplan')['plans'])->firstWhere('id', $planId);
 
@@ -1289,7 +1291,7 @@ final class Panel
 
     private function addSshKey(Service $service, string $name, string $key, ClientContext $context): PanelResult
     {
-        $this->requireExclusive($service);
+        $this->requireExclusive($service, action: true);
         $problem = self::sshKeyProblem($key);
 
         if ($problem !== null) {
@@ -1310,7 +1312,7 @@ final class Panel
 
     private function deleteSshKey(Service $service, string $id, ClientContext $context): PanelResult
     {
-        $this->requireExclusive($service);
+        $this->requireExclusive($service, action: true);
 
         if (! in_array($id, array_column($this->endUserCall($service, $context, 'sshkeys')['keys'], 'id'), true)) {
             return PanelResult::invalid(['id' => [__('Choose an SSH key from the list.')]]);
@@ -1330,7 +1332,7 @@ final class Panel
      */
     private function applySshKeys(Service $service, array $ids, ClientContext $context): PanelResult
     {
-        $this->requireExclusive($service);
+        $this->requireExclusive($service, action: true);
         $ids = array_values(array_unique(array_map('strval', array_filter($ids, 'is_scalar'))));
         $listed = array_column($this->endUserCall($service, $context, 'sshkeys')['keys'], 'id');
 

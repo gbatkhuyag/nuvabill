@@ -187,6 +187,23 @@ class PanelViewsTest extends TestCase
         $this->assertStringNotContainsString('never-shown', $html);
     }
 
+    public function test_an_older_theme_that_includes_the_panel_without_server_panel_still_opens(): void
+    {
+        $service = $this->panelService();
+        // What an older theme's own client/services/show view passes: panel, actions and result only.
+        $old = ['service' => $service, 'panel' => ['hostname' => 'vps1.example.test', 'state' => 'running'], 'actions' => [], 'result' => null];
+
+        $html = view('theme::client.services.server-panel', $old)->render();
+
+        $this->assertStringContainsString('vps1.example.test', $html);
+        $this->assertStringContainsString('vps-panel', $html);
+        $this->assertStringNotContainsString('role="tablist"', $html);
+
+        // Without even the panel data, a short notice instead of an error.
+        $this->assertStringContainsString('Update your theme to show the server panel.', view('theme::client.services.server-panel', ['service' => $service])->render());
+        $this->assertStringContainsString('Update your theme to show the server panel.', view('theme::client.services.server-panel', ['service' => $service, 'serverPanel' => 'x'])->render());
+    }
+
     public function test_a_module_section_uses_its_own_view_and_is_left_out_without_one(): void
     {
         PanelFakeModule::$behaviour['sections'] = [PanelSection::standard('overview'), PanelFakeModule::customSection()];

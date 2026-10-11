@@ -10,7 +10,6 @@ use App\Models\Role;
 use App\Models\Service;
 use App\Provisioning\Provisioner;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -143,7 +142,55 @@ class VirtualizorStaffToolsTest extends TestCase
 
         $this->assertFalse($result->success);
         $this->assertSame('This service is already linked to VPS #90. Set its status to Active instead of creating a new VPS.', $result->message);
-        Http::assertNothingSent();
+        $this->assertSame(['vps'], array_column($this->api->calls, 'kind'), 'Only Virtualizor\'s list of VPS is asked.');
+
+        // When Virtualizor cannot say whether the VPS still exists, nothing is made either.
+        $this->fakeVirtualizor(['vps' => ['error' => ['Too many requests']], 'addvs' => ['done' => 1, 'vs_info' => ['vpsid' => '95', 'uid' => '58']]]);
+        $result = app(Provisioner::class)->create($service->fresh());
+
+        $this->assertFalse($result->success);
+        $this->assertStringStartsWith('This service is linked to VPS #90, and Virtualizor could not say whether that VPS still exists, so no VPS was made.', $result->message);
+        $this->assertSame([], $this->sent('addvs'));
+
+        // A list that did not keep to the search could hide the VPS: nothing is made on a guess.
+        foreach ([['vs' => ['12' => $this->vpsRow('12')]], ['vs' => 'none']] as $answer) {
+            $this->fakeVirtualizor(['vps' => $answer, 'addvs' => ['done' => 1, 'vs_info' => ['vpsid' => '95', 'uid' => '58']]]);
+
+            $this->assertStringEndsWith('(Its answer did not clearly show the VPS is gone.)', app(Provisioner::class)->create($service->fresh())->message);
+            $this->assertSame([], $this->sent('addvs'));
+        }
+
+        $this->assertSame('90', $service->fresh()->module_data['vpsid']);
+    }
+
+    public function test_a_service_set_back_to_pending_after_its_vps_was_deleted_gets_a_new_vps(): void
+    {
+        $this->fakeVirtualizor([
+            // Virtualizor no longer lists VPS 90: it was deleted when the service was terminated.
+            'vps' => fn (array $query): array => ['vs' => $query['vpsid'] === '90' ? [] : [$query['vpsid'] => $this->vpsRow((string) $query['vpsid'])]],
+            'addvs' => ['done' => 1, 'vs_info' => ['vpsid' => '95', 'uid' => '61', 'ips' => ['203.0.113.95']]],
+        ]);
+        $service = $this->vpsService(attributes: ['status' => ServiceStatus::Terminated, 'module_data' => [
+            'vpsid' => '90',
+            'uid' => '58',
+            'vps_uuid' => '0a0a0a0a-1111-4222-8333-444455556666',
+            'ips' => ['203.0.113.90'],
+            'reinstalls' => ['month' => '2026-09', 'count' => 1],
+        ]]);
+        $service->update(['status' => ServiceStatus::Pending]);
+
+        $result = app(Provisioner::class)->create($service->fresh());
+
+        $this->assertTrue($result->success, $result->message);
+        $this->assertCount(1, $this->sent('addvs'));
+        $fresh = $service->fresh();
+        $this->assertSame(ServiceStatus::Active, $fresh->status);
+        $this->assertSame('95', $fresh->module_data['vpsid']);
+        $this->assertSame('61', $fresh->module_data['uid']);
+        $this->assertSame(['203.0.113.95'], $fresh->module_data['ips']);
+        $this->assertArrayNotHasKey('vps_uuid', $fresh->module_data, 'The new VPS\'s UUID is learned again.');
+        $this->assertSame(['month' => '2026-09', 'count' => 1], $fresh->module_data['reinstalls']);
+        $this->assertStringContainsString('was unlinked from VPS #90, which Virtualizor no longer lists', (string) ActivityLog::query()->where('action', 'service.vps_unlinked')->value('description'));
     }
 
     public function test_a_new_vps_is_only_filed_under_an_existing_user_with_the_clients_confirmed_email(): void

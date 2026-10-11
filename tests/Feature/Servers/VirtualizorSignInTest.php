@@ -4,10 +4,14 @@ namespace Tests\Feature\Servers;
 
 use App\Enums\ServiceStatus;
 use App\Models\ActivityLog;
+use App\Models\Service;
 use App\Provisioning\Provisioner;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
+use Nuvabill\Extensions\Virtualizor\AdminApi;
+use Nuvabill\Extensions\Virtualizor\EnduserApi;
+use Nuvabill\Extensions\Virtualizor\SignIn;
 use Tests\TestCase;
 
 /**
@@ -141,6 +145,66 @@ class VirtualizorSignInTest extends TestCase
         $this->assertNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
         $this->assertStringContainsString("VPS #80 of ended service #{$ended->id} still exists in Virtualizor.", (string) ActivityLog::query()->where('action', 'service.panel_login_refused')->value('description'));
         $this->assertSame([], $this->sent('sso'));
+    }
+
+    public function test_a_vps_suspended_in_virtualizor_refuses_the_sign_in(): void
+    {
+        $service = $this->vpsService(['client_login' => '1']);
+        $this->fakeVirtualizor([
+            'sso' => ['token_key' => self::TOKEN, 'sid' => self::SID],
+            'vps' => fn (array $query): array => ['vs' => [$query['vpsid'] => $this->vpsRow((string) $query['vpsid'], ['suspended' => '1'])]],
+        ]);
+
+        $this->assertNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
+        $this->assertSame(['vps'], array_column($this->api->calls, 'kind'));
+        $this->assertStringContainsString('VPS #77 is suspended in Virtualizor.', (string) ActivityLog::query()->where('action', 'service.panel_login_refused')->value('description'));
+    }
+
+    public function test_a_vps_moved_to_another_virtualizor_user_refuses_the_sign_in_and_the_user_wide_tabs(): void
+    {
+        $service = $this->vpsService(['client_login' => '1']);
+        // Staff moved VPS 77 from user 58 to user 99, who looks fine on every other check.
+        $this->fakeVirtualizor([
+            'sso' => ['token_key' => self::TOKEN, 'sid' => self::SID],
+            'vps' => fn (array $query): array => ['vs' => [$query['vpsid'] => $this->vpsRow((string) $query['vpsid'], ['uid' => '99'])]],
+            'listvs' => fn (array $query): array => ['vs' => [$query['svs'] => ['vpsid' => $query['svs'], 'uid' => '99']]],
+        ]);
+
+        $this->assertNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
+        $this->assertSame(['vps'], array_column($this->api->calls, 'kind'));
+        $this->assertStringContainsString('VPS #77 now belongs to Virtualizor user 99, not 58.', (string) ActivityLog::query()->where('action', 'service.panel_login_refused')->value('description'));
+
+        $signIn = new SignIn(new AdminApi, new EnduserApi(new AdminApi), 'virtualizor');
+        $this->assertFalse($signIn->exclusive($service->fresh()));
+        $this->assertSame('58', $service->fresh()->module_data['uid'], 'The stored user is kept for staff to look at.');
+        $this->assertSame([], $this->sent('sso'));
+    }
+
+    public function test_the_user_id_found_by_the_checks_is_added_without_losing_changes_made_meanwhile(): void
+    {
+        $client = $this->client('Mer Las', ['email' => self::CLIENT_EMAIL, 'email_verified_at' => now()]);
+        $service = $this->vpsService(['client_login' => '1'], attributes: ['module_data' => ['vpsid' => '77']], client: $client);
+        $meanwhile = ['vpsid' => '77', 'vps_uuid' => self::VPS_UUID, 'reinstalls' => ['month' => '2026-10', 'count' => 1]];
+        $this->fakeVirtualizor([
+            'sso' => ['token_key' => self::TOKEN, 'sid' => self::SID],
+            // While the checks wait for Virtualizor, another request changes the module data.
+            'listvs' => function (array $query) use ($service, &$meanwhile): array {
+                Service::query()->whereKey($service->id)->update(['module_data' => json_encode($meanwhile)]);
+
+                return ['vs' => [$query['svs'] => ['vpsid' => $query['svs'], 'uid' => '58']]];
+            },
+        ]);
+
+        $this->assertNotNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
+        $this->assertSame($meanwhile + ['uid' => '58'], $service->fresh()->module_data);
+
+        // Staff linked the service to another VPS meanwhile: the old VPS's user is not added to it.
+        $service->forceFill(['module_data' => ['vpsid' => '77']])->save();
+        $meanwhile = ['vpsid' => '91', 'ips' => ['203.0.113.91']];
+
+        // VPS 77 is linked to no service by then, so it passes only as a VPS of the client's own confirmed email.
+        $this->assertNotNull(app(Provisioner::class)->signInUrl($service->fresh(), $this->context($service)));
+        $this->assertSame($meanwhile, $service->fresh()->module_data);
     }
 
     public function test_admin_and_cloud_users_never_sign_in(): void

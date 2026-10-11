@@ -8,8 +8,10 @@ use App\Extensions\Servers\Panel\ClientContext;
 use App\Models\Server;
 use App\Models\Service;
 use App\Support\Activity;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 
@@ -42,6 +44,11 @@ final class SignIn
      * address instead of the client's own, so the staff check can say so.
      */
     private const UNTRUSTED_FLAG = 'nuvabill:vz:untrusted-ip';
+
+    /**
+     * The module data that belongs to one VPS: removed with the link to a VPS that was deleted.
+     */
+    private const VPS_KEYS = ['vpsid', 'uid', 'vps_uuid', 'ips'];
 
     /**
      * @param  string  $module  The module's slug, for finding its services.
@@ -142,11 +149,13 @@ final class SignIn
      * Why a create must not send anything, or null to go on. It runs before any create request,
      * with the service's create note (null when there is none).
      *
-     * A service already linked to a VPS is never given a second one. A new VPS is filed under the
-     * Virtualizor user with the client's email, so before one is sent that user is looked up: an
-     * admin or cloud user, or a user while the client has not confirmed that email, stops the
-     * create. A create with a note was sent before and only looks for its VPS, so it is not checked
-     * again.
+     * A service already linked to a VPS is never given a second one while Virtualizor still lists
+     * that VPS. A link to a VPS that Virtualizor no longer lists (deleted when the service ended,
+     * before staff set the service back to Pending) is removed, with the values that belong to that
+     * VPS, so the service gets a new VPS. A new VPS is filed under the Virtualizor user with the
+     * client's email, so before one is sent that user is looked up: an admin or cloud user, or a
+     * user while the client has not confirmed that email, stops the create. A create with a note
+     * was sent before and only looks for its VPS, so it is not checked again.
      *
      * @param  array<string, mixed>|null  $record  ResourceAddons::record() of the service.
      */
@@ -159,7 +168,11 @@ final class SignIn
         $linked = (string) ($service->module_data['vpsid'] ?? '');
 
         if ($linked !== '' && ctype_digit($linked)) {
-            return ModuleResult::fail(__('This service is already linked to VPS #:id. Set its status to Active instead of creating a new VPS.', ['id' => $linked]));
+            $refusal = $this->dropDeletedLink($service, $linked);
+
+            if ($refusal !== null) {
+                return $refusal;
+            }
         }
 
         $email = strtolower(trim((string) $service->client?->email));
@@ -382,14 +395,17 @@ final class SignIn
 
     /**
      * Whether the Virtualizor user behind the service's VPS holds only this client's VPS, so the
-     * panel may show things of the whole user: SSH keys, firewall plans and logs. Kept 10 minutes;
-     * when it is not, staff see why once a day.
+     * panel may show things of the whole user: SSH keys, firewall plans and logs. Kept 10 minutes
+     * for showing tabs and reads; when it is not, staff see why once a day.
+     *
+     * @param  bool  $fresh  Check live and keep the new answer: for an action that changes the
+     *                       whole user, as staff may have put another client's VPS under it since.
      */
-    public function exclusive(Service $service): bool
+    public function exclusive(Service $service, bool $fresh = false): bool
     {
         $uid = AdminApi::userId($service->module_data['uid'] ?? null) ?? 'none';
         $key = "nuvabill:vz:exclusive:{$service->id}:{$uid}";
-        $cached = Cache::get($key);
+        $cached = $fresh ? null : Cache::get($key);
 
         if (is_bool($cached)) {
             return $cached;
@@ -420,6 +436,47 @@ final class SignIn
             && $server->use_ssl === true
             && filled($server->password)
             && $this->enduser->port($service) !== null;
+    }
+
+    /**
+     * Before a create for a service that is still linked to a VPS: a refusal while Virtualizor
+     * lists that VPS or cannot clearly say it is gone, or null after the link to a VPS that
+     * Virtualizor no longer lists was removed. Its user ID, UUID and IP addresses go with it, so the
+     * new VPS's own are learned and the panel does not refuse the new VPS as "changed".
+     *
+     * Virtualizor's search by ID lists the IDs that contain it (177 for 77), as AdminApi::vpsInfo()
+     * reads it. Only an answer whose rows all match that search and fill less than the page shows
+     * the VPS is gone; any other answer could hide it, and a second VPS is never made on a guess.
+     */
+    private function dropDeletedLink(Service $service, string $vpsId): ?ModuleResult
+    {
+        $unclear = fn (string $error): ModuleResult => ModuleResult::fail(__('This service is linked to VPS #:id, and Virtualizor could not say whether that VPS still exists, so no VPS was made. Try again. (:error)', ['id' => $vpsId, 'error' => $error]));
+        $reslen = 50;
+
+        try {
+            $listed = $this->admin->call($service->server, ['act' => 'vs', 'search' => 1, 'vpsid' => $vpsId, 'page' => 1, 'reslen' => $reslen])['vs'] ?? [];
+        } catch (RuntimeException $exception) {
+            return $unclear($exception->getMessage());
+        }
+
+        $ids = [];
+
+        foreach (is_array($listed) ? $listed : [null] as $key => $row) {
+            $ids[] = is_array($row) ? (string) ($row['vpsid'] ?? $key) : '';
+        }
+
+        if (in_array($vpsId, $ids, true)) {
+            return ModuleResult::fail(__('This service is already linked to VPS #:id. Set its status to Active instead of creating a new VPS.', ['id' => $vpsId]));
+        }
+
+        if (count($ids) >= $reslen || array_filter($ids, fn (string $id): bool => ! ctype_digit($id) || ! str_contains($id, $vpsId)) !== []) {
+            return $unclear(__('Its answer did not clearly show the VPS is gone.'));
+        }
+
+        $service->forceFill(['module_data' => Arr::except((array) $service->module_data, self::VPS_KEYS)])->save();
+        Activity::log('service.vps_unlinked', "Service #{$service->id} ({$service->label()}) was unlinked from VPS #{$vpsId}, which Virtualizor no longer lists, so a new VPS can be made for it.", $service);
+
+        return null;
     }
 
     /**
@@ -541,10 +598,39 @@ final class SignIn
         }
 
         if ($stored === null) {
-            $service->forceFill(['module_data' => array_merge((array) $service->module_data, ['uid' => $uid])])->save();
+            $this->rememberUser($service, $vpsId, $uid);
         }
 
         return ['ok' => true, 'error' => false, 'stage' => null, 'reason' => null, 'uid' => $uid, 'unlinked' => $unlinked];
+    }
+
+    /**
+     * Keep the user ID of the service's VPS once ownership() found it. Only the uid key is added,
+     * to the service row as it is now: the checks before it take up to a minute, and other requests
+     * may have changed the module data meanwhile (a staff link, the reinstall count, the VPS's
+     * UUID). Nothing is saved when the service was linked to another VPS or got a user ID in that
+     * time.
+     */
+    private function rememberUser(Service $service, string $vpsId, string $uid): void
+    {
+        $data = DB::transaction(function () use ($service, $vpsId, $uid): ?array {
+            $fresh = Service::query()->lockForUpdate()->find($service->id, ['id', 'module_data']);
+            $data = (array) ($fresh?->module_data ?? []);
+
+            if ($fresh === null || (string) ($data['vpsid'] ?? '') !== $vpsId || AdminApi::userId($data['uid'] ?? null) !== null) {
+                return null;
+            }
+
+            $data['uid'] = $uid;
+            $fresh->forceFill(['module_data' => $data])->save();
+
+            return $data;
+        });
+
+        if ($data !== null) {
+            $service->module_data = $data;
+            $service->syncOriginalAttribute('module_data');
+        }
     }
 
     /**
