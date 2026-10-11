@@ -56,6 +56,9 @@ final class MachineInventory
     /** Seconds the sweep holds a service's work lock at most: it only changes rows. */
     private const SWEEP_LOCK_SECONDS = 60;
 
+    /** Extra IPs are rented by count as the "ipv4" resource kind, so only IPv4 lines count. */
+    private const EXTRA_IP_VERSION = 4;
+
     public function __construct(private TemplateMailer $mailer) {}
 
     /**
@@ -80,7 +83,8 @@ final class MachineInventory
 
     /**
      * Reserve the free machine with the lowest id linked to the service's product, inside the
-     * transaction that places the order. A service that already holds a machine keeps it.
+     * transaction that places the order. A service that already holds a machine keeps it. The
+     * machine keeps no "ready" time (provisioned_at) of the service it had before.
      *
      * @throws SoldOut when no linked machine is free; the whole order then rolls back.
      */
@@ -100,7 +104,7 @@ final class MachineInventory
             ->whereKey($id)
             ->where('status', MachineStatus::Available->value)
             ->whereNull('service_id')
-            ->update(['status' => MachineStatus::Reserved->value, 'service_id' => $service->getKey()]) === 1;
+            ->update(['status' => MachineStatus::Reserved->value, 'service_id' => $service->getKey(), 'provisioned_at' => null]) === 1;
 
         if (! $reserved) {
             throw new SoldOut($product, 0);
@@ -202,7 +206,8 @@ final class MachineInventory
 
     /**
      * The service's reserved machine waits for staff to install the OS: reserved → provisioning.
-     * Staff get the "admin.machine_install" email once, when this move happens.
+     * Staff get the "admin.machine_install" email once, when this move happens. Its "ready" time
+     * (provisioned_at) is cleared, so only "Server is ready" for this service can set it.
      *
      * @throws InventoryException
      */
@@ -216,7 +221,7 @@ final class MachineInventory
             }
 
             $this->move($locked, MachineStatus::Provisioning);
-            $locked->save();
+            $locked->forceFill(['provisioned_at' => null])->save();
 
             Activity::log('machine.provisioning', "Machine {$locked->name} waits for the OS install (service #{$service->getKey()})", $locked, $service->client);
             DB::afterCommit(fn () => rescue(fn () => $this->mailer->sendToStaff('admin.machine_install', $this->installContext($locked, $service))));
@@ -546,8 +551,8 @@ final class MachineInventory
             $status = $old->status;
             $this->assertSetupStep($fresh, $status);
 
-            $rented = MachineIp::query()->where('machine_id', $old->id)->where('kind', MachineIp::KIND_EXTRA)->where('service_id', $service->getKey())->count();
-            $free = MachineIp::query()->where('machine_id', $fresh->id)->where('kind', MachineIp::KIND_EXTRA)->whereNull('service_id')->count();
+            $rented = MachineIp::query()->where('machine_id', $old->id)->where('kind', MachineIp::KIND_EXTRA)->where('version', self::EXTRA_IP_VERSION)->where('service_id', $service->getKey())->count();
+            $free = MachineIp::query()->where('machine_id', $fresh->id)->where('kind', MachineIp::KIND_EXTRA)->where('version', self::EXTRA_IP_VERSION)->whereNull('service_id')->count();
 
             if ($free < $rented) {
                 throw new InventoryException(__('Not enough free extra IPs on :machine. Add :count more.', [
@@ -574,9 +579,10 @@ final class MachineInventory
     }
 
     /**
-     * Make the number of extra IPs the service rents on its machine exactly $total. New ones are the
-     * machine's free extra IPs with the lowest id; when there are fewer, the newest are freed first.
-     * Freed IPs stay routed to the same machine, so freeing them is harmless.
+     * Make the number of extra IPv4 addresses the service rents on its machine exactly $total (the
+     * "ipv4" resource kind; extra IPv6 lines are never rented by count). New ones are the machine's
+     * free extra IPs with the lowest id; when there are fewer, the newest are freed first. Freed IPs
+     * stay routed to the same machine, so freeing them is harmless.
      *
      * @return Collection<int, MachineIp> The extra IPs the service rents now.
      *
@@ -597,7 +603,7 @@ final class MachineInventory
             }
 
             $machine = $this->lockHeldBy((int) $id, $service);
-            $ips = MachineIp::query()->where('machine_id', $machine->id)->where('kind', MachineIp::KIND_EXTRA)->orderBy('id')->lockForUpdate()->get();
+            $ips = MachineIp::query()->where('machine_id', $machine->id)->where('kind', MachineIp::KIND_EXTRA)->where('version', self::EXTRA_IP_VERSION)->orderBy('id')->lockForUpdate()->get();
             $rented = $ips->filter(fn (MachineIp $ip): bool => (int) $ip->service_id === (int) $service->getKey());
             $free = $ips->filter(fn (MachineIp $ip): bool => $ip->service_id === null);
 
@@ -624,7 +630,7 @@ final class MachineInventory
                 }
             }
 
-            return MachineIp::query()->where('machine_id', $machine->id)->where('kind', MachineIp::KIND_EXTRA)->where('service_id', $service->getKey())->orderBy('id')->get();
+            return MachineIp::query()->where('machine_id', $machine->id)->where('kind', MachineIp::KIND_EXTRA)->where('version', self::EXTRA_IP_VERSION)->where('service_id', $service->getKey())->orderBy('id')->get();
         }, 3);
     }
 

@@ -1,0 +1,11 @@
+{
+    "slug": "dedicated",
+    "type": "server",
+    "name": "Dedicated servers",
+    "version": "1.0.0",
+    "namespace": "Nuvabill\\Extensions\\Dedicated\\",
+    "class": "Nuvabill\\Extensions\\Dedicated\\DedicatedModule",
+    "description": "Sell your own dedicated servers. Stock comes from free machines under Hardware, clients switch the power from the client area, and every machine is wiped before it is sold again.",
+    "author": "Nuvabill",
+    "requires": ">=0.7.0"
+}

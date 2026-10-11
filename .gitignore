@@ -42,6 +42,7 @@ Thumbs.db
 !/extensions/gateways/wayl
 /extensions/servers/*
 !/extensions/servers/cpanel
+!/extensions/servers/dedicated
 !/extensions/servers/directadmin
 !/extensions/servers/plesk
 !/extensions/servers/proxmox
