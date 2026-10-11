@@ -23,6 +23,7 @@ use App\Support\Activity;
 use App\Support\Money;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 use RuntimeException;
@@ -30,6 +31,13 @@ use Throwable;
 
 class ProductController extends Controller
 {
+    /**
+     * Module settings that no product form shows, so a save must not drop them: the old Virtualizor
+     * resource add-on JSON (removed only with "Remove the old add-on settings" on the Resource
+     * options page) and the note of its move to resource options. They stay while the module stays.
+     */
+    private const KEPT_MODULE_CONFIG = ['resource_addons', 'resource_addons_converted'];
+
     public function index(): View
     {
         return view('admin.products.index', [
@@ -128,6 +136,12 @@ class ProductController extends Controller
     {
         $data = $request->safe()->except('prices', 'panel_sections');
         $data['module_config'] = $data['server_module'] ? array_filter($data['module_config'] ?? [], fn ($value) => $value !== null) : null;
+        $saved = $request->route('product');
+
+        if ($saved instanceof Product && $data['server_module'] !== null && $saved->server_module === $data['server_module']) {
+            $data['module_config'] += Arr::only($saved->module_config ?? [], self::KEPT_MODULE_CONFIG);
+        }
+
         $data['server_id'] = $data['server_module'] ? ($data['server_id'] ?? null) : null;
         $data['sort_order'] = $data['sort_order'] ?? 0;
         // Plan changes only work between products on the same kind of server.

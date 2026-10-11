@@ -26,6 +26,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 use InvalidArgumentException;
@@ -40,6 +41,11 @@ use InvalidArgumentException;
  */
 class ResourceOptionController extends Controller
 {
+    /**
+     * The product setting with the old Virtualizor resource add-on JSON (module 1.x).
+     */
+    private const OLD_ADDONS = 'resource_addons';
+
     public function __construct(private ResourceOptions $catalog) {}
 
     /**
@@ -256,6 +262,38 @@ class ResourceOptionController extends Controller
     }
 
     /**
+     * Remove the old Virtualizor resource add-on JSON that could not be moved to options. Until
+     * then, services that still have those add-ons get no new server or plan change; afterwards
+     * their servers are made without the old extras, so staff move those services first. The
+     * removed JSON is kept in the activity log for the record.
+     */
+    public function removeOldAddons(Product $product): RedirectResponse
+    {
+        $removed = DB::transaction(function () use ($product): ?string {
+            $locked = Product::query()->whereKey($product->id)->lockForUpdate()->first();
+            $config = $locked?->module_config ?? [];
+
+            if ($locked === null || ! array_key_exists(self::OLD_ADDONS, $config)) {
+                return null;
+            }
+
+            $json = (string) $config[self::OLD_ADDONS];
+            unset($config[self::OLD_ADDONS]);
+            $locked->update(['module_config' => $config]);
+
+            return $json;
+        });
+
+        if ($removed === null) {
+            return redirect()->route('admin.products.resources.index', $product)->with('error', __('This product has no old add-on settings.'));
+        }
+
+        $this->log($product, "Product {$product->name}: old resource add-on settings removed: ".Str::limit($removed, 120));
+
+        return redirect()->route('admin.products.resources.index', $product)->with('status', __('The old add-on settings were removed.'));
+    }
+
+    /**
      * What the plan itself includes per kind, read from the server through Provisioner, as JSON
      * {base: {kind: int|null}} or a message for staff.
      */
@@ -415,7 +453,7 @@ class ResourceOptionController extends Controller
      */
     private function unconverted(Product $product): bool
     {
-        $json = ($product->module_config ?? [])['resource_addons'] ?? null;
+        $json = ($product->module_config ?? [])[self::OLD_ADDONS] ?? null;
 
         return is_string($json) && trim($json) !== '';
     }

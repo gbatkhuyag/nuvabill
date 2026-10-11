@@ -201,7 +201,8 @@ final class ResourceOptions
      *
      * A client may add only to active options priced for the service, up to the option's most and
      * its stock; may remove only when the option allows it and the server can shrink the kind. Staff
-     * may choose 0 up to what the module allows. Both ranges are narrowed by the live limits the
+     * may choose 0 up to what the module allows, but never below what the service has for a kind
+     * that cannot shrink, such as disk. Both ranges are narrowed by the live limits the
      * module reports (Provisioner::resourceLimits(), which may ask the server and is cached), and
      * always include what the service has now. Rows whose option is gone or hidden stay listed, as
      * "retired", so they can still go down.
@@ -402,7 +403,7 @@ final class ResourceOptions
         if ($staff) {
             $maxExtra = $option?->max_extra;
             $ladder = $option?->ladder;
-            $min = 0;
+            $min = $canShrink ? 0 : $current;
             $max = $ladder !== null ? count($ladder) - 1 : ($maxExtra !== null ? intdiv($maxExtra, $step) : self::MAX_STEPS);
         } else {
             $canAdd = $option !== null && ! $retired && $option->client_can_add && $prices->isNotEmpty();

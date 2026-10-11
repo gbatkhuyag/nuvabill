@@ -62,6 +62,7 @@ class RoutesAndLocksTest extends TestCase
             'admin.products.resources.destroy' => ['DELETE', 'products/{product}/resources/{resourceOption}', ['admin.can:products.manage'], true],
             'admin.products.resources.order' => ['POST', 'products/{product}/resources/order', ['admin.can:products.manage'], true],
             'admin.products.resources.base' => ['POST', 'products/{product}/resources/base', ['admin.can:products.manage', 'throttle:10,1'], true],
+            'admin.products.resources.old-addons.destroy' => ['DELETE', 'products/{product}/resources/old-addons', ['admin.can:products.manage', 'throttle:10,1'], true],
             'admin.services.resources.quote' => ['POST', 'services/{service}/resources/quote', ['admin.can:services.manage', 'throttle:60,1'], false],
             'admin.services.resources.change' => ['POST', 'services/{service}/resources', ['admin.can:services.manage', 'throttle:10,1'], true],
             'admin.services.resources.cancel' => ['DELETE', 'services/{service}/resources', ['admin.can:services.manage'], true],

@@ -93,6 +93,11 @@ class VirtualizorAdminSectionsTest extends TestCase
         $this->assertSame('OS templates clients may choose', $fields['reinstall_os_ids']['label']);
         $this->assertStringContainsString('Test panel sign-in', $fields['client_login']['help']);
         $this->assertStringContainsString('DNS only', $module->serverHelp());
+
+        // The HTTPS switch is named as the server form shows it.
+        $this->assertStringContainsString('Keep "Connect with HTTPS" on', $module->serverHelp());
+        $this->assertStringContainsString('"Connect with HTTPS" on for the server', $fields['client_login']['help']);
+        $this->assertStringNotContainsString('Use SSL', $module->serverHelp().implode(' ', array_column($fields, 'help')));
     }
 
     public function test_the_vps_is_found_by_its_exact_id_among_up_to_fifty_rows(): void

@@ -37,7 +37,17 @@
         <div class="flash" data-tone="info"><x-icon name="server" style="width:18px;height:18px;flex:none;color:var(--nb-info)" /><span>{{ $notice }}</span></div>
     @endif
     @if ($unconverted)
-        <div class="flash" data-tone="warn" role="alert"><x-icon name="alert" style="width:18px;height:18px;flex:none;color:var(--nb-warn)" /><span>{{ __('This product still has resource add-on JSON that could not be moved to sliders. Set up the options here, then clear the JSON in the product settings.') }}</span></div>
+        <div class="flash" data-tone="warn" role="alert">
+            <x-icon name="alert" style="width:18px;height:18px;flex:none;color:var(--nb-warn)" />
+            <div style="min-width:0">
+                <p style="margin:0">{{ __('This product still has old resource add-on settings that could not be moved to sliders. Set up the options here, and give each service that has the old add-ons the same extras with Change resources. Then press Remove the old add-on settings.') }}</p>
+                <form method="POST" action="{{ route('admin.products.resources.old-addons.destroy', $product) }}" style="margin-top:.6rem" data-confirm="{{ __('Remove the old add-on settings? Services that still have the old add-ons keep paying for them, but new servers and plan changes no longer get those extras.') }}">
+                    @csrf
+                    @method('DELETE')
+                    <button class="btn btn-sm" type="submit"><x-icon name="trash" />{{ __('Remove the old add-on settings') }}</button>
+                </form>
+            </div>
+        </div>
     @endif
     @if ($converted)
         <div class="flash" data-tone="info"><x-icon name="refresh" style="width:18px;height:18px;flex:none;color:var(--nb-info)" /><span>{{ __('These options were made from the resource add-ons this product had before. Check the prices and raise the most extra steps as you like.') }}</span></div>

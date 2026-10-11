@@ -18,7 +18,9 @@ use Throwable;
  * It is offered only when staff switch it on (hardware.allow_ipmi), ipmitool is installed and PHP
  * may start programs. ipmitool runs with an argument list, never through a shell; the host is the
  * checked IP address, the port and cipher suite are numbers (cipher 17 or 3, never 0), and the
- * password goes in the environment (-E), never on the command line. ipmitool's own error output
+ * password goes in the environment (-E), never on the command line. The session asks for the
+ * Operator privilege (-L OPERATOR), which "chassis power" needs; ipmitool would ask for
+ * Administrator otherwise, which an Operator BMC user is refused. ipmitool's own error output
  * is never shown or logged.
  */
 final class IpmiDriver implements PowerDriver
@@ -129,7 +131,7 @@ final class IpmiDriver implements PowerDriver
                 ->env(['IPMI_PASSWORD' => $password])
                 ->run([
                     $path, '-I', 'lanplus', '-H', $address->ip, '-p', (string) $address->port, '-U', $username, '-E',
-                    '-C', (string) $cipher, '-N', '5', '-R', '1', 'chassis', 'power', $verb,
+                    '-C', (string) $cipher, '-L', 'OPERATOR', '-N', '5', '-R', '1', 'chassis', 'power', $verb,
                 ]);
         } catch (Throwable) {
             throw BmcException::unreachable(__('The BMC did not answer in time.'));
