@@ -2,8 +2,11 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Billing\ResourceKinds;
 use App\Http\Controllers\Controller;
+use App\Import\ImportSource;
 use App\Import\ImportSources;
+use App\Import\Whmcs\WhmcsImporter;
 use App\Jobs\RunImport;
 use App\Support\Activity;
 use App\Support\Settings;
@@ -12,12 +15,17 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 use Throwable;
 
 /**
  * Settings → Import: move clients, services, invoices and tickets over from another billing system.
  * Staff connect to its database, see a dry run of what would come across, then start the import.
+ *
+ * For WHMCS the dry run also lists the configurable options. Staff choose which ones become
+ * resource options; the choices are saved with "Check again" (the preview route), which then makes
+ * the dry run again with them.
  */
 class ImportController extends Controller
 {
@@ -41,6 +49,7 @@ class ImportController extends Controller
             'running' => $running,
             'steps' => $source::steps(),
             'preview' => ($preview['source'] ?? null) === $key ? $preview : null,
+            'optionChoices' => $key === WhmcsImporter::SOURCE ? WhmcsImporter::savedConfigOptions() : [],
         ]);
     }
 
@@ -75,7 +84,7 @@ class ImportController extends Controller
         try {
             $importer = $source::connect($data);
             $check = $importer->check();
-            $preview = $importer->preflight()->toArray();
+            $preview = $this->dryRun($importer);
         } catch (Throwable $exception) {
             return back()
                 ->withInput($request->except('password', 'key'))
@@ -93,7 +102,8 @@ class ImportController extends Controller
     }
 
     /**
-     * Make the dry run again with the saved details, for example after fixing something.
+     * Make the dry run again with the saved details, for example after fixing something. With the
+     * WHMCS configurable options form, its choices are saved first.
      */
     public function preview(Settings $settings): RedirectResponse
     {
@@ -103,15 +113,29 @@ class ImportController extends Controller
             return back()->with('error', __('Save the database details first.'));
         }
 
+        $saved = request()->boolean('config_options_form');
+
+        if ($saved) {
+            if (($connection['source'] ?? null) !== WhmcsImporter::SOURCE) {
+                return back()->with('error', __('Configurable options can only be chosen for a WHMCS import.'));
+            }
+
+            if (RunImport::isRunning()) {
+                return back()->with('error', __('The import is running. Change the choices when it has finished.'));
+            }
+
+            $this->saveOptionChoices(request(), $settings);
+        }
+
         try {
-            $preview = ImportSources::connect($connection)->preflight()->toArray();
+            $preview = $this->dryRun(ImportSources::connect($connection));
         } catch (Throwable $exception) {
             return back()->with('error', __('Could not read the :system database: :error', ['system' => ImportSources::get($connection['source'])::name(), 'error' => Str::limit($exception->getMessage(), 300)]));
         }
 
         $settings->set('import.preview', ['source' => $connection['source']] + $preview);
 
-        return back()->with('status', __('The dry run is up to date.'));
+        return back()->with('status', $saved ? __('Choices saved. The dry run is up to date.') : __('The dry run is up to date.'));
     }
 
     public function start(): RedirectResponse
@@ -147,5 +171,75 @@ class ImportController extends Controller
         }
 
         return back()->with('status', __('The import is stopped. Records already imported stay.'));
+    }
+
+    /**
+     * The dry run, with WHMCS's configurable options for staff to choose from.
+     *
+     * @return array<string, mixed>
+     */
+    private function dryRun(ImportSource $importer): array
+    {
+        $preview = $importer->preflight()->toArray();
+
+        if ($importer instanceof WhmcsImporter) {
+            $preview['config_options'] = $importer->configOptions();
+        }
+
+        return $preview;
+    }
+
+    /**
+     * Save which WHMCS configurable options become resource options. Only options the last dry run
+     * listed can be chosen, each only as a kind its type allows, with whole units of at least the
+     * kind's smallest step. The form holds every listed option, so it replaces the saved choices.
+     *
+     * @throws ValidationException
+     */
+    private function saveOptionChoices(Request $request, Settings $settings): void
+    {
+        $data = $request->validate([
+            'config_options' => ['nullable', 'array', 'max:'.WhmcsImporter::MAX_LISTED_OPTIONS],
+            'config_options.*' => ['array:kind,units'],
+            'config_options.*.kind' => ['nullable', 'string', Rule::in(WhmcsImporter::configOptionKinds())],
+            'config_options.*.units' => ['nullable', 'integer', 'between:1,'.WhmcsImporter::MAX_UNITS],
+        ]);
+
+        $listed = collect(((array) setting('import.preview'))['config_options']['options'] ?? [])->keyBy('id');
+        $choices = [];
+        $errors = [];
+
+        foreach ((array) ($data['config_options'] ?? []) as $id => $choice) {
+            $option = $listed->get((int) $id);
+            $kind = (string) ($choice['kind'] ?? '');
+
+            if ($option === null || $kind === '') {
+                continue;
+            }
+
+            if (! in_array($kind, WhmcsImporter::CONFIG_OPTION_KINDS[$option['type'] ?? ''] ?? [], true)) {
+                $errors["config_options.{$id}.kind"] = __('This option cannot become :resource.', ['resource' => ResourceKinds::label($kind)]);
+
+                continue;
+            }
+
+            $units = $kind === 'backups' ? 1 : (int) ($choice['units'] ?? 0);
+            $smallest = ResourceKinds::BUILT_IN[$kind]['min_step'];
+
+            if ($units < $smallest) {
+                $errors["config_options.{$id}.units"] = __('Each step must add at least :amount.', ['amount' => ResourceKinds::format(ResourceKinds::BUILT_IN[$kind]['unit'], $smallest)]);
+
+                continue;
+            }
+
+            $choices[(int) $id] = ['kind' => $kind, 'units' => $units];
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        WhmcsImporter::saveConfigOptions($settings, $choices);
+        Activity::log('import.options_saved', 'WHMCS configurable options for the import saved: '.count($choices).' brought across as resource options.');
     }
 }

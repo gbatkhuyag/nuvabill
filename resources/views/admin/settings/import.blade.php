@@ -79,6 +79,88 @@
                             </div>
                         @endif
                     </section>
+
+                    @if (! empty($preview['config_options']['options']))
+                        @php
+                            $kindNames = collect(\App\Import\Whmcs\WhmcsImporter::configOptionKinds())->mapWithKeys(fn (string $kind): array => [$kind => \App\Billing\ResourceKinds::label($kind)]);
+                            $typeNames = ['quantity' => __('Quantity'), 'yesno' => __('Yes/No'), 'dropdown' => __('Dropdown'), 'radio' => __('Radio')];
+                            $moreOptions = (int) ($preview['config_options']['more'] ?? 0);
+                        @endphp
+                        <section class="card card-flush" aria-labelledby="config-options-title">
+                            <div class="card-header">
+                                <h2 id="config-options-title">{{ __('Configurable options') }}</h2>
+                            </div>
+                            <div style="padding:0 18px 10px;display:grid;gap:.35rem;font-size:.85rem">
+                                <p class="muted" style="margin:0">{{ __('Choose the options that add to the plan: quantity options for CPU, RAM, disk, IPs or traffic, and a yes/no option for backups. They become resource options (sliders), and each service gets its extras. Its WHMCS price is split into the plan and the extras, so the renewal total stays the same.') }}</p>
+                                <p class="muted" style="margin:0">{{ __('Leave an option not imported when it sets the total size instead of adding to the plan. Its price stays in the plan price.') }}</p>
+                            </div>
+                            <form method="POST" action="{{ route('admin.settings.import.preview') }}">
+                                @csrf
+                                <input type="hidden" name="config_options_form" value="1">
+                                <div class="table-wrap"><table class="table">
+                                    <thead><tr><th>{{ __('Option') }}</th><th class="end">{{ __('Services') }}</th><th>{{ __('Import as') }}</th></tr></thead>
+                                    <tbody>
+                                    @foreach ($preview['config_options']['options'] as $option)
+                                        @php
+                                            $id = (int) $option['id'];
+                                            $allowed = \App\Import\Whmcs\WhmcsImporter::CONFIG_OPTION_KINDS[$option['type']] ?? [];
+                                            $chosen = (string) old("config_options.{$id}.kind", $optionChoices[$id]['kind'] ?? '');
+                                            $units = old("config_options.{$id}.units", $optionChoices[$id]['units'] ?? $option['units']);
+                                            $kindError = $errors->first("config_options.{$id}.kind");
+                                            $unitsError = $errors->first("config_options.{$id}.units");
+                                        @endphp
+                                        <tr>
+                                            <td style="white-space:normal;vertical-align:top">
+                                                <bdi style="font-weight:600">{{ $option['name'] }}</bdi>
+                                                @if ($option['hidden'])<x-pill style="margin-inline-start:.3rem">{{ __('Hidden in WHMCS') }}</x-pill>@endif
+                                                <span class="faint" style="display:block;font-size:.8rem">
+                                                    {{ $typeNames[$option['type']] ?? $option['type'] }}@if ($option['products'] !== []) · {{ implode(', ', $option['products']) }}@if ($option['product_count'] > count($option['products'])) {{ __('and :count more', ['count' => $option['product_count'] - count($option['products'])]) }}@endif @endif
+                                                </span>
+                                            </td>
+                                            <td class="end mono" style="vertical-align:top">{{ number_format($option['services']) }}</td>
+                                            <td style="white-space:normal;vertical-align:top">
+                                                @if ($allowed !== [])
+                                                    <div class="field" style="min-width:270px">
+                                                        <select class="select" name="config_options[{{ $id }}][kind]" aria-label="{{ __('Import :option as', ['option' => $option['name']]) }}" @if ($kindError) aria-invalid="true" aria-describedby="co-{{ $id }}-kind-error" @endif @disabled($running)>
+                                                            <option value="">{{ __('Not imported') }}</option>
+                                                            @foreach ($allowed as $kind)
+                                                                <option value="{{ $kind }}" @selected($chosen === $kind)>{{ $kindNames[$kind] }}</option>
+                                                            @endforeach
+                                                        </select>
+                                                        @if ($option['type'] === 'quantity')
+                                                            <label for="co-{{ $id }}-units" class="faint" style="display:flex;align-items:center;gap:.5rem;font-size:.8rem">
+                                                                {{ __('Units per quantity') }}
+                                                                <input id="co-{{ $id }}-units" class="input" type="number" name="config_options[{{ $id }}][units]" value="{{ $units }}" min="1" max="{{ \App\Import\Whmcs\WhmcsImporter::MAX_UNITS }}" step="1" inputmode="numeric" aria-label="{{ __('Units per quantity of :option', ['option' => $option['name']]) }}" @if ($unitsError) aria-invalid="true" aria-describedby="co-{{ $id }}-units-error" @endif style="width:110px;height:32px" @disabled($running)>
+                                                            </label>
+                                                        @endif
+                                                        @if ($kindError)
+                                                            <p class="error" id="co-{{ $id }}-kind-error" style="margin:0">{{ $kindError }}</p>
+                                                        @endif
+                                                        @if ($unitsError)
+                                                            <p class="error" id="co-{{ $id }}-units-error" style="margin:0">{{ $unitsError }}</p>
+                                                        @endif
+                                                        @if (! $kindError && $option['suggest'] && $chosen !== $option['suggest'])
+                                                            <p class="help" style="margin:0">{{ __('Suggested: :resource', ['resource' => $kindNames[$option['suggest']] ?? $option['suggest']]) }}</p>
+                                                        @endif
+                                                    </div>
+                                                @else
+                                                    <span class="muted" style="font-size:.85rem">{{ __('Not imported: a dropdown or radio option picks a total.') }}</span>
+                                                @endif
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                    </tbody>
+                                </table></div>
+                                <div style="padding:12px 18px;display:grid;gap:.6rem;border-top:1px solid var(--nb-line)">
+                                    <p class="faint" style="margin:0;font-size:.82rem">{{ __('Units per quantity: how much one quantity adds. RAM is in MB (1024 is 1 GB), disk and monthly traffic in GB, CPU in cores and IPs in addresses.') }}</p>
+                                    @if ($moreOptions > 0)
+                                        <p class="faint" style="margin:0;font-size:.82rem">{{ __('Options not listed here: :count. Their price stays in the plan price.', ['count' => number_format($moreOptions)]) }}</p>
+                                    @endif
+                                    <div class="form-actions" style="margin:0"><button class="btn btn-sm btn-primary" type="submit" @disabled($running)>{{ __('Save choices and check again') }}</button></div>
+                                </div>
+                            </form>
+                        </section>
+                    @endif
                 @endif
 
                 <section class="card card-flush" @if ($running) x-data x-init="setTimeout(() => location.reload(), 5000)" @endif>
@@ -146,7 +228,11 @@
                     <li>{{ __('"Save and check" makes a dry run: it shows what would come across and any problems, without changing anything.') }}</li>
                     <li>{{ __('You can run it again before you switch. It adds new records and updates changed ones, without making copies.') }}</li>
                     <li>{{ __('Clients keep their passwords. Older kinds of password are checked at the first sign-in and then replaced.') }}</li>
-                    <li>{{ __('Not imported: saved cards, addons, configurable options and custom fields.') }}</li>
+                    @if (($connection['source'] ?? 'whmcs') === 'whmcs')
+                        <li>{{ __('Not imported: saved cards, addons and custom fields. Configurable options come across only when you choose a resource for them after the dry run.') }}</li>
+                    @else
+                        <li>{{ __('Not imported: saved cards, addons, configurable options and custom fields.') }}</li>
+                    @endif
                     <li>{{ __('Servers and staff are imported switched off. Check the servers, then switch on the ones Nuvabill should use.') }}</li>
                     <li>{{ __('Turn off automation in the other system when you switch, so clients do not get two invoices.') }}</li>
                 </ul>

@@ -8,39 +8,118 @@ use App\Extensions\Servers\Resources\ResourceExtras;
 use App\Extensions\Servers\Resources\ResourceKind;
 use App\Extensions\Servers\Resources\ResourceLimit;
 use App\Models\Product;
+use App\Models\ResourceOption;
 use App\Models\Server;
 use App\Models\Service;
 use App\Models\ServiceAddon;
-use LogicException;
+use Closure;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use RuntimeException;
 
 /**
- * Extra VPS resources: what a VPS gets on top of its plan, set when it is made, after a plan change
- * and when the client changes their extras. Totals are the plan's base plus the extras. A made VPS
- * is checked against them, and disk space only grows.
+ * Extra VPS resources sold with resource options (sliders): what a VPS gets on top of its plan, set
+ * when it is made, after a plan change and when the client changes their extras. Totals are the
+ * plan's base plus the extras core gives the service ($service->resourceExtras()). A made VPS is
+ * checked against them, and disk space only grows.
  *
- * Today the extras come from the product's resource add-on JSON (see ResourceAddons). They move to
- * the core resource options ($service->resourceExtras()), which this class sets on the server.
+ * The base of each kind is the product setting when staff set one (as the create request sends
+ * it), else the Virtualizor plan (kept 10 minutes per server and plan), else the "included" amount
+ * staff gave the option. Traffic and network speed of 0 mean no limit: extras change nothing there.
  */
 final class ResourceTotals
 {
     /**
-     * Where a resource is in Virtualizor's VPS details.
+     * Where a resource is in Virtualizor's VPS details, by the request field that sets it.
      */
-    public const FIELDS = ['cores' => 'cores', 'ram' => 'ram', 'disk' => 'space', 'num_ips' => 'ips', 'bandwidth' => 'bandwidth'];
+    public const FIELDS = [
+        'cores' => 'cores',
+        'ram' => 'ram',
+        'disk' => 'space',
+        'num_ips' => 'ips',
+        'bandwidth' => 'bandwidth',
+        'num_ips6' => 'ips6',
+        'num_ips6_subnet' => 'ips6_subnet',
+        'network_speed' => 'network_speed',
+    ];
+
+    /**
+     * Module data key: the totals last set on the VPS and checked, with the time.
+     */
+    public const DATA = 'virtualizor_resources';
+
+    /**
+     * The kinds sold: the request field that sets each one, its name in a Virtualizor plan, its
+     * unit, the most extra units an option may add, and the most the VPS may have in total.
+     *
+     * @var array<string, array{field: string, plan: string, unit: string, max_extra: int, max_total: int}>
+     */
+    private const KINDS = [
+        'cpu' => ['field' => 'cores', 'plan' => 'cores', 'unit' => 'core', 'max_extra' => 64, 'max_total' => 64],
+        'ram' => ['field' => 'ram', 'plan' => 'ram', 'unit' => 'MB', 'max_extra' => 262144, 'max_total' => 262144],
+        'disk' => ['field' => 'disk', 'plan' => 'space', 'unit' => 'GB', 'max_extra' => 16384, 'max_total' => 16384],
+        'ipv4' => ['field' => 'num_ips', 'plan' => 'ips', 'unit' => 'IP', 'max_extra' => 16, 'max_total' => 16],
+        'ipv6' => ['field' => 'num_ips6', 'plan' => 'ips6', 'unit' => 'IP', 'max_extra' => 64, 'max_total' => 256],
+        'bandwidth' => ['field' => 'bandwidth', 'plan' => 'bandwidth', 'unit' => 'GB', 'max_extra' => 10000000, 'max_total' => 10000000],
+        'virtualizor_ipv6_subnet' => ['field' => 'num_ips6_subnet', 'plan' => 'ips6_subnet', 'unit' => '', 'max_extra' => 8, 'max_total' => 16],
+        'virtualizor_network_speed' => ['field' => 'network_speed', 'plan' => 'network_speed', 'unit' => 'KB/s', 'max_extra' => 10000000, 'max_total' => 10000000],
+    ];
+
+    /**
+     * Kinds where a base of 0 means no limit.
+     */
+    private const UNLIMITED_AT_ZERO = ['bandwidth', 'virtualizor_network_speed'];
+
+    /**
+     * How long a Virtualizor plan is kept, in seconds.
+     */
+    private const PLAN_SECONDS = 600;
 
     public function __construct(private AdminApi $admin) {}
 
     /**
-     * The resource kinds the product can sell. Local only: it never calls the server.
+     * The resource kinds the product can sell. Local only: it never calls the server. Traffic and
+     * network speed are left out when the product sets them to 0 (no limit).
      *
      * @return array<string, ResourceKind>
      *
-     * @throws \InvalidArgumentException With a message for staff when the product's settings are wrong.
+     * @throws InvalidArgumentException With a message for staff when the product's settings are wrong.
      */
     public function kinds(Product $product): array
     {
-        throw new LogicException('Not built yet.');
+        $config = (array) ($product->module_config ?? []);
+
+        try {
+            self::poolId($config);
+        } catch (RuntimeException $exception) {
+            throw new InvalidArgumentException($exception->getMessage());
+        }
+
+        $kinds = [];
+
+        foreach (self::KINDS as $key => $kind) {
+            if (in_array($key, self::UNLIMITED_AT_ZERO, true) && self::productBase($config, $kind['field']) === 0) {
+                continue;
+            }
+
+            $kinds[$key] = new ResourceKind(
+                key: $key,
+                label: $this->label($key),
+                unit: $kind['unit'],
+                minStep: $key === 'ram' ? 128 : 1,
+                maxExtra: $kind['max_extra'],
+                canShrink: $key !== 'disk',
+                restarts: in_array($key, ['cpu', 'ram'], true),
+                note: match ($key) {
+                    'disk' => __('Grow the partition inside your server to use the new space.'),
+                    'ipv4' => __('New addresses may need a restart.'),
+                    default => null,
+                },
+            );
+        }
+
+        return $kinds;
     }
 
     /**
@@ -51,49 +130,194 @@ final class ResourceTotals
      */
     public function base(Product $product, ?Server $server): array
     {
-        throw new LogicException('Not built yet.');
+        return $this->baseOf($product, $server, array_keys(self::KINDS));
     }
 
     /**
-     * Live limits for one service, in extra units per kind. May call the server.
+     * Live limits for one service, in extra units per kind: no kind may go above what Virtualizor
+     * allows in total, extras on a plan without a limit are not sold, and disk space cannot go
+     * below what the VPS has now. A kind whose plan amount is not known cannot grow, because the
+     * server step would refuse it after payment; its extras can still be removed. May call the
+     * server. A service without a VPS has no limits.
      *
      * @return array<string, ResourceLimit>
      */
     public function limits(Service $service): array
     {
-        throw new LogicException('Not built yet.');
+        $vpsId = (string) (((array) $service->module_data)['vpsid'] ?? '');
+        $units = self::known($service->resourceExtras());
+        $kinds = array_keys($units);
+
+        if (! ctype_digit($vpsId) || $kinds === []) {
+            return [];
+        }
+
+        $base = $this->serviceBase($service, $kinds);
+        $limits = [];
+
+        foreach ($kinds as $kind) {
+            if ($base[$kind] === null) {
+                $limits[$kind] = new ResourceLimit(maxUnits: max(0, $units[$kind]), reason: __('We cannot add more of this right now.'));
+
+                continue;
+            }
+
+            $limits[$kind] = $this->unlimited($kind, $base[$kind])
+                ? new ResourceLimit(maxUnits: 0, reason: __('Your plan has no limit here, so extras add nothing.'))
+                : new ResourceLimit(maxUnits: max(0, self::KINDS[$kind]['max_total'] - $base[$kind]));
+        }
+
+        if (($base['disk'] ?? null) !== null) {
+            $live = $this->resourceOf($this->admin->vpsInfo($service->server, $vpsId), 'disk');
+
+            if ($live !== null) {
+                $limits['disk'] = new ResourceLimit(
+                    minUnits: max(0, (int) $live - $base['disk']),
+                    maxUnits: $limits['disk']->maxUnits ?? null,
+                    reason: __('Disk space can only grow.'),
+                );
+            }
+        }
+
+        return $limits;
     }
 
     /**
-     * Set the live VPS to its plan's base plus these extras, then check it.
+     * Set the live VPS to its plan's base plus these extras, then check it. Only kinds Nuvabill
+     * raised are set (see raised()), and only the fields that differ are sent, without the plan, so
+     * running it again changes nothing. Fewer IPv4 or IPv6 addresses keep the first ones. Disk space
+     * only grows: a bigger disk is left as it is, and a disk that cannot grow here (more than one
+     * disk, or no storage ID) is left for staff.
      */
     public function apply(Service $service, ResourceExtras $extras): ModuleResult
     {
-        throw new LogicException('Not built yet.');
+        try {
+            $this->guardLegacy($service);
+            $server = $service->server;
+            $vpsId = AdminApi::vpsId($service);
+            [$totals, $refusals] = $this->totalsFor($service, self::raised($service, $extras));
+
+            if ($refusals !== []) {
+                return ModuleResult::fail($refusals[0]);
+            }
+
+            if ($totals === []) {
+                return ModuleResult::ok(__('The server already has these resources.'));
+            }
+
+            $pool = isset($totals['num_ips']) ? self::poolId((array) ($service->product?->module_config ?? [])) : null;
+            $before = $this->admin->vpsInfo($server, $vpsId);
+
+            if ($before === []) {
+                return ModuleResult::fail(__('Virtualizor has no VPS #:id.', ['id' => $vpsId]));
+            }
+
+            if ($pool !== null) {
+                $this->noteAddresses($service, $before);
+            }
+
+            [$post, $unset] = $this->edits($totals, $before, $before, $this->growsDisk($totals, $before) ? $this->disks($server, $vpsId) : []);
+
+            if ($post !== []) {
+                $response = $this->admin->call($server, ['act' => 'managevps', 'vpsid' => $vpsId], ['editvps' => 1] + $post);
+
+                if (empty($response['done']) && empty($response['vs_info'])) {
+                    return ModuleResult::fail(__('Virtualizor did not confirm the action.'));
+                }
+            }
+
+            $after = $post === [] ? $before : $this->admin->vpsInfo($server, $vpsId);
+            $problems = $this->compare($totals, $after, diskMayBeBigger: true, skip: $unset)['problems'];
+
+            if ($pool !== null) {
+                $problems = [...$problems, ...$this->poolProblems($service, $after, $vpsId, $pool)];
+            }
+
+            if ($problems !== []) {
+                return ModuleResult::fail(__('The server does not match yet: :problems', ['problems' => implode('; ', $problems)]));
+            }
+
+            $this->remember($service, array_diff_key($totals, array_flip($unset)), $after);
+            $restart = isset($post['cores']) || isset($post['ram']);
+
+            return match (true) {
+                $unset !== [] => ModuleResult::ok(__('Saved, but the disk did not grow: this VPS has more than one disk, or its disk has no storage ID. Grow it to :size in Virtualizor.', [
+                    'size' => ResourceOption::formatUnits('GB', $totals['disk']),
+                ]), ['manual' => true, 'restart' => $restart]),
+                $restart => ModuleResult::ok(__('Saved. CPU and memory change after the next restart.'), ['restart' => true]),
+                $post !== [] => ModuleResult::ok(__('Saved. The VPS has its new resources.')),
+                default => ModuleResult::ok(__('The server already has these resources.')),
+            };
+        } catch (RuntimeException $exception) {
+            return ModuleResult::fail($exception->getMessage());
+        }
     }
 
     /**
-     * Compare the live VPS with its plan's base plus these extras. Changes nothing.
+     * Compare the live VPS with its plan's base plus these extras, for the kinds Nuvabill raised
+     * (see raised()). Changes nothing. Traffic and network speed without a limit are expected to
+     * stay 0.
      *
      * @throws \Throwable When the server does not answer.
      */
     public function check(Service $service, ResourceExtras $extras): ResourceCheck
     {
-        throw new LogicException('Not built yet.');
+        $vpsId = AdminApi::vpsId($service);
+        [$totals, $problems] = $this->totalsFor($service, self::raised($service, $extras), unlimitedAsZero: true);
+        $info = $this->admin->vpsInfo($service->server, $vpsId);
+
+        if ($info === []) {
+            $expected = [];
+
+            foreach ($totals as $field => $total) {
+                $expected[self::kindOf($field)] = $total;
+            }
+
+            return new ResourceCheck($expected, array_fill_keys(array_keys($expected), null), [...$problems, __('Virtualizor has no VPS #:id.', ['id' => $vpsId])]);
+        }
+
+        $compared = $this->compare($totals, $info, diskMayBeBigger: false);
+
+        return new ResourceCheck($compared['expected'], $compared['live'], [...$problems, ...$compared['problems']]);
     }
 
     /**
      * The totals a new VPS gets with its extras, or null when it has none (it is made exactly as
-     * before). Whatever else the array holds besides "totals" goes into the create note. Throws when
-     * the extras cannot be worked out safely; nothing is sent then.
+     * before). Whatever else the array holds besides "totals" goes into the create note: the extras
+     * they came from, and the IP pool every IPv4 address must come from when extra IPv4 is sold
+     * with one. Throws when the extras cannot be worked out safely; nothing is sent then. Core makes
+     * the VPS only once its extras are paid.
      *
-     * @return array{totals: array<string, int>, addons: list<int>, pool: int|null}|null
+     * @return array{totals: array<string, int>, extras: array<string, int>, pool: int|null}|null
      *
-     * @throws RuntimeException With a message for staff. Code ResourceAddons::UNPAID when the extras wait for their payment.
+     * @throws RuntimeException With a message for staff.
      */
     public function totalsForCreate(Service $service): ?array
     {
-        return $this->resources($service, forCreate: true);
+        $this->guardLegacy($service);
+        $extras = array_filter(self::known($service->resourceExtras()), fn (int $units): bool => $units > 0);
+
+        if ($extras === []) {
+            return null;
+        }
+
+        [$totals, $refusals] = $this->totalsFor($service, $extras);
+
+        if ($refusals !== []) {
+            throw new RuntimeException($refusals[0]);
+        }
+
+        if ($totals === []) {
+            return null;
+        }
+
+        $pool = isset($totals['num_ips']) ? self::poolId((array) ($service->product?->module_config ?? [])) : null;
+
+        if ($pool !== null) {
+            $this->checkPlan($service, $pool);
+        }
+
+        return ['totals' => $totals, 'extras' => $extras, 'pool' => $pool];
     }
 
     /**
@@ -106,7 +330,20 @@ final class ResourceTotals
      */
     public function totalsForPlanChange(Service $service): ?array
     {
-        return $this->resources($service, forCreate: false)['totals'] ?? null;
+        $this->guardLegacy($service);
+        $extras = array_filter(self::known($service->resourceExtras()), fn (int $units): bool => $units > 0);
+
+        if ($extras === []) {
+            return null;
+        }
+
+        [$totals, $refusals] = $this->totalsFor($service, $extras);
+
+        if ($refusals !== []) {
+            throw new RuntimeException($refusals[0]);
+        }
+
+        return $totals === [] ? null : $totals;
     }
 
     /**
@@ -153,7 +390,8 @@ final class ResourceTotals
     }
 
     /**
-     * Apply the new plan, then set the extras on top again and check the result.
+     * Apply the new plan, then set the extras on top again and check the result. A disk the new
+     * plan left bigger than its total is fine: disk space only grows.
      *
      * @param  array<string, int>  $totals
      */
@@ -170,152 +408,276 @@ final class ResourceTotals
 
         try {
             $after = $this->admin->vpsInfo($server, $vpsId);
-            [$post, $problems] = $this->edits($totals, $before, $after, (array) ($response['vs_info']['disks'] ?? []));
+            $disks = (array) ($response['vs_info']['disks'] ?? []);
+
+            if ($disks === [] && $this->growsDisk($totals, $after)) {
+                $disks = $this->disks($server, $vpsId);
+            }
+
+            [$post, $unset] = $this->edits($totals, $before, $after, $disks);
 
             if ($post !== []) {
                 $this->admin->call($server, ['act' => 'managevps', 'vpsid' => $vpsId], ['editvps' => 1] + $post);
                 $after = $this->admin->vpsInfo($server, $vpsId);
             }
 
-            $problems = array_values(array_unique([...$problems, ...$this->mismatches($service, ['totals' => $totals], $after)]));
+            $problems = array_values(array_unique([
+                ...array_map(fn (string $field): string => $this->label(self::kindOf($field)), $unset),
+                ...$this->mismatches($service, ['totals' => $totals], $after, diskMayBeBigger: true),
+            ]));
         } catch (RuntimeException) {
             $problems = [__('no clear answer from Virtualizor')];
         }
 
         if ($problems === []) {
-            return ModuleResult::ok(__('Plan applied to the VPS, with its add-on extras.'));
+            $this->remember($service, $totals, $after);
+
+            return ModuleResult::ok(__('Plan applied to the VPS, with its extras.'));
         }
 
-        return ModuleResult::fail(__('The new plan is applied, but its add-on extras could not all be set again (:problems). Set them in Virtualizor by hand: :totals.', [
+        return ModuleResult::fail(__('The new plan is applied, but its extras could not all be set again (:problems). Set them in Virtualizor by hand: :totals.', [
             'problems' => implode(', ', $problems),
-            'totals' => collect($totals)->map(fn (int $total, string $field): string => $this->resourceName($field).' '.$total)->implode(', '),
+            'totals' => collect($totals)->map(fn (int $total, string $field): string => $this->label(self::kindOf($field)).' '.$total)->implode(', '),
         ]));
     }
 
     /**
-     * The extra resources the service's add-ons give under its product's policy, with the totals
-     * to set on the VPS. Null when there are none: a service without add-ons, without a policy or
-     * with only other add-ons works as before. Throws when the extras cannot be worked out safely.
+     * The totals for these extras, by request field: the plan's base plus the extras, and why kinds
+     * cannot be set (a base that is not known while the kind has extras, or a total above what
+     * Virtualizor allows). A kind without a known base and without extras is left alone, and so is
+     * a kind without a limit (traffic or network speed of 0), unless $unlimitedAsZero asks for 0.
      *
-     * @return array{totals: array<string, int>, addons: list<int>, pool: int|null}|null
-     */
-    private function resources(Service $service, bool $forCreate): ?array
-    {
-        $record = ResourceAddons::record($service);
-
-        if ($record === null && ! $service->addons()->where('status', ServiceAddon::STATUS_ACTIVE)->exists()) {
-            return null;
-        }
-
-        $policy = ResourceAddons::policy($service);
-        $extras = $policy === null ? ['add' => [], 'addons' => [], 'rows' => []] : ResourceAddons::extras($service, $policy);
-
-        // On a plan change, add-ons that gave this VPS extras when it was made must still count.
-        if (! $forCreate && $record !== null && $record['state'] === ResourceAddons::VERIFIED) {
-            $active = $service->addons()->where('status', ServiceAddon::STATUS_ACTIVE)->pluck('product_addon_id')->map(fn (mixed $id): int => (int) $id)->all();
-
-            if (array_diff(array_intersect($record['addons'], $active), $extras['addons']) !== []) {
-                throw new RuntimeException(__('This VPS has extra resources from add-ons that the new plan\'s add-on policy does not cover, so the plan was not applied on the server. Set its resources in Virtualizor by hand.'));
-            }
-        }
-
-        if ($policy === null || $extras['add'] === []) {
-            return null;
-        }
-
-        if ($policy['server_id'] !== null && $policy['server_id'] !== (int) $service->server_id) {
-            throw new RuntimeException(__('The resource add-on policy of this product is for another server, so nothing was changed. Check the product.'));
-        }
-
-        if ($policy['plan_id'] !== null && $policy['plan_id'] !== (int) self::setting($service, 'plan_id', 0)) {
-            throw new RuntimeException(__('The resource add-on policy of this product names another plan than the product, so nothing was changed. Check the product.'));
-        }
-
-        if ($forCreate) {
-            ResourceAddons::assertPaid($service, $extras['rows']);
-        }
-
-        return ['totals' => $this->resourceTotals($service, $policy, $extras['add']), 'addons' => $extras['addons'], 'pool' => $policy['public_pool_id']];
-    }
-
-    /**
-     * The totals for the resources that add-ons raise: the product's base plus the extras. The
-     * base comes from the policy, the product settings or the Virtualizor plan, in that order.
+     * @param  array<string, int>  $extras  kind => extra units, only kinds of this module.
+     * @return array{0: array<string, int>, 1: list<string>}
      *
-     * @param  array<string, mixed>  $policy
-     * @param  array<string, int>  $add
-     * @return array<string, int>
+     * @throws RuntimeException When the Virtualizor plan cannot be read.
      */
-    private function resourceTotals(Service $service, array $policy, array $add): array
+    private function totalsFor(Service $service, array $extras, bool $unlimitedAsZero = false): array
     {
-        $planId = (int) self::setting($service, 'plan_id', 0);
-        $plan = null;
-
-        // A policy that lists the plan's base or an IP pool is checked against the live plan.
-        if ($planId > 0 && ($policy['base'] !== [] || $policy['public_pool_id'] !== null)) {
-            $plan = $this->plan($service->server, $planId);
-            $this->checkPlan($service, $policy, $plan);
+        if ($extras === []) {
+            return [[], []];
         }
 
+        $base = $this->serviceBase($service, array_keys($extras));
         $totals = [];
+        $refusals = [];
 
-        foreach ($add as $field => $extra) {
-            $base = $policy['base'][$field] ?? $this->productBase($service, $field);
+        foreach ($extras as $kind => $units) {
+            $kindInfo = self::KINDS[$kind];
 
-            if ($base === null && $planId > 0) {
-                $plan ??= $this->plan($service->server, $planId);
-                $value = filter_var($plan[self::FIELDS[$field]] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-                $base = $value === false ? null : $value;
+            if ($base[$kind] !== null && $this->unlimited($kind, $base[$kind])) {
+                if ($unlimitedAsZero) {
+                    $totals[$kindInfo['field']] = 0;
+                }
+
+                continue;
             }
 
-            if ($base === null) {
-                throw new RuntimeException(__('The base :resource of this product is not known, so the add-on extras cannot be added. Set it in the product\'s add-on policy ("base"). Nothing was changed.', ['resource' => $this->resourceName($field)]));
+            if ($base[$kind] === null) {
+                if ($units > 0) {
+                    $refusals[] = __(':resource: the plan amount of this product is not known, so its extras cannot be added. Set it on the product or in its Virtualizor plan. Nothing was changed.', ['resource' => $this->label($kind)]);
+                }
+
+                continue;
             }
 
-            $totals[$field] = $base + $extra;
+            $total = $base[$kind] + max(0, $units);
 
-            if ($totals[$field] > $policy['max'][$field]) {
-                throw new RuntimeException(__('With its add-ons this VPS would get more :resource than the product\'s add-on policy allows ("max"). Nothing was changed.', ['resource' => $this->resourceName($field)]));
+            if ($total > $kindInfo['max_total']) {
+                $refusals[] = __(':resource: with its extras this VPS would get more than Virtualizor allows (:max). Nothing was changed.', [
+                    'resource' => $this->label($kind),
+                    'max' => ResourceOption::formatUnits($kindInfo['unit'], $kindInfo['max_total']),
+                ]);
+
+                continue;
             }
+
+            $totals[$kindInfo['field']] = $total;
         }
 
-        return $totals;
+        return [$totals, $refusals];
     }
 
     /**
-     * The base of a resource from the product settings, or null when the plan sets it.
+     * The base of these kinds for a service: as baseOf(), with the "included" amount staff gave the
+     * product's option where neither the product nor the plan sets it.
+     *
+     * @param  list<string>  $kinds
+     * @return array<string, int|null>
      */
-    private function productBase(Service $service, string $field): ?int
+    private function serviceBase(Service $service, array $kinds): array
     {
-        if ($field === 'num_ips') {
-            return (int) self::setting($service, 'num_ips', 1) ?: 1;
+        $base = $this->baseOf($service->product, $service->server, $kinds);
+        $missing = array_keys(array_filter($base, fn (?int $units): bool => $units === null));
+
+        if ($missing !== []) {
+            $included = ResourceOption::query()->where('product_id', $service->product_id)->whereIn('kind', $missing)->whereNotNull('included')->pluck('included', 'kind');
+
+            foreach ($included as $kind => $units) {
+                $base[(string) $kind] = (int) $units;
+            }
         }
 
-        $value = (int) self::setting($service, $field, 0);
-
-        return $value > 0 ? $value : null;
+        return $base;
     }
 
     /**
-     * @param  array<string, mixed>  $policy
-     * @param  array<string, mixed>  $plan
+     * The base of these kinds: the product setting the create request sends, else the Virtualizor
+     * plan when the product names one and a server is known, else null.
+     *
+     * @param  list<string>  $kinds
+     * @return array<string, int|null>
      */
-    private function checkPlan(Service $service, array $policy, array $plan): void
+    private function baseOf(?Product $product, ?Server $server, array $kinds): array
     {
-        $virt = (string) self::setting($service, 'virt', '');
+        $config = (array) ($product?->module_config ?? []);
+        $planId = self::whole($config['plan_id'] ?? null, 1) ?? 0;
+        $plan = null;
+        $base = [];
+
+        foreach ($kinds as $kind) {
+            $field = self::KINDS[$kind]['field'];
+            $units = self::productBase($config, $field);
+
+            if ($units === null && $planId > 0 && $server !== null) {
+                $plan ??= $this->plan($server, $planId);
+                $units = self::whole($plan[self::KINDS[$kind]['plan']] ?? null, in_array($field, ['cores', 'ram', 'disk'], true) ? 1 : 0);
+            }
+
+            $base[$kind] = $units;
+        }
+
+        return $base;
+    }
+
+    /**
+     * A product setting as the create request sends it: IPv4 addresses always (1 when empty), CPU,
+     * RAM and disk only above 0, the others when set (0 included). Null when the plan decides.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function productBase(array $config, string $field): ?int
+    {
+        return match ($field) {
+            'num_ips' => self::whole($config['num_ips'] ?? null, 1) ?? 1,
+            'cores', 'ram', 'disk' => self::whole($config[$field] ?? null, 1),
+            default => self::whole($config[$field] ?? null, 0),
+        };
+    }
+
+    /**
+     * Whether extras of this kind change nothing, as its base has no limit.
+     */
+    private function unlimited(string $kind, int $base): bool
+    {
+        return $base === 0 && in_array($kind, self::UNLIMITED_AT_ZERO, true);
+    }
+
+    /**
+     * Refuse while the product still has add-on JSON from before 2.0 that names an active add-on
+     * of this service: the migration could not move it to resource options, so the extras the
+     * client pays for are not known here. JSON that cannot be read stops any service with add-ons.
+     *
+     * @throws RuntimeException
+     */
+    private function guardLegacy(Service $service): void
+    {
+        $raw = ((array) ($service->product?->module_config ?? []))[ResourceAddons::FIELD] ?? null;
+
+        if (! is_string($raw) || trim($raw) === '') {
+            return;
+        }
+
+        $active = $service->addons()->where('status', ServiceAddon::STATUS_ACTIVE)->whereNotNull('product_addon_id')->pluck('product_addon_id')->map(fn (mixed $id): int => (int) $id)->all();
+
+        if ($active === []) {
+            return;
+        }
+
+        $named = self::legacyAddonIds($raw);
+
+        if ($named === null || array_intersect($named, $active) !== []) {
+            throw new RuntimeException(__('This product still has resource add-on JSON that was not moved to sliders. Set up its resource options first; nothing was changed.'));
+        }
+    }
+
+    /**
+     * The add-on IDs the add-on JSON names, or null when it cannot be read.
+     *
+     * @return list<int>|null
+     */
+    private static function legacyAddonIds(string $raw): ?array
+    {
+        $policy = json_decode($raw, true);
+
+        if (! is_array($policy) || ! is_array($policy['ids'] ?? null)) {
+            return null;
+        }
+
+        $ids = [];
+
+        foreach ($policy['ids'] as $value) {
+            $listed = match (true) {
+                is_array($value) && array_is_list($value) => $value,
+                is_array($value) => array_keys($value),
+                default => [$value],
+            };
+
+            foreach ($listed as $id) {
+                if ((! is_int($id) && ! is_string($id)) || ! ctype_digit((string) $id)) {
+                    return null;
+                }
+
+                $ids[] = (int) $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * The IP pool extra IPv4 addresses must come from, or null when the product sets none.
+     *
+     * @param  array<string, mixed>  $config
+     *
+     * @throws RuntimeException When the setting is not a pool ID.
+     */
+    private static function poolId(array $config): ?int
+    {
+        $value = $config['ipv4_pool_id'] ?? null;
+
+        if ($value === null || (is_string($value) && trim($value) === '')) {
+            return null;
+        }
+
+        return self::whole(is_string($value) ? trim($value) : $value, 1)
+            ?? throw new RuntimeException(__('Set ":field" on the product to a whole number of :min or more, or leave it empty.', ['field' => 'IP pool for extra IPv4', 'min' => 1]));
+    }
+
+    /**
+     * Before a VPS with extra IPv4 from a pool is made: the plan must be for the product's
+     * virtualization type and use exactly that pool, or the new VPS could not match.
+     *
+     * @throws RuntimeException
+     */
+    private function checkPlan(Service $service, int $pool): void
+    {
+        $config = (array) ($service->product?->module_config ?? []);
+        $planId = self::whole($config['plan_id'] ?? null, 1);
+
+        if ($planId === null || $service->server === null) {
+            return;
+        }
+
+        $plan = $this->plan($service->server, $planId);
+        $virt = (string) ($config['virt'] ?? '');
 
         if ($virt !== '' && isset($plan['virt']) && (string) $plan['virt'] !== $virt) {
             throw new RuntimeException(__('The Virtualizor plan is for another virtualization type than the product, so nothing was changed. Check the product.'));
         }
 
-        foreach ($policy['base'] as $field => $value) {
-            if (filter_var($plan[self::FIELDS[$field]] ?? null, FILTER_VALIDATE_INT) !== $value) {
-                throw new RuntimeException(__('The Virtualizor plan no longer matches the base in the product\'s add-on policy. Update one of them; nothing was changed.'));
-            }
-        }
-
-        if ($policy['public_pool_id'] !== null && $this->poolIds($plan['ippoolid'] ?? null) !== [$policy['public_pool_id']]) {
-            throw new RuntimeException(__('The Virtualizor plan does not use exactly the IP pool in the product\'s add-on policy, so nothing was changed.'));
+        if ($this->poolIds($plan['ippoolid'] ?? null) !== [$pool]) {
+            throw new RuntimeException(__('The Virtualizor plan does not use exactly the IP pool set for extra IPv4 on the product, so nothing was changed.'));
         }
     }
 
@@ -338,17 +700,48 @@ final class ResourceTotals
     }
 
     /**
+     * A Virtualizor plan, kept 10 minutes per server and plan.
+     *
      * @return array<string, mixed>
+     *
+     * @throws RuntimeException When Virtualizor does not answer or does not list the plan.
      */
-    private function plan(?Server $server, int $planId): array
+    private function plan(Server $server, int $planId): array
     {
-        $plan = $this->admin->call($server, ['act' => 'plans', 'reslen' => 500])['plans'][$planId] ?? null;
+        return Cache::remember('nuvabill.virtualizor.plan.'.$server->id.'.'.$planId, self::PLAN_SECONDS, function () use ($server, $planId): array {
+            $plan = $this->admin->call($server, ['act' => 'plans', 'reslen' => 500])['plans'][$planId] ?? null;
 
-        if (! is_array($plan) || (int) ($plan['plid'] ?? $planId) !== $planId) {
-            throw new RuntimeException(__('Virtualizor did not list plan :id, so the add-on extras cannot be worked out. Nothing was changed.', ['id' => $planId]));
-        }
+            if (! is_array($plan) || (int) ($plan['plid'] ?? $planId) !== $planId) {
+                throw new RuntimeException(__('Virtualizor did not list plan :id, so the extras cannot be worked out. Nothing was changed.', ['id' => $planId]));
+            }
 
-        return $plan;
+            return $plan;
+        });
+    }
+
+    /**
+     * Whether the totals grow the VPS's disk, which needs its list of disks.
+     *
+     * @param  array<string, int>  $totals
+     * @param  array<string, mixed>  $info
+     */
+    private function growsDisk(array $totals, array $info): bool
+    {
+        $live = $this->resourceOf($info, 'disk');
+
+        return isset($totals['disk']) && $live !== null && $live < (float) $totals['disk'];
+    }
+
+    /**
+     * The disks of a VPS, from Virtualizor's edit page, for growing its disk.
+     *
+     * @return array<int|string, mixed>
+     */
+    private function disks(?Server $server, string $vpsId): array
+    {
+        $page = $this->admin->call($server, ['act' => 'managevps', 'vpsid' => $vpsId]);
+
+        return (array) ($page['vps']['disks'] ?? $page['vs_info']['disks'] ?? $page['disks'] ?? []);
     }
 
     /**
@@ -358,7 +751,7 @@ final class ResourceTotals
      * @param  array<string, mixed>  $info
      * @return list<string>
      */
-    private function mismatches(Service $service, array $record, array $info): array
+    private function mismatches(Service $service, array $record, array $info, bool $diskMayBeBigger = false): array
     {
         if ($info === []) {
             return [__('VPS not found')];
@@ -370,15 +763,21 @@ final class ResourceTotals
             $problems[] = __('hostname');
         }
 
-        $virt = (string) self::setting($service, 'virt', '');
+        $virt = (string) ($service->product?->module_config['virt'] ?? '');
 
         if ($virt !== '' && isset($info['virt']) && (string) $info['virt'] !== $virt) {
             $problems[] = __('virtualization');
         }
 
         foreach ((array) $record['totals'] as $field => $total) {
-            if (array_key_exists($field, self::FIELDS) && $this->resourceOf($info, $field) !== (float) $total) {
-                $problems[] = $this->resourceName($field);
+            if (! array_key_exists($field, self::FIELDS)) {
+                continue;
+            }
+
+            $live = $this->resourceOf($info, $field);
+
+            if ($live !== (float) $total && ! ($diskMayBeBigger && $field === 'disk' && $live !== null && $live > (float) $total)) {
+                $problems[] = $this->label(self::kindOf($field));
             }
         }
 
@@ -386,28 +785,221 @@ final class ResourceTotals
     }
 
     /**
+     * What each total should be (expected) and is (live), by kind, with a line for staff for each
+     * one that differs. With $diskMayBeBigger a disk bigger than expected is fine: it cannot shrink,
+     * and the client has at least what they pay for.
+     *
+     * @param  array<string, int>  $totals
+     * @param  array<string, mixed>  $info
+     * @param  list<string>  $skip  Fields left out.
+     * @return array{expected: array<string, int>, live: array<string, int|null>, problems: list<string>}
+     */
+    private function compare(array $totals, array $info, bool $diskMayBeBigger, array $skip = []): array
+    {
+        $result = ['expected' => [], 'live' => [], 'problems' => []];
+
+        foreach ($totals as $field => $total) {
+            if (in_array($field, $skip, true)) {
+                continue;
+            }
+
+            $kind = self::kindOf($field);
+            $unit = self::KINDS[$kind]['unit'];
+            $live = $this->resourceOf($info, $field);
+            $result['expected'][$kind] = $total;
+            $result['live'][$kind] = $live === null ? null : (int) $live;
+
+            if ($live === null) {
+                $result['problems'][] = __(':kind could not be read from the server.', ['kind' => $this->label($kind)]);
+            } elseif ($live !== (float) $total && ! ($diskMayBeBigger && $field === 'disk' && $live > (float) $total)) {
+                $result['problems'][] = __(':kind: :live, expected :expected', [
+                    'kind' => $this->label($kind),
+                    'live' => ResourceOption::formatUnits($unit, (int) $live),
+                    'expected' => ResourceOption::formatUnits($unit, $total),
+                ]);
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * IPv4 addresses the VPS got since its addresses were last noted that are not from the pool,
+     * as lines for staff. The noted addresses change only after a change that checked out, or in
+     * noteAddresses() when they are missing or out of date, so a new try checks the same addresses
+     * again.
+     *
+     * @param  array<string, mixed>  $info
+     * @return list<string>
+     *
+     * @throws RuntimeException When Virtualizor does not answer.
+     */
+    private function poolProblems(Service $service, array $info, string $vpsId, int $pool): array
+    {
+        $noted = array_filter((array) (((array) $service->module_data)['ips'] ?? []), 'is_string');
+        $problems = [];
+
+        foreach (array_diff(AdminApi::addresses($info, FILTER_FLAG_IPV4), $noted) as $ip) {
+            if (! $this->inPool($service->server, $ip, $vpsId, $pool)) {
+                $problems[] = __(':ip is not from IP pool :pool', ['ip' => $ip, 'pool' => $pool]);
+            }
+        }
+
+        return $problems;
+    }
+
+    /**
+     * Before a change whose new IPv4 addresses are checked against the pool: when the service has
+     * no noted addresses (a VPS imported from WHMCS notes only its ID), or the VPS no longer has all
+     * of them (staff changed its addresses in Virtualizor), note the addresses it has now. Then only
+     * the addresses this change adds are checked, never the main address, which may come from
+     * another pool. Noted addresses the VPS still has are kept, so a new try after a failed check
+     * checks the same new addresses again.
+     *
+     * @param  array<string, mixed>  $before  The VPS before the change.
+     */
+    private function noteAddresses(Service $service, array $before): void
+    {
+        $noted = array_filter((array) (((array) $service->module_data)['ips'] ?? []), 'is_string');
+        $addresses = AdminApi::addresses($before);
+
+        if ($addresses === [] || ($noted !== [] && array_diff($noted, $addresses) === [])) {
+            return;
+        }
+
+        $this->saveData($service, function (array $data) use ($addresses): array {
+            $data['ips'] = $addresses;
+
+            return $data;
+        });
+    }
+
+    /**
+     * Note the totals the VPS has now, and its addresses.
+     *
+     * @param  array<string, int>  $totals
+     * @param  array<string, mixed>  $info
+     */
+    private function remember(Service $service, array $totals, array $info): void
+    {
+        $this->saveData($service, function (array $data) use ($totals, $info): array {
+            $earlier = is_array($data[self::DATA]['totals'] ?? null) ? $data[self::DATA]['totals'] : [];
+            $data[self::DATA] = ['totals' => array_merge($earlier, $totals), 'checked_at' => now()->getTimestamp()];
+            $addresses = AdminApi::addresses($info);
+
+            if ($addresses !== []) {
+                $data['ips'] = $addresses;
+            }
+
+            return $data;
+        });
+    }
+
+    /**
+     * Change some keys of the service's module data. The row is read again under a lock, so other
+     * module data saved meanwhile stays, and the model is kept in step.
+     *
+     * @param  Closure(array<string, mixed>): array<string, mixed>  $change
+     */
+    private function saveData(Service $service, Closure $change): void
+    {
+        $data = DB::transaction(function () use ($service, $change): ?array {
+            $fresh = Service::query()->lockForUpdate()->find($service->id);
+
+            if ($fresh === null) {
+                return null;
+            }
+
+            $data = $change((array) $fresh->module_data);
+            $fresh->module_data = $data;
+            $fresh->save();
+
+            return $data;
+        });
+
+        if ($data !== null) {
+            $service->module_data = $data;
+            $service->syncOriginalAttribute('module_data');
+        }
+    }
+
+    /**
      * @param  array<string, mixed>  $info
      */
     private function resourceOf(array $info, string $field): ?float
     {
-        if ($field === 'num_ips') {
-            return (float) count(AdminApi::addresses($info, FILTER_FLAG_IPV4));
-        }
-
-        $value = $info[self::FIELDS[$field]] ?? null;
-
-        return is_numeric($value) ? (float) $value : null;
+        return match ($field) {
+            'num_ips' => (float) count(AdminApi::addresses($info, FILTER_FLAG_IPV4)),
+            'num_ips6' => (float) count(AdminApi::addresses($info, FILTER_FLAG_IPV6)),
+            'num_ips6_subnet' => (float) count(array_filter((array) ($info['ips6_subnet'] ?? []), 'is_string')),
+            default => is_numeric($info[self::FIELDS[$field]] ?? null) ? (float) $info[self::FIELDS[$field]] : null,
+        };
     }
 
-    private function resourceName(string $field): string
+    /**
+     * The name of a kind for clients and staff.
+     */
+    private function label(string $kind): string
     {
-        return match ($field) {
-            'cores' => __('CPU cores'),
-            'ram' => __('RAM'),
-            'disk' => __('disk space'),
-            'num_ips' => __('IPv4 addresses'),
-            default => __('bandwidth'),
+        return match ($kind) {
+            'virtualizor_ipv6_subnet' => __('IPv6 subnets'),
+            'virtualizor_network_speed' => __('Network speed'),
+            default => ResourceOption::kindLabel($kind),
         };
+    }
+
+    /**
+     * The kind a request field sets.
+     */
+    private static function kindOf(string $field): string
+    {
+        foreach (self::KINDS as $kind => $info) {
+            if ($info['field'] === $field) {
+                return $kind;
+            }
+        }
+
+        return $field;
+    }
+
+    /**
+     * The extras of this module's kinds, as whole units.
+     *
+     * @return array<string, int>
+     */
+    private static function known(ResourceExtras $extras): array
+    {
+        return array_map('intval', array_intersect_key($extras->units, self::KINDS));
+    }
+
+    /**
+     * The extras of the kinds Nuvabill sets on a live VPS: kinds with extras above 0, and kinds the
+     * service has a resource row for, active or cancelled (a cancelled row takes its kind back to
+     * the plan, so removals still reach the server). A kind at 0 without a row was never raised by
+     * Nuvabill, so the VPS keeps what it has there, such as addresses or memory staff gave it in
+     * Virtualizor, the same way a bigger disk is kept.
+     *
+     * @return array<string, int>
+     */
+    private static function raised(Service $service, ResourceExtras $extras): array
+    {
+        $rows = $service->resources()->distinct()->pluck('kind')->map(fn (mixed $kind): string => (string) $kind)->all();
+
+        return array_filter(self::known($extras), fn (int $units, string $kind): bool => $units > 0 || in_array($kind, $rows, true), ARRAY_FILTER_USE_BOTH);
+    }
+
+    /**
+     * A whole number of at least $min, or null.
+     */
+    private static function whole(mixed $value, int $min): ?int
+    {
+        if (! is_int($value) && ! is_string($value)) {
+            return null;
+        }
+
+        $number = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => $min, 'max_range' => 2147483647]]);
+
+        return $number === false ? null : $number;
     }
 
     /**
@@ -426,37 +1018,46 @@ final class ResourceTotals
     }
 
     /**
-     * The changes that bring the VPS back to the totals, and what cannot be set safely.
+     * The changes that bring the VPS to the totals, and the fields that cannot be set here. Fewer
+     * addresses keep the first ones the VPS had (the main one first), so clients keep theirs. A disk
+     * only grows, and only when the VPS has a single disk with a storage ID.
      *
      * @param  array<string, int>  $totals
-     * @param  array<string, mixed>  $before
-     * @param  array<string, mixed>  $after
+     * @param  array<string, mixed>  $before  The VPS before any change, for the addresses it keeps.
+     * @param  array<string, mixed>  $after  The VPS as it is now.
      * @param  array<int|string, mixed>  $disks
      * @return array{0: array<string, mixed>, 1: list<string>}
      */
     private function edits(array $totals, array $before, array $after, array $disks): array
     {
         $post = [];
-        $problems = [];
+        $unset = [];
 
         foreach ($totals as $field => $total) {
-            if ($this->resourceOf($after, $field) === (float) $total) {
+            $live = $this->resourceOf($after, $field);
+
+            if ($live === (float) $total) {
                 continue;
             }
 
-            if ($field === 'num_ips') {
-                // Keep the addresses the VPS had, so clients do not get new ones.
-                $kept = array_slice(AdminApi::addresses($before, FILTER_FLAG_IPV4), 0, $total);
-                $post['num_ips'] = $total;
+            if ($field === 'num_ips' || $field === 'num_ips6') {
+                $flag = $field === 'num_ips' ? FILTER_FLAG_IPV4 : FILTER_FLAG_IPV6;
+                $kept = array_slice(AdminApi::addresses($before, $flag), 0, $total);
+                $post[$field] = $total;
 
                 if (count($kept) === $total) {
-                    $post['ips'] = $kept;
+                    $post[$field === 'num_ips' ? 'ips' : 'ips6'] = $kept;
                 }
             } elseif ($field === 'disk') {
+                if ($live !== null && $live > (float) $total) {
+                    continue;
+                }
+
                 $disks = array_values(array_filter($disks, 'is_array'));
 
-                if (count($disks) !== 1 || blank($disks[0]['st_uuid'] ?? null)) {
-                    $problems[] = $this->resourceName('disk');
+                // A disk whose size cannot be read is never sent: it could be bigger than the total.
+                if ($live === null || count($disks) !== 1 || blank($disks[0]['st_uuid'] ?? null)) {
+                    $unset[] = 'disk';
 
                     continue;
                 }
@@ -467,14 +1068,6 @@ final class ResourceTotals
             }
         }
 
-        return [$post, $problems];
-    }
-
-    /**
-     * A product setting of the service's product.
-     */
-    private static function setting(Service $service, string $key, mixed $default = null): mixed
-    {
-        return $service->product?->module_config[$key] ?? $default;
+        return [$post, $unset];
     }
 }

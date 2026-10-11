@@ -4,6 +4,8 @@ namespace App\Import\Whmcs;
 
 use App\Auth\LegacyPassword;
 use App\Billing\RenewalGenerator;
+use App\Billing\ResourceKinds;
+use App\Billing\ResourceOptions;
 use App\Domains\DomainName;
 use App\Enums\AutoSetup;
 use App\Enums\BillingCycle;
@@ -16,36 +18,55 @@ use App\Enums\TicketPriority;
 use App\Enums\TicketStatus;
 use App\Extensions\ExtensionManager;
 use App\Extensions\ExtensionManifest;
+use App\Extensions\Servers\Resources\ResourceKind;
 use App\Import\ImportSource;
 use App\Import\Preflight;
+use App\Models\ActivityLog;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Domain;
+use App\Models\ImportMapping;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Product;
 use App\Models\ProductGroup;
 use App\Models\ProductPrice;
+use App\Models\ResourceChange;
+use App\Models\ResourceOption;
+use App\Models\ResourceOptionPrice;
 use App\Models\Server;
 use App\Models\Service;
+use App\Models\ServiceResourceOption;
 use App\Models\Ticket;
 use App\Models\TicketDepartment;
 use App\Models\TicketReply;
 use App\Models\TldPrice;
 use App\Models\Transaction;
+use App\Provisioning\Provisioner;
+use App\Support\Activity;
+use App\Support\Settings;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use RuntimeException;
 use stdClass;
+use Throwable;
 
 /**
  * Copies a WHMCS installation into Nuvabill by reading its MySQL database.
  *
  * With WHMCS's encryption key (cc_encryption_hash from configuration.php) server and service
- * passwords come across too; without it they are left empty. Not imported: saved cards, addons,
- * configurable options and custom fields (except a Virtualizor "vpsid").
+ * passwords come across too; without it they are left empty. Not imported: saved cards, addons
+ * and custom fields (except a Virtualizor "vpsid").
+ *
+ * Configurable options come across only where staff chose a resource for them in the dry run
+ * (setting "import.whmcs", key "config_options"): a quantity option becomes a resource option with
+ * the units of one quantity as its step, and a yes/no option can switch backups on. Each service
+ * then gets resource rows, and its WHMCS price is split into the plan and the extras, so its
+ * renewal total stays exactly the WHMCS amount. Other options stay in the plan price.
  */
 class WhmcsImporter extends ImportSource
 {
@@ -136,9 +157,110 @@ class WhmcsImporter extends ImportSource
     ];
 
     /**
+     * Resource kinds a configurable option may become, by option type. A quantity adds that many
+     * steps to the plan, and a yes/no option switches backups on. Dropdowns and radio buttons pick
+     * a total, not an extra, so they are never brought across.
+     *
+     * @var array<string, list<string>>
+     */
+    public const CONFIG_OPTION_KINDS = [
+        'quantity' => ['cpu', 'ram', 'disk', 'ipv4', 'ipv6', 'bandwidth'],
+        'yesno' => ['backups'],
+    ];
+
+    /**
+     * The most units one quantity of a configurable option may add.
+     */
+    public const MAX_UNITS = 1000000;
+
+    /**
+     * The most configurable options the dry run lists for staff to choose from.
+     */
+    public const MAX_LISTED_OPTIONS = 300;
+
+    /**
+     * WHMCS configurable option types (tblproductconfigoptions.optiontype).
+     *
+     * @var array<int, string>
+     */
+    private const OPTION_TYPES = [1 => 'dropdown', 2 => 'radio', 3 => 'yesno', 4 => 'quantity'];
+
+    /**
+     * Option names that suggest a kind, after "additional" or "extra" and underscores are taken
+     * away: common WHMCS names and Virtualizor's ("CPU Cores", "RAM", "Space", "Number of IPs",
+     * "additional_ram").
+     *
+     * @var array<string, list<string>>
+     */
+    private const OPTION_NAMES = [
+        'cpu' => ['cpu cores', 'cpu core', 'cores', 'cpu', 'vcpu', 'vcpus'],
+        'ram' => ['ram', 'memory'],
+        'disk' => ['space', 'disk space', 'disk'],
+        'ipv4' => ['number of ips', 'num ips', 'ip address', 'ip addresses', 'ips', 'ipv4', 'ipv4 addresses'],
+        'ipv6' => ['number of ipv6 address', 'number of ipv6 addresses', 'num ips6', 'ipv6', 'ipv6 addresses'],
+        'bandwidth' => ['bandwidth', 'traffic', 'monthly traffic'],
+    ];
+
+    /**
+     * The most steps a resource row holds (the column's limit).
+     */
+    private const MAX_ROW_STEPS = 65535;
+
+    /**
+     * Activity entry for a service whose extras came across inside its plan price.
+     */
+    private const EXTRAS_IN_PLAN = 'service.resources_imported';
+
+    /**
+     * Mapping entity of the resource rows the import made: a WHMCS option value of a service
+     * (tblhostingconfigoptions) to the Nuvabill row it became.
+     */
+    private const RESOURCE_ROW = 'service_resource';
+
+    /**
      * @var array<int, string>|null
      */
     private ?array $currencies = null;
+
+    /**
+     * WHMCS configurable options in a group linked to a product, by ID.
+     *
+     * @var array<int, stdClass>|null
+     */
+    private ?array $configOptions = null;
+
+    /**
+     * WHMCS product ID => its configurable option IDs, in the order WHMCS shows them.
+     *
+     * @var array<int, list<int>>
+     */
+    private array $productOptions = [];
+
+    /**
+     * @var array<int, array{kind: string, units: int}>|null
+     */
+    private ?array $optionMap = null;
+
+    /**
+     * WHMCS option ID => the ID of its first choice (the one a quantity or yes/no option is priced by).
+     *
+     * @var array<int, int|null>
+     */
+    private array $firstChoices = [];
+
+    /**
+     * WHMCS choice ID => its tblpricing rows.
+     *
+     * @var array<int, list<stdClass>>
+     */
+    private array $choicePrices = [];
+
+    /**
+     * Nuvabill product ID => its resource options by kind.
+     *
+     * @var array<int, array<string, ResourceOption>>
+     */
+    private array $localOptions = [];
 
     private ?string $defaultCurrency = null;
 
@@ -370,6 +492,7 @@ class WhmcsImporter extends ImportSource
         $prices = $this->hasTable('tblpricing')
             ? $this->db()->table('tblpricing')->where('type', 'product')->whereIn('relid', $rows->pluck('id'))->get()->groupBy('relid')
             : collect();
+        $this->localOptions = [];
 
         foreach ($rows as $row) {
             $groupId = $this->localId('product_group', $row->gid ?? 0);
@@ -413,6 +536,110 @@ class WhmcsImporter extends ImportSource
             ]);
 
             $this->importPrices($product, (string) ($row->paytype ?? 'recurring'), $prices->get($row->id, collect()));
+            $this->importResourceOptions($product, (int) $row->id, (string) ($row->paytype ?? 'recurring'));
+        }
+    }
+
+    /**
+     * Resource options for the configurable options staff chose to bring across. Each is made once,
+     * with the units of one WHMCS quantity as its step, and is shown to clients only when WHMCS showed
+     * it and the product's server module can set that kind. Its prices follow WHMCS on every run,
+     * like the product's. An option the product already has with another step is left alone, and
+     * the WHMCS price of that configurable option stays in the plan.
+     */
+    private function importResourceOptions(Product $product, int $sourceProductId, string $payType): void
+    {
+        $resources = $this->productResources($sourceProductId);
+
+        if ($resources === []) {
+            return;
+        }
+
+        $moduleKinds = $this->moduleKinds($product);
+        $cycles = $product->prices()->pluck('billing_cycle')
+            ->map(fn (mixed $cycle): string => $cycle instanceof BillingCycle ? $cycle->value : (string) $cycle)
+            ->reject(fn (string $cycle): bool => $cycle === BillingCycle::Free->value)
+            ->unique()->values()->all();
+        $choices = $this->firstChoices(array_column($resources, 'id'));
+        $prices = $this->choicePrices(array_values(array_filter($choices)));
+
+        foreach ($resources as $kind => $resource) {
+            $option = ResourceOption::query()->where('product_id', $product->id)->where('kind', $kind)->first();
+
+            if ($option !== null && $option->step_size !== $resource['units']) {
+                $this->errors[] = ['id' => $sourceProductId, 'error' => __('Configurable option ":name" was not imported: this product already has :resource with another step size. The service price still includes it.', [
+                    'name' => $this->optionName($resource['option']),
+                    'resource' => ResourceKinds::label($kind),
+                ])];
+
+                continue;
+            }
+
+            $option ??= $this->createResourceOption($product, $kind, $resource, $moduleKinds[$kind] ?? null);
+            $this->importOptionPrices($option, $prices[$choices[$resource['id']] ?? 0] ?? [], $cycles, $payType);
+        }
+    }
+
+    /**
+     * A new resource option for one configurable option, with the kind's copy (shrink, restarts,
+     * note, maximum) from the server module when it can set the kind, else the built-in kind.
+     *
+     * @param  array{id: int, units: int, option: stdClass}  $resource
+     */
+    private function createResourceOption(Product $product, string $kind, array $resource, ?ResourceKind $moduleKind): ResourceOption
+    {
+        $units = $resource['units'];
+        $fits = $this->kindFits($moduleKind, $kind, $units);
+        $snapshot = $fits ? $moduleKind : ResourceKinds::builtIn($kind);
+        $most = (int) ($resource['option']->qtymaximum ?? 0);
+        $max = $kind === 'backups' ? 1 : ($most > 0 ? min($most, ResourceOptions::MAX_STEPS) : ResourceOptions::MAX_STEPS);
+
+        if ($snapshot->maxExtra !== null) {
+            $max = max(1, min($max, intdiv($snapshot->maxExtra, $units)));
+        }
+
+        $min = $kind === 'backups' ? 0 : min(max(0, (int) ($resource['option']->qtyminimum ?? 0)), $max);
+
+        return $product->resourceOptions()->create([
+            'kind' => $kind,
+            'unit' => ResourceKinds::BUILT_IN[$kind]['unit'],
+            'step_size' => $units,
+            'min_steps' => $min,
+            'max_steps' => $max,
+            'default_steps' => $min,
+            'client_can_add' => true,
+            'client_can_remove' => $snapshot->canShrink,
+            'is_active' => $fits && ! (int) ($resource['option']->hidden ?? 0),
+            'sort_order' => (int) ResourceOption::query()->where('product_id', $product->id)->max('sort_order') + 1,
+            'can_shrink' => $snapshot->canShrink,
+            'restarts' => $snapshot->restarts,
+            'note' => $snapshot->note !== null ? Str::limit($snapshot->note, 200, '') : null,
+            'max_extra' => $snapshot->maxExtra,
+        ]);
+    }
+
+    /**
+     * The price of one quantity in each currency and billing cycle the product is sold with.
+     * WHMCS marks a price that is not offered with -1.
+     *
+     * @param  list<stdClass>  $prices  The option's tblpricing rows.
+     * @param  list<string>  $cycles
+     */
+    private function importOptionPrices(ResourceOption $option, array $prices, array $cycles, string $payType): void
+    {
+        $columns = $payType === 'onetime' ? [BillingCycle::OneTime->value => ['monthly', 'msetupfee']] : self::CYCLE_COLUMNS;
+
+        foreach ($prices as $price) {
+            foreach ($columns as $cycle => [$priceColumn, $setupColumn]) {
+                if (! in_array($cycle, $cycles, true) || ! is_numeric($price->{$priceColumn} ?? null) || (float) $price->{$priceColumn} < 0) {
+                    continue;
+                }
+
+                ResourceOptionPrice::query()->updateOrCreate(
+                    ['resource_option_id' => $option->id, 'currency' => $this->currency($price->currency ?? 0), 'billing_cycle' => $cycle],
+                    ['price' => $this->money($price->{$priceColumn}), 'setup_fee' => max(0, $this->money($price->{$setupColumn} ?? 0))],
+                );
+            }
         }
     }
 
@@ -451,12 +678,17 @@ class WhmcsImporter extends ImportSource
     }
 
     /**
+     * Services, with the extras of their configurable options (see importExtras()). Once a service's
+     * extras changed in Nuvabill (see managedHere()), a later run leaves its price, billing cycle
+     * and extras as Nuvabill has them, so the cycle and the prices billed for it stay together.
+     *
      * @param  Collection<int, stdClass>  $rows
      */
     protected function importServices(Collection $rows): void
     {
         $vpsIds = $this->customFieldValues('vpsid', $rows->pluck('id')->all());
         $solusIds = $this->customFieldValues('vserverid', $rows->pluck('id')->all());
+        $optionValues = $this->optionValues($rows->pluck('id')->map(fn (mixed $id): int => (int) $id)->all());
 
         foreach ($rows as $row) {
             $clientId = $this->localId('client', $row->userid ?? 0);
@@ -470,8 +702,9 @@ class WhmcsImporter extends ImportSource
 
             $cycle = $this->cycle($row->billingcycle ?? '');
             $status = $this->serviceStatus($row->domainstatus ?? '');
-
-            $service = $this->upsert('service', (int) $row->id, Service::class, [
+            $localId = $this->localId('service', $row->id);
+            $managedHere = $localId !== null && $this->managedHere($localId);
+            $attributes = [
                 'product_id' => $productId,
                 'server_id' => $this->localId('server', $row->server ?? 0),
                 'domain' => $this->text($row->domain ?? null),
@@ -484,7 +717,13 @@ class WhmcsImporter extends ImportSource
                 'next_due_date' => $cycle->isRecurring() ? $this->date($row->nextduedate ?? null) : null,
                 'suspension_reason' => $status === ServiceStatus::Suspended ? $this->text($row->suspendreason ?? null) : null,
                 'terminated_at' => $status === ServiceStatus::Terminated ? ($this->date($row->termination_date ?? null) ?? now()) : null,
-            ], [
+            ];
+
+            if ($managedHere) {
+                unset($attributes['recurring_amount'], $attributes['billing_cycle']);
+            }
+
+            $service = $this->upsert('service', (int) $row->id, Service::class, $attributes, [
                 'client_id' => $clientId,
                 'currency' => $this->clientCurrency($clientId),
                 'module_data' => match (true) {
@@ -501,8 +740,129 @@ class WhmcsImporter extends ImportSource
                 $service->password = $password;
             }
 
+            if (! $managedHere) {
+                $this->importExtras($service, (int) ($row->packageid ?? 0), $this->money($row->amount ?? 0), $optionValues[(int) $row->id] ?? []);
+            }
+
             $service->save();
         }
+    }
+
+    /**
+     * Whether a service's extras changed in Nuvabill since it was imported: it has a resource change,
+     * or a resource row the import did not make (such as one staff added, or one the move from
+     * Virtualizor resource add-ons made).
+     */
+    private function managedHere(int $serviceId): bool
+    {
+        return ResourceChange::query()->where('service_id', $serviceId)->exists()
+            || ServiceResourceOption::query()->where('service_id', $serviceId)->whereNotIn('id', $this->importedRows())->exists();
+    }
+
+    /**
+     * The IDs of the resource rows the import made, as a subquery.
+     *
+     * @return EloquentBuilder<ImportMapping>
+     */
+    private function importedRows(): EloquentBuilder
+    {
+        return ImportMapping::query()->select('local_id')->where(['source' => static::key(), 'entity' => self::RESOURCE_ROW]);
+    }
+
+    /**
+     * Split a service's WHMCS price into its plan and the extras from its configurable options, so
+     * its renewal total stays exactly the WHMCS amount. Rows the import made for kinds that no
+     * longer come across are cancelled. When the extras would cost more than the whole price
+     * (prices went up since), they come across at no charge and the plan keeps the price, which is
+     * logged once.
+     *
+     * @param  array<int, stdClass>  $values  The service's option values, by WHMCS option ID.
+     *
+     * @throws RuntimeException When the split would change the renewal total; the service is then skipped.
+     */
+    private function importExtras(Service $service, int $sourceProductId, int $amount, array $values): void
+    {
+        $resources = $this->productResources($sourceProductId);
+        $options = $this->localOptions($service->product_id, $resources);
+        $split = $this->splitPrice($amount, $service->billing_cycle, (string) $service->currency, array_intersect_key($resources, $options), $values);
+        $rows = $service->resources()->orderBy('id')->get()->keyBy('kind');
+
+        if ($split['rows'] === [] && $rows->every(fn (ServiceResourceOption $row): bool => ! $row->isActive())) {
+            return;
+        }
+
+        foreach ($split['rows'] as $kind => $extra) {
+            $option = $options[$kind];
+            $row = ($rows->get($kind) ?? new ServiceResourceOption(['service_id' => $service->id, 'kind' => $kind]))->fill([
+                'resource_option_id' => $option->id,
+                'unit' => $option->unit,
+                'step_size' => $option->step_size,
+                'steps' => $extra['steps'],
+                'recurring_amount' => $extra['amount'],
+                'status' => ServiceResourceOption::STATUS_ACTIVE,
+            ]);
+            $row->save();
+
+            if ($extra['source'] > 0) {
+                $this->remember(self::RESOURCE_ROW, $extra['source'], (int) $row->id);
+            }
+        }
+
+        $made = $rows->isEmpty() ? [] : $this->importedRows()->whereIn('local_id', $rows->pluck('id'))->pluck('local_id')->map(fn (mixed $id): int => (int) $id)->all();
+
+        foreach ($rows as $kind => $row) {
+            if (! isset($split['rows'][$kind]) && $row->status === ServiceResourceOption::STATUS_ACTIVE && in_array((int) $row->id, $made, true)) {
+                $row->fill(['steps' => 0, 'recurring_amount' => 0, 'status' => ServiceResourceOption::STATUS_CANCELLED])->save();
+            }
+        }
+
+        $service->recurring_amount = $split['plan'];
+        $extras = (int) $service->resources()->where('status', ServiceResourceOption::STATUS_ACTIVE)->where('steps', '>', 0)->sum('recurring_amount');
+
+        if ($service->recurring_amount + $extras !== $amount) {
+            throw new RuntimeException(__('The extras of this service would change its price, so it was not imported. Check its configurable options.'));
+        }
+
+        if ($split['included'] && ! ActivityLog::query()->where(['subject_type' => $service->getMorphClass(), 'subject_id' => $service->id, 'action' => self::EXTRAS_IN_PLAN])->exists()) {
+            Activity::log(self::EXTRAS_IN_PLAN, 'Imported from WHMCS: its extras cost more than its price there, so they are included in the plan price.', $service);
+        }
+    }
+
+    /**
+     * How a WHMCS price splits into the plan and the extras: each extra costs its quantity times the
+     * option's WHMCS price in the service's currency and cycle (nothing on a cycle that does not
+     * renew). When the extras cost more than the whole price, they are free and the plan keeps it.
+     *
+     * @param  array<string, array{id: int, units: int, option: stdClass}>  $resources
+     * @param  array<int, stdClass>  $values  Option values by WHMCS option ID.
+     * @return array{rows: array<string, array{steps: int, amount: int, source: int}>, plan: int, included: bool} Each row's source is the ID of its WHMCS option value.
+     */
+    private function splitPrice(int $amount, BillingCycle $cycle, string $currency, array $resources, array $values): array
+    {
+        $choices = $this->firstChoices(array_column($resources, 'id'));
+        $rows = [];
+
+        foreach ($resources as $kind => $resource) {
+            $steps = max(0, (int) ($values[$resource['id']]->qty ?? 0));
+            $steps = $kind === 'backups' ? min($steps, 1) : $steps;
+
+            if ($steps === 0 || $steps > self::MAX_ROW_STEPS) {
+                continue;
+            }
+
+            $choice = $choices[$resource['id']] ?? null;
+            $price = $cycle->isRecurring() && $choice !== null ? ($this->optionPrice($choice, $currency, $cycle) ?? 0) : 0;
+            $rows[$kind] = ['steps' => $steps, 'amount' => $steps * $price, 'source' => (int) ($values[$resource['id']]->id ?? 0)];
+        }
+
+        $sum = array_sum(array_column($rows, 'amount'));
+        $included = $sum > $amount;
+
+        if ($included) {
+            $rows = array_map(fn (array $row): array => ['amount' => 0] + $row, $rows);
+        }
+
+        return ['rows' => $rows, 'plan' => $included ? $amount : $amount - $sum, 'included' => $included];
     }
 
     private function serviceStatus(mixed $value): ServiceStatus
@@ -975,13 +1335,616 @@ class WhmcsImporter extends ImportSource
 
         $count = fn (string $table): int => $this->hasTable($table) ? $this->db()->table($table)->count() : 0;
         $report->problem(Preflight::WARNING, $count('tblhostingaddons'), 'Addons on services, not imported: :count.');
-        $report->problem(Preflight::WARNING, $count('tblhostingconfigoptions'), 'Configurable option values, not imported: :count.');
+        $this->preflightConfigOptions($report);
         $report->problem(Preflight::WARNING, $count('tblcustomfieldsvalues'), 'Custom field values, not imported: :count.');
 
         if ($this->hasTable('tbldomains')) {
             $other = $this->db()->table('tbldomains')->where('registrar', '!=', '')->whereNotIn(DB::raw('LOWER(registrar)'), self::REGISTRARS);
             $report->problem(Preflight::INFO, (clone $other)->count(), 'Domains with a registrar Nuvabill does not have: :count. They are imported without one; renew them by hand.', examples: $other->distinct()->pluck('registrar')->all());
         }
+    }
+
+    /**
+     * What happens to configurable options: the ones brought across as resource options, the
+     * services that get extras, and what cannot come across.
+     */
+    private function preflightConfigOptions(Preflight $report): void
+    {
+        if (! $this->hasConfigOptions()) {
+            $report->problem(Preflight::WARNING, $this->hasTable('tblhostingconfigoptions') ? $this->db()->table('tblhostingconfigoptions')->count() : 0, 'Configurable option values, not imported: :count.');
+
+            return;
+        }
+
+        $options = $this->configOptionRows();
+        $map = $this->optionMap();
+
+        $report->problem(Preflight::INFO, count($map), 'Configurable options brought across as resource options: :count. Each service keeps the same renewal total.');
+        $report->problem(Preflight::WARNING, $this->db()->table('tblhostingconfigoptions')->when($map !== [], fn ($query) => $query->whereNotIn('configid', array_keys($map)))->count(), 'Configurable option values, not imported: :count.');
+
+        $choiceLists = array_filter($options, fn (stdClass $option): bool => in_array($this->optionType($option), ['dropdown', 'radio'], true));
+        $priced = $this->pricedOptions(array_keys($choiceLists));
+        $used = $this->optionUse('optionid');
+
+        foreach ($choiceLists as $id => $option) {
+            if ($priced[$id] ?? false) {
+                $report->problem(Preflight::WARNING, $used[$id] ?? 0, 'Configurable option ":name" (dropdown or radio) was not imported: set resource options by hand. The service price still includes it.', ['name' => $this->optionName($option)]);
+            }
+        }
+
+        if ($map === []) {
+            return;
+        }
+
+        $products = $this->sourceProducts(array_keys($this->productOptions));
+        [$twice, $hidden, $otherStep] = [[], [], []];
+
+        foreach ($this->productOptions as $sourceProductId => $ids) {
+            $product = $products[$sourceProductId] ?? null;
+            $kinds = [];
+
+            foreach ($ids as $id) {
+                $kind = $map[$id]['kind'] ?? null;
+
+                if ($kind === null || $product === null) {
+                    continue;
+                }
+
+                if (isset($kinds[$kind])) {
+                    $twice[] = $this->text($product->name).' ('.$this->optionName($options[$id]).')';
+                } else {
+                    $kinds[$kind] = $id;
+                }
+            }
+
+            if ($kinds === []) {
+                continue;
+            }
+
+            $localId = $this->localId('product', $sourceProductId);
+            $local = $localId !== null ? Product::query()->find($localId) : null;
+            $moduleKinds = $this->moduleKinds($local ?? (new Product)->forceFill(['server_module' => $this->serverModule($product->servertype ?? null, self::SERVER_MODULES), 'module_config' => []]));
+            $existing = $local !== null ? $this->localOptions($local->id) : [];
+
+            foreach ($kinds as $kind => $id) {
+                $label = $this->text($product->name).' ('.ResourceKinds::label($kind).')';
+
+                if (isset($existing[$kind]) && $existing[$kind]->step_size !== $map[$id]['units']) {
+                    $otherStep[] = $label;
+                } elseif (! isset($existing[$kind]) && ! $this->kindFits($moduleKinds[$kind] ?? null, $kind, $map[$id]['units'])) {
+                    $hidden[] = $label;
+                }
+            }
+        }
+
+        $report->problem(Preflight::WARNING, count($twice), 'Configurable options set to a resource another option of the same product already has: :count. Only the first one is brought across; the price of the others stays in the plan.', examples: $twice);
+        $report->problem(Preflight::WARNING, count($otherStep), 'Products that already have this resource with another step size: :count. Those configurable options are not brought across; the service price still includes them.', examples: $otherStep);
+        $report->problem(Preflight::WARNING, count($hidden), 'Resource options the server module of the product cannot set: :count. They are imported hidden from the store; change these extras on the server by hand.', examples: $hidden);
+
+        [$withExtras, $inPlan] = $this->previewExtras($map);
+        $report->problem(Preflight::INFO, $withExtras, 'Services that get extras from configurable options: :count.');
+        $report->problem(Preflight::WARNING, count($inPlan), 'Services whose extras cost more than their WHMCS price: :count. Their extras come across at no charge, and the whole price stays in the plan.', examples: $inPlan);
+    }
+
+    /**
+     * How many services get extras, and the ones whose extras would cost more than their price.
+     *
+     * @param  array<int, array{kind: string, units: int}>  $map
+     * @return array{0: int, 1: list<string>}
+     */
+    private function previewExtras(array $map): array
+    {
+        $serviceIds = $this->db()->table('tblhostingconfigoptions')->whereIn('configid', array_keys($map))->where('qty', '>', 0)->distinct()->orderBy('relid')->pluck('relid')
+            ->map(fn (mixed $id): int => (int) $id)->all();
+        [$withExtras, $inPlan] = [0, []];
+
+        foreach (array_chunk($serviceIds, 500) as $chunk) {
+            $values = $this->optionValues($chunk);
+            $services = $this->db()->table('tblhosting')->whereIn('id', $chunk)->orderBy('id')->get(['id', 'userid', 'packageid', 'domain', 'amount', 'billingcycle']);
+            $currencies = $this->db()->table('tblclients')->whereIn('id', $services->pluck('userid')->unique()->values()->all())->pluck('currency', 'id');
+
+            foreach ($services as $service) {
+                $resources = $this->usableResources((int) $service->packageid);
+                $currency = $this->currency($currencies[$service->userid] ?? 0);
+                $split = $this->splitPrice($this->money($service->amount ?? 0), $this->cycle($service->billingcycle ?? ''), $currency, $resources, $values[(int) $service->id] ?? []);
+
+                if ($split['rows'] !== []) {
+                    $withExtras++;
+                }
+
+                if ($split['included']) {
+                    $inPlan[] = $this->text($service->domain ?? null) ?? '#'.$service->id;
+                }
+            }
+        }
+
+        return [$withExtras, $inPlan];
+    }
+
+    /**
+     * The resources a WHMCS product brings across, without kinds its Nuvabill copy already has with
+     * another step.
+     *
+     * @return array<string, array{id: int, units: int, option: stdClass}>
+     */
+    private function usableResources(int $sourceProductId): array
+    {
+        $resources = $this->productResources($sourceProductId);
+        $localId = $this->localId('product', $sourceProductId);
+
+        if ($resources === [] || $localId === null) {
+            return $resources;
+        }
+
+        $existing = $this->localOptions($localId);
+
+        return array_filter($resources, fn (array $resource, string $kind): bool => ! isset($existing[$kind]) || $existing[$kind]->step_size === $resource['units'], ARRAY_FILTER_USE_BOTH);
+    }
+
+    /**
+     * Configurable options staff can choose to bring across, for the dry run: every quantity and
+     * yes/no option in a group linked to a product, and dropdowns and radio buttons with a price
+     * (shown as not imported). Read without changing anything.
+     *
+     * @return array{options: list<array{id: int, name: string, type: string, products: list<string>, product_count: int, services: int, hidden: bool, suggest: string|null, units: int}>, more: int}
+     */
+    public function configOptions(): array
+    {
+        if (! $this->hasConfigOptions()) {
+            return ['options' => [], 'more' => 0];
+        }
+
+        $options = $this->configOptionRows();
+        $choiceLists = array_keys(array_filter($options, fn (stdClass $option): bool => in_array($this->optionType($option), ['dropdown', 'radio'], true)));
+        $priced = $this->pricedOptions($choiceLists);
+        $listed = array_filter($options, fn (stdClass $option, int $id): bool => in_array($this->optionType($option), ['quantity', 'yesno'], true) || ($priced[$id] ?? false), ARRAY_FILTER_USE_BOTH);
+        $counts = $this->optionUse('qty');
+        $choiceCounts = $this->optionUse('optionid');
+        $productsOf = [];
+
+        foreach ($this->productOptions as $sourceProductId => $ids) {
+            foreach ($ids as $id) {
+                $productsOf[$id][] = $sourceProductId;
+            }
+        }
+
+        $names = $this->sourceProducts(array_keys($this->productOptions));
+        $list = [];
+
+        foreach ($listed as $id => $option) {
+            $type = (string) $this->optionType($option);
+            $suggest = $this->suggestedKind($option, $type);
+            $products = $productsOf[$id] ?? [];
+
+            $list[] = [
+                'id' => $id,
+                'name' => Str::limit($this->optionName($option), 100),
+                'type' => $type,
+                'products' => array_values(array_filter(array_map(fn (int $productId): ?string => $this->text($names[$productId]->name ?? null), array_slice($products, 0, 3)))),
+                'product_count' => count($products),
+                'services' => (int) (in_array($type, ['quantity', 'yesno'], true) ? ($counts[$id] ?? 0) : ($choiceCounts[$id] ?? 0)),
+                'hidden' => (bool) (int) ($option->hidden ?? 0),
+                'suggest' => $suggest,
+                'units' => $suggest === 'ram' ? 1024 : 1,
+            ];
+        }
+
+        usort($list, fn (array $a, array $b): int => [! isset(self::CONFIG_OPTION_KINDS[$a['type']]), $a['id']] <=> [! isset(self::CONFIG_OPTION_KINDS[$b['type']]), $b['id']]);
+
+        return ['options' => array_slice($list, 0, self::MAX_LISTED_OPTIONS), 'more' => max(0, count($list) - self::MAX_LISTED_OPTIONS)];
+    }
+
+    /**
+     * The choices staff saved for configurable options: WHMCS option ID => kind and units per
+     * quantity. Entries that are not valid are left out.
+     *
+     * @return array<int, array{kind: string, units: int}>
+     */
+    public static function savedConfigOptions(): array
+    {
+        $map = [];
+
+        foreach ((array) (((array) setting('import.whmcs'))['config_options'] ?? []) as $entry) {
+            $entry = (array) $entry;
+            $id = filter_var($entry['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $kind = (string) ($entry['kind'] ?? '');
+            $units = filter_var($entry['units'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => self::MAX_UNITS]]);
+
+            if ($id === false || $units === false || ! in_array($kind, self::configOptionKinds(), true) || $units < ResourceKinds::BUILT_IN[$kind]['min_step']) {
+                continue;
+            }
+
+            $map[$id] = ['kind' => $kind, 'units' => $kind === 'backups' ? 1 : $units];
+        }
+
+        return $map;
+    }
+
+    /**
+     * Save the choices for configurable options next to the older WHMCS settings, which stay.
+     *
+     * @param  array<int, array{kind: string, units: int}>  $map
+     */
+    public static function saveConfigOptions(Settings $settings, array $map): void
+    {
+        $entries = [];
+
+        foreach ($map as $id => $choice) {
+            $entries[] = ['id' => (int) $id, 'kind' => $choice['kind'], 'units' => (int) $choice['units']];
+        }
+
+        $settings->set('import.whmcs', ['config_options' => $entries] + (array) setting('import.whmcs'));
+    }
+
+    /**
+     * Every kind a configurable option may become.
+     *
+     * @return list<string>
+     */
+    public static function configOptionKinds(): array
+    {
+        return array_values(array_unique(array_merge(...array_values(self::CONFIG_OPTION_KINDS))));
+    }
+
+    private function hasConfigOptions(): bool
+    {
+        return $this->hasTable('tblproductconfigoptions') && $this->hasTable('tblproductconfiglinks') && $this->hasTable('tblhostingconfigoptions');
+    }
+
+    /**
+     * WHMCS configurable options in a group linked to a product, by ID, in the order WHMCS shows them.
+     * Also fills which options each product has.
+     *
+     * @return array<int, stdClass>
+     */
+    private function configOptionRows(): array
+    {
+        if ($this->configOptions !== null) {
+            return $this->configOptions;
+        }
+
+        [$this->configOptions, $this->productOptions] = [[], []];
+
+        if (! $this->hasConfigOptions()) {
+            return [];
+        }
+
+        $links = $this->db()->table('tblproductconfiglinks')->orderBy('id')->get(['gid', 'pid']);
+        $options = [];
+
+        foreach (array_chunk($links->pluck('gid')->map(fn (mixed $id): int => (int) $id)->unique()->values()->all(), 500) as $groups) {
+            array_push($options, ...$this->db()->table('tblproductconfigoptions')->whereIn('gid', $groups)->get()->all());
+        }
+
+        usort($options, fn (stdClass $a, stdClass $b): int => [(int) ($a->order ?? 0), (int) $a->id] <=> [(int) ($b->order ?? 0), (int) $b->id]);
+        $byGroup = [];
+
+        foreach ($options as $option) {
+            $this->configOptions[(int) $option->id] = $option;
+            $byGroup[(int) $option->gid][] = (int) $option->id;
+        }
+
+        foreach ($links as $link) {
+            foreach ($byGroup[(int) $link->gid] ?? [] as $id) {
+                $this->productOptions[(int) $link->pid][] = $id;
+            }
+        }
+
+        $this->productOptions = array_map(fn (array $ids): array => array_values(array_unique($ids)), $this->productOptions);
+
+        return $this->configOptions;
+    }
+
+    /**
+     * The saved choices for options that are still in WHMCS with a type that can become that kind.
+     *
+     * @return array<int, array{kind: string, units: int}>
+     */
+    private function optionMap(): array
+    {
+        if ($this->optionMap !== null) {
+            return $this->optionMap;
+        }
+
+        $options = $this->configOptionRows();
+        $this->optionMap = [];
+
+        foreach (self::savedConfigOptions() as $id => $choice) {
+            $type = isset($options[$id]) ? $this->optionType($options[$id]) : null;
+
+            if (in_array($choice['kind'], self::CONFIG_OPTION_KINDS[$type] ?? [], true)) {
+                $this->optionMap[$id] = $choice;
+            }
+        }
+
+        return $this->optionMap;
+    }
+
+    /**
+     * The configurable options of a WHMCS product that come across as resource options: the first
+     * chosen option of each kind, in the order WHMCS shows them.
+     *
+     * @return array<string, array{id: int, units: int, option: stdClass}>
+     */
+    private function productResources(int $sourceProductId): array
+    {
+        $options = $this->configOptionRows();
+        $map = $this->optionMap();
+        $resources = [];
+
+        foreach ($this->productOptions[$sourceProductId] ?? [] as $id) {
+            $choice = $map[$id] ?? null;
+
+            if ($choice !== null && ! isset($resources[$choice['kind']])) {
+                $resources[$choice['kind']] = ['id' => $id, 'units' => $choice['units'], 'option' => $options[$id]];
+            }
+        }
+
+        return $resources;
+    }
+
+    /**
+     * A Nuvabill product's resource options by kind; with $resources, only the ones whose step is
+     * the units of one WHMCS quantity.
+     *
+     * @param  array<string, array{id: int, units: int, option: stdClass}>|null  $resources
+     * @return array<string, ResourceOption>
+     */
+    private function localOptions(int $productId, ?array $resources = null): array
+    {
+        $options = $this->localOptions[$productId] ??= ResourceOption::query()->where('product_id', $productId)->get()->keyBy('kind')->all();
+
+        if ($resources === null) {
+            return $options;
+        }
+
+        return array_filter($options, fn (ResourceOption $option, string $kind): bool => isset($resources[$kind]) && $option->step_size === $resources[$kind]['units'], ARRAY_FILTER_USE_BOTH);
+    }
+
+    /**
+     * Option values of these WHMCS services for the options brought across.
+     *
+     * @param  list<int>  $serviceIds
+     * @return array<int, array<int, stdClass>> WHMCS service ID => option ID => value (id, qty, optionid).
+     */
+    private function optionValues(array $serviceIds): array
+    {
+        $optionIds = array_keys($this->optionMap());
+        $values = [];
+
+        if ($optionIds === [] || $serviceIds === []) {
+            return [];
+        }
+
+        foreach (array_chunk($serviceIds, 400) as $services) {
+            foreach (array_chunk($optionIds, 400) as $options) {
+                foreach ($this->db()->table('tblhostingconfigoptions')->whereIn('relid', $services)->whereIn('configid', $options)->orderBy('id')->get(['id', 'relid', 'configid', 'optionid', 'qty']) as $value) {
+                    $values[(int) $value->relid][(int) $value->configid] ??= $value;
+                }
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * The first choice of each option, which a quantity or yes/no option is priced by.
+     *
+     * @param  list<int>  $optionIds
+     * @return array<int, int|null>
+     */
+    private function firstChoices(array $optionIds): array
+    {
+        $missing = array_values(array_diff($optionIds, array_keys($this->firstChoices)));
+
+        if ($missing !== [] && $this->hasTable('tblproductconfigoptionssub')) {
+            foreach (array_chunk($missing, 500) as $chunk) {
+                $choices = $this->db()->table('tblproductconfigoptionssub')->whereIn('configid', $chunk)->get(['id', 'configid', 'sortorder'])->all();
+                usort($choices, fn (stdClass $a, stdClass $b): int => [(int) ($a->sortorder ?? 0), (int) $a->id] <=> [(int) ($b->sortorder ?? 0), (int) $b->id]);
+
+                foreach ($choices as $choice) {
+                    $this->firstChoices[(int) $choice->configid] ??= (int) $choice->id;
+                }
+            }
+        }
+
+        foreach ($missing as $id) {
+            $this->firstChoices[$id] ??= null;
+        }
+
+        return array_intersect_key($this->firstChoices, array_flip($optionIds));
+    }
+
+    /**
+     * The tblpricing rows of these choices.
+     *
+     * @param  list<int>  $choiceIds
+     * @return array<int, list<stdClass>>
+     */
+    private function choicePrices(array $choiceIds): array
+    {
+        $missing = array_values(array_diff($choiceIds, array_keys($this->choicePrices)));
+
+        foreach ($missing as $id) {
+            $this->choicePrices[$id] = [];
+        }
+
+        if ($missing !== [] && $this->hasTable('tblpricing')) {
+            foreach (array_chunk($missing, 500) as $chunk) {
+                foreach ($this->db()->table('tblpricing')->where('type', 'configoptions')->whereIn('relid', $chunk)->orderBy('id')->get() as $price) {
+                    $this->choicePrices[(int) $price->relid][] = $price;
+                }
+            }
+        }
+
+        return array_intersect_key($this->choicePrices, array_flip($choiceIds));
+    }
+
+    /**
+     * What one quantity costs per billing period in WHMCS, in minor units, or null when WHMCS has no
+     * price for that currency and cycle.
+     */
+    private function optionPrice(int $choiceId, string $currency, BillingCycle $cycle): ?int
+    {
+        $column = self::CYCLE_COLUMNS[$cycle->value][0] ?? null;
+
+        if ($column === null) {
+            return null;
+        }
+
+        foreach ($this->choicePrices([$choiceId])[$choiceId] ?? [] as $price) {
+            if ($this->currency($price->currency ?? 0) === $currency && is_numeric($price->{$column} ?? null) && (float) $price->{$column} >= 0) {
+                return $this->money($price->{$column});
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Which of these options have a price above zero for any choice, currency or cycle.
+     *
+     * @param  list<int>  $optionIds
+     * @return array<int, bool>
+     */
+    private function pricedOptions(array $optionIds): array
+    {
+        $priced = [];
+
+        if ($optionIds === [] || ! $this->hasTable('tblproductconfigoptionssub') || ! $this->hasTable('tblpricing')) {
+            return $priced;
+        }
+
+        $columns = array_merge(...array_values(self::CYCLE_COLUMNS));
+
+        foreach (array_chunk($optionIds, 500) as $chunk) {
+            $choices = $this->db()->table('tblproductconfigoptionssub')->whereIn('configid', $chunk)->pluck('configid', 'id')->all();
+
+            foreach (array_chunk(array_keys($choices), 500) as $choiceIds) {
+                foreach ($this->db()->table('tblpricing')->where('type', 'configoptions')->whereIn('relid', $choiceIds)->get() as $price) {
+                    if (collect($columns)->contains(fn (string $column): bool => is_numeric($price->{$column} ?? null) && (float) $price->{$column} > 0)) {
+                        $priced[(int) $choices[$price->relid]] = true;
+                    }
+                }
+            }
+        }
+
+        return $priced;
+    }
+
+    /**
+     * How many services have a value for each option: a quantity above zero ("qty"), or a choice
+     * ("optionid").
+     *
+     * @return array<int, int>
+     */
+    private function optionUse(string $column): array
+    {
+        return $this->db()->table('tblhostingconfigoptions')
+            ->where($column, '>', 0)
+            ->groupBy('configid')
+            ->selectRaw('configid, COUNT(DISTINCT relid) as services')
+            ->pluck('services', 'configid')
+            ->mapWithKeys(fn (mixed $count, mixed $id): array => [(int) $id => (int) $count])
+            ->all();
+    }
+
+    /**
+     * WHMCS products by ID, with their name and server module.
+     *
+     * @param  list<int>  $ids
+     * @return array<int, stdClass>
+     */
+    private function sourceProducts(array $ids): array
+    {
+        $products = [];
+
+        foreach (array_chunk($ids, 500) as $chunk) {
+            foreach ($this->db()->table('tblproducts')->whereIn('id', $chunk)->get(['id', 'name', 'servertype']) as $product) {
+                $products[(int) $product->id] = $product;
+            }
+        }
+
+        return $products;
+    }
+
+    private function optionType(stdClass $option): ?string
+    {
+        return self::OPTION_TYPES[(int) ($option->optiontype ?? 0)] ?? null;
+    }
+
+    /**
+     * The name clients saw: WHMCS names may be "variable|Shown name".
+     */
+    private function optionName(stdClass $option): string
+    {
+        $name = (string) $this->text($option->optionname ?? null);
+
+        return str_contains($name, '|') ? (trim(Str::after($name, '|')) ?: trim(Str::before($name, '|'))) : ($name ?: '#'.$option->id);
+    }
+
+    /**
+     * The kind an option's name suggests, for staff to confirm. Only quantity options suggest a
+     * size, and only yes/no options suggest backups.
+     */
+    private function suggestedKind(stdClass $option, string $type): ?string
+    {
+        $names = array_map(
+            fn (string $name): string => (string) preg_replace('/^(additional|extra)\s+/', '', trim((string) preg_replace('/[\s_]+/', ' ', mb_strtolower($name)))),
+            explode('|', (string) $this->text($option->optionname ?? null)),
+        );
+
+        if ($type === 'yesno') {
+            return collect($names)->contains(fn (string $name): bool => str_contains($name, 'backup')) ? 'backups' : null;
+        }
+
+        if ($type !== 'quantity') {
+            return null;
+        }
+
+        foreach (self::OPTION_NAMES as $kind => $known) {
+            if (array_intersect($names, $known) !== []) {
+                return $kind;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The kinds the product's server module can set (every built-in kind for a product without a
+     * module, applied by hand), or none when it has none or cannot say.
+     *
+     * @return array<string, ResourceKind>
+     */
+    private function moduleKinds(Product $product): array
+    {
+        try {
+            return app(Provisioner::class)->resourceKinds($product);
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Whether the module's kind can sell steps of these units: same unit, at least its smallest
+     * step, a multiple of its step, and within its maximum.
+     */
+    private function kindFits(?ResourceKind $kind, string $key, int $units): bool
+    {
+        return $kind !== null
+            && $kind->ladder === null
+            && $kind->unit === ResourceKinds::BUILT_IN[$key]['unit']
+            && $units >= $kind->minStep
+            && $units % max(1, $kind->stepMultiple) === 0
+            && ($kind->maxExtra === null || $kind->maxExtra >= $units);
+    }
+
+    protected function forgetMappings(): void
+    {
+        parent::forgetMappings();
+
+        $this->localOptions = [];
     }
 
     private function preflightBilling(Preflight $report): void
