@@ -72,11 +72,12 @@ on. A wrong guess could change a live server at its next plan change.
    the products you import, and how many services use it.
 2. For each option, choose what it is: CPU cores, RAM, disk, IPv4, IPv6, monthly traffic or backups (yes/no options
    only). Nuvabill suggests one from common names such as "CPU Cores", "RAM", "Space", "Number of IPs", "Bandwidth" and
-   the Virtualizor `additional_...` names. The default, **Not imported (price stays in the plan)**, keeps the old
-   behaviour.
+   the Virtualizor `additional_...` names. The default, **Not imported**, keeps the old behaviour: the option's price
+   stays in the plan price.
 3. Enter the **units per quantity**: how much one step of the option is in Nuvabill's units. Nuvabill counts RAM in MB,
    and disk and traffic in GB. For example, enter 1024 when one RAM step in WHMCS is 1 GB.
-4. Press **Check again**, look at the counts, then start the import.
+4. Press **Save choices and check again**, look at the counts, then start the import. (The **Check again** button at
+   the top does not save your choices.)
 
 What the import then does:
 
@@ -88,7 +89,8 @@ What the import then does:
   extras.
 - **The renewal total never changes.** Every imported service renews for exactly its recurring amount in WHMCS. When
   the extras would cost more than that amount (because prices changed since), the amount is not split: the extras get a
-  renewal price of 0 and the plan keeps the whole amount. The import report says "included in the plan price".
+  renewal price of 0 and the plan keeps the whole amount. The dry run warns about these services, and each one gets an
+  activity log entry: its extras are included in the plan price.
 - **Dropdown and radio options** are never mapped, because they hold a total, not an extra. The dry run warns about
   each one; their price stays in the service price. Set up resource options for those products by hand.
 - The import never changes a server. Nuvabill sets the plan plus the extras on a server only at a later change, such

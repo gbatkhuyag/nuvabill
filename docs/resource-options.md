@@ -137,8 +137,10 @@ you update to Nuvabill 0.7.0, each such product is moved to resource options by 
 - Each kind in the JSON (CPU, RAM, disk, IPv4) becomes a resource option. The step is the add-on's size, the most
   steps is what clients could buy before (often 1), and the prices are copied from the add-on for every currency and
   billing cycle.
-- The old add-ons are hidden from the store. On services, active add-ons become extras with exactly the same renewal
-  price, and show as "Moved to resource options" in the admin area.
+- The old add-ons are no longer sold with the moved product. An add-on that only moved products sold is hidden from
+  the store. An add-on that other products also sell (such as one set for every product) stays on sale for them: only
+  the moved product is taken off its product list, and the activity log says so. On services, active add-ons become
+  extras with exactly the same renewal price, and show as "Moved to resource options" in the admin area.
 - Nuvabill checks that every service's renewal total is the same before and after. If it is not, it leaves that
   product as it was and writes the reason to the activity log.
 
@@ -154,6 +156,7 @@ If a product could not be moved, its options page says so, with a **Remove the o
 1. Set up the product's options by hand.
 2. For each service that still has the old add-ons, use **Change resources** with **Change now without charging or
    crediting**. Give it the same extras and set their renewal price to 0, because the old add-ons keep billing for them.
+   Untick **Also set it on the server**: the server already has these extras.
 3. Press **Remove the old add-on settings**, and confirm.
 
 Until you press it, Nuvabill does not create a server or change the plan of a service that still has those add-ons, so
