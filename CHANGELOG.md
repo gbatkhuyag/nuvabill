@@ -9,6 +9,7 @@ the [roadmap](ROADMAP.md).
 
 | Version | Released | Highlights |
 |---|---|---|
+| [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 17 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules |
 | [0.6.13](https://github.com/meroxis/nuvabill/releases/tag/v0.6.13) | 10 Oct 2026 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
 | [0.6.12](https://github.com/meroxis/nuvabill/releases/tag/v0.6.12) | 4 Oct 2026 | Fixes from a full line-by-line review: sign-in security, payments, wallet, renewals, imports and site health |
 | [0.6.11](https://github.com/meroxis/nuvabill/releases/tag/v0.6.11) | 30 Sep 2026 | Sign in from an order and come back to it; themes and order forms bring their own translations |
@@ -53,6 +54,62 @@ the [roadmap](ROADMAP.md).
 | [0.1.2](https://github.com/meroxis/nuvabill/releases/tag/v0.1.2) | 26 Sep 2026 | Faster demo resets |
 | [0.1.1](https://github.com/meroxis/nuvabill/releases/tag/v0.1.1) | 26 Sep 2026 | Demo mode and security headers |
 | [0.1.0](https://github.com/meroxis/nuvabill/releases/tag/v0.1.0) | 26 Sep 2026 | First release |
+
+## 0.7.0
+
+Sell extra resources with sliders, give clients a full server panel, sell your own dedicated servers, and use the new
+free Hetzner modules.
+
+**Resource sliders**
+
+- Sell extra CPU cores, memory, disk, IPv4 and IPv6 addresses, traffic and backups as sliders with a fixed price per
+  step, for each currency and billing cycle. Set them up per product under Products → Resource options, with a live
+  preview.
+- Clients choose extras when they order, and change them later from the service page. They pay only for the days
+  left in the current period, and the server changes once the invoice is paid. Removing extras follows your plan
+  change rule: credit to the wallet, or at the renewal date. Disk can grow but not shrink.
+- Renewals and invoices show each extra on its own line. Coupons do not discount extras.
+- Virtualizor resource add-ons from 0.6.13 move to resource options by themselves, with the same renewal prices.
+- The WHMCS importer brings configurable options for CPU, RAM, disk and IPs across as resource options.
+
+**Server panel**
+
+- A new panel with tabs: overview with live usage, power, a console in the browser, graphs, reinstall, IPs and
+  reverse DNS, firewall, backups, snapshots, rescue mode, SSH keys, ISO and boot order, settings, and tasks and logs.
+  Turn each tab on or off per product.
+- Passwords and console details are only shown when the client asks, and never stay in the page.
+
+**Virtualizor 2.0**
+
+- "Open Virtualizor panel" works in normal setups: the sign-in now sends the client's own IP address and the API
+  key name, as Virtualizor expects, and old VPS under the client's verified email no longer block it.
+- Staff tools on the service page: "Test panel sign-in" shows why a sign-in would fail, and "Link existing VPS"
+  links a VPS that was made by hand.
+- Clients use the panel tabs above. Firewall rules, backups and ISO/boot ship switched off until you turn them on.
+- **Security:** a new VPS is never filed under a Virtualizor user that belongs to someone else.
+
+**Dedicated servers**
+
+- Keep your own machines on the new Hardware page, with specs, IPs and their power card (Redfish or IPMI). Product
+  stock comes from the free machines.
+- An order gets a free machine. Clients can power on, shut down, restart and force off, and ask for a reinstall.
+  Suspending switches the power off. A machine that ends goes to "wiping" until staff confirm the disks are clean.
+- **Security:** power card logins are encrypted, never shown again and never logged. Certificates can be pinned.
+
+**Hetzner (free on the marketplace)**
+
+- Hetzner Cloud: servers are made on payment, with power, console, reinstall, rescue, reverse DNS, snapshots and
+  backups. Sliders move between server sizes and add volumes and extra IPs.
+- Hetzner Robot: hand out dedicated servers you bought at Hetzner, with install, power, rescue and reverse DNS.
+
+**Also**
+
+- Proxmox 1.1.0 supports resource sliders. Swift 1.3.0 shows sliders on the one-page order form and Aurora 1.6.0 shows
+  the full renewal price.
+- **Security:** API tokens and power card logins are no longer kept after a form error. Suspending and unsuspending
+  wait for other work on the service, and a payment during the nightly run is no longer suspended or cancelled.
+- **For developers:** new optional contracts for server modules: `HasPanelSections`, `HasConsole`,
+  `SignsInWithContext`, `HasResourceOptions`, `UsesMachineInventory` and more. See docs/integrations/servers.md.
 
 ## 0.6.13
 
