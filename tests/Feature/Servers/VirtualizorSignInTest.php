@@ -196,7 +196,7 @@ class VirtualizorSignInTest extends TestCase
         ]);
 
         $this->assertNotNull(app(Provisioner::class)->signInUrl($service, $this->context($service)));
-        $this->assertSame($meanwhile + ['uid' => '58'], $service->fresh()->module_data);
+        $this->assertSameStoredJson($meanwhile + ['uid' => '58'], $service->fresh()->module_data);
 
         // Staff linked the service to another VPS meanwhile: the old VPS's user is not added to it.
         $service->forceFill(['module_data' => ['vpsid' => '77']])->save();
@@ -204,7 +204,7 @@ class VirtualizorSignInTest extends TestCase
 
         // VPS 77 is linked to no service by then, so it passes only as a VPS of the client's own confirmed email.
         $this->assertNotNull(app(Provisioner::class)->signInUrl($service->fresh(), $this->context($service)));
-        $this->assertSame($meanwhile, $service->fresh()->module_data);
+        $this->assertSameStoredJson($meanwhile, $service->fresh()->module_data);
     }
 
     public function test_admin_and_cloud_users_never_sign_in(): void

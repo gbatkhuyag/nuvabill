@@ -161,6 +161,34 @@ abstract class TestCase extends BaseTestCase
     }
 
     /**
+     * Assert that JSON data read back from the database has the same keys, values and types as
+     * expected, in any key order. MySQL keeps a JSON column's object keys in its own order (shortest
+     * first), while SQLite and MariaDB keep the order they were saved in. Lists keep their order.
+     *
+     * @param  array<mixed>  $expected
+     */
+    protected function assertSameStoredJson(array $expected, mixed $actual, string $message = ''): void
+    {
+        $this->assertIsArray($actual, $message);
+        $this->assertSame($this->sortedKeys($expected), $this->sortedKeys($actual), $message);
+    }
+
+    /**
+     * @param  array<mixed>  $data
+     * @return array<mixed>
+     */
+    private function sortedKeys(array $data): array
+    {
+        $data = array_map(fn (mixed $value): mixed => is_array($value) ? $this->sortedKeys($value) : $value, $data);
+
+        if (! array_is_list($data)) {
+            ksort($data, SORT_STRING);
+        }
+
+        return $data;
+    }
+
+    /**
      * Turn on a payment gateway with the given settings.
      *
      * @param  array<string, mixed>  $settings

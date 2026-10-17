@@ -136,8 +136,8 @@ class VirtualizorResourcesTest extends TestCase
         // Noted before the request, with the root password encrypted in the note, not on the service.
         $note = $noteBeforeRequest->module_data[ResourceAddons::KEY];
         $this->assertSame('requested', $note['state']);
-        $this->assertSame(['cpu' => 1, 'ram' => 2048, 'ipv4' => 1], $note['extras']);
-        $this->assertSame(['cores' => 3, 'ram' => 6144, 'num_ips' => 2], $note['totals']);
+        $this->assertSameStoredJson(['cpu' => 1, 'ram' => 2048, 'ipv4' => 1], $note['extras']);
+        $this->assertSameStoredJson(['cores' => 3, 'ram' => 6144, 'num_ips' => 2], $note['totals']);
         $this->assertSame($service->client->email, $note['email']);
         $this->assertNull($noteBeforeRequest->password);
         $this->assertStringNotContainsString($post['rootpass'], json_encode($noteBeforeRequest->module_data));
@@ -502,7 +502,7 @@ class VirtualizorResourcesTest extends TestCase
         $this->assertSame(['editvps' => 1, 'cores' => 3, 'ram' => 6144], $api->calls[2]['data']);
         $this->assertSame(['act' => 'managevps', 'vpsid' => '77'], $this->withoutCredentials($api->calls[2]['query']));
         // Disk and IPv4 have options but no extras and no rows: they are left as the VPS has them.
-        $this->assertSame(['cores' => 3, 'ram' => 6144], $service->fresh()->module_data[ResourceTotals::DATA]['totals']);
+        $this->assertSameStoredJson(['cores' => 3, 'ram' => 6144], $service->fresh()->module_data[ResourceTotals::DATA]['totals']);
 
         // Running it again changes nothing.
         $api = $this->fakeVirtualizor();

@@ -371,12 +371,17 @@ class StockRaceTest extends TestCase
             ->timeout(60)
             ->start([PHP_BINARY, base_path('tests/Fixtures/billing/start-plan-change.php'), (string) $service->id, (string) $product->id, (string) $pauseMs]);
 
-        $locked = false;
-        $process->waitUntil(function (string $type, string $output) use (&$locked): bool {
-            return $locked = $locked || str_contains($output, 'locked');
-        });
+        // The whole output is read again each time, not passed in pieces to waitUntil(): on Windows,
+        // checking whether the process still runs reads its output too, and that piece never reaches
+        // waitUntil's callback, so the line could be missed until the process ended.
+        $deadline = microtime(true) + 60;
 
-        $this->assertTrue($locked, 'The other plan change got its locks: '.$process->errorOutput().$process->output());
+        while (! str_contains($process->output(), 'locked') && $process->running() && microtime(true) < $deadline) {
+            usleep(1000);
+        }
+
+        $this->assertStringContainsString('locked', $process->output(), 'The other plan change got its locks: '.$process->errorOutput());
+        $this->assertTrue($process->running(), 'The other plan change still holds its locks: '.$process->errorOutput().$process->output());
 
         return $process;
     }

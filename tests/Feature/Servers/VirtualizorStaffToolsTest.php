@@ -201,7 +201,7 @@ class VirtualizorStaffToolsTest extends TestCase
         $this->assertSame('61', $fresh->module_data['uid']);
         $this->assertSame(['203.0.113.95'], $fresh->module_data['ips']);
         $this->assertArrayNotHasKey('vps_uuid', $fresh->module_data, 'The new VPS\'s UUID is learned again.');
-        $this->assertSame(['month' => '2026-09', 'count' => 1], $fresh->module_data['reinstalls']);
+        $this->assertSameStoredJson(['month' => '2026-09', 'count' => 1], $fresh->module_data['reinstalls']);
         $this->assertStringContainsString('was unlinked from VPS #90, which Virtualizor no longer lists', (string) ActivityLog::query()->where('action', 'service.vps_unlinked')->value('description'));
     }
 

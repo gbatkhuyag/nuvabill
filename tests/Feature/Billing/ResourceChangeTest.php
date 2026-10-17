@@ -427,9 +427,17 @@ class ResourceChangeTest extends TestCase
 
         $change = app(ResourceChanges::class)->start($this->service, ['ipv4' => true]);
 
-        $queries = array_column(DB::getQueryLog(), 'query');
-        $optionLock = array_key_first(array_filter($queries, fn (string $sql): bool => str_starts_with($sql, 'select "id" from "resource_options" where "resource_options"."id" in')));
+        // Without the quotes, which are "name" on SQLite and `name` on MySQL and MariaDB.
+        $queries = array_map(fn (string $sql): string => str_replace(['"', '`'], '', $sql), array_column(DB::getQueryLog(), 'query'));
+        $optionLock = array_key_first(array_filter($queries, fn (string $sql): bool => str_starts_with($sql, 'select id from resource_options where resource_options.id in')));
         $this->assertNotNull($optionLock, 'The steps true and 1 read the same, so the option was locked first.');
+        $this->assertStringStartsWith('select * from services where services.id = ?', $queries[$optionLock + 1] ?? '', 'The service is locked right after the option.');
+
+        // SQLite has no row locks, so only MySQL and MariaDB show them.
+        if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->assertStringEndsWith('for update', $queries[$optionLock]);
+            $this->assertStringEndsWith('for update', $queries[$optionLock + 1]);
+        }
         $this->assertSame([ResourceChange::MODE_NOW, ResourceChange::STATUS_APPLIED], [$change->mode, $change->status]);
         $this->assertSame([1, 4], [(int) $this->service->resources()->where('kind', 'ipv4')->value('steps'), $ipv4->stockLeft()]);
     }
