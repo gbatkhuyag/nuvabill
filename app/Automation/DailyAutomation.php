@@ -124,9 +124,13 @@ class DailyAutomation
 
         $suspendDays = (int) setting('automation.suspend_days');
 
+        // Each service is checked again inside its lock, just before the server is asked: the client
+        // may have paid while the run worked on the services before it.
         if ($suspendDays > 0) {
-            foreach ($this->servicesOverdueSince($today->subDays($suspendDays), ServiceStatus::Active) as $service) {
-                $this->safely(fn (): bool => $this->provisioner->suspend($service, InvoicePaidHandler::OVERDUE_REASON)->success)
+            $cutoff = $today->subDays($suspendDays);
+
+            foreach ($this->servicesOverdueSince($cutoff, ServiceStatus::Active) as $service) {
+                $this->safely(fn (): bool => $this->provisioner->suspend($service, InvoicePaidHandler::OVERDUE_REASON, $this->stillOverdue($service, $cutoff, ServiceStatus::Active))->success)
                     ? $summary['suspended']++
                     : $summary['failed']++;
             }
@@ -135,8 +139,10 @@ class DailyAutomation
         $terminateDays = (int) setting('automation.terminate_days');
 
         if ($terminateDays > 0) {
-            foreach ($this->servicesOverdueSince($today->subDays($terminateDays), ServiceStatus::Suspended) as $service) {
-                $this->safely(fn (): bool => $this->provisioner->terminate($service)->success)
+            $cutoff = $today->subDays($terminateDays);
+
+            foreach ($this->servicesOverdueSince($cutoff, ServiceStatus::Suspended) as $service) {
+                $this->safely(fn (): bool => $this->provisioner->terminate($service, $this->stillOverdue($service, $cutoff, ServiceStatus::Suspended))->success)
                     ? $summary['terminated']++
                     : $summary['failed']++;
             }
@@ -321,13 +327,29 @@ class DailyAutomation
      */
     private function servicesOverdueSince(CarbonImmutable $cutoff, ServiceStatus $status): iterable
     {
+        return $this->overdueQuery($cutoff, $status)->with('product', 'client', 'server')->get();
+    }
+
+    /**
+     * Whether the service is still in the list servicesOverdueSince() made, read live.
+     *
+     * @return Closure(): bool
+     */
+    private function stillOverdue(Service $service, CarbonImmutable $cutoff, ServiceStatus $status): Closure
+    {
+        return fn (): bool => $this->overdueQuery($cutoff, $status)->whereKey($service->id)->exists();
+    }
+
+    /**
+     * @return Builder<Service>
+     */
+    private function overdueQuery(CarbonImmutable $cutoff, ServiceStatus $status): Builder
+    {
         return Service::query()
-            ->with('product', 'client', 'server')
             ->where('status', $status)
             ->when($status === ServiceStatus::Suspended, fn (Builder $query) => $query->where('suspension_reason', InvoicePaidHandler::OVERDUE_REASON))
             ->whereHas('invoiceItems.invoice', fn (Builder $query) => $query
                 ->where('status', InvoiceStatus::Unpaid)
-                ->whereDate('due_at', '<=', $cutoff))
-            ->get();
+                ->whereDate('due_at', '<=', $cutoff));
     }
 }

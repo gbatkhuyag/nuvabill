@@ -302,6 +302,92 @@ class ResourceChangeTest extends TestCase
         $this->assertSame(110, app(ResourceChanges::class)->quote($this->service->fresh(), ['ram' => 0])['credit'], 'The last RAM step keeps its paid line: 200 × 17/31.');
     }
 
+    public function test_free_steps_removed_in_two_goes_give_back_no_more_than_was_paid(): void
+    {
+        // RAM 2 steps on a paid $4.00 line: 400 × 17/31 = 219 paid for the days left.
+        $row = $this->row($this->ram, 2, 400);
+        $this->paidLine($row, 400);
+        // Staff add 3 steps without charging, so the row is $10.00/mo but only $4.00 was paid.
+        app(ResourceChanges::class)->start($this->service, ['ram' => 5], Admin::factory()->create(['name' => 'Raz']), charge: false);
+
+        $first = app(ResourceChanges::class)->start($this->service->fresh(), ['ram' => 2]);
+        $this->assertSame(-131, $first->difference, '219 × 3/5.');
+
+        $second = app(ResourceChanges::class)->start($this->service->fresh(), ['ram' => 0]);
+        $this->assertSame(-88, $second->difference, 'Only what is left of the 219: before, this gave 219 again.');
+        $this->assertSame(219, $this->client->fresh()->credit, 'Never more than was paid for the days left.');
+    }
+
+    public function test_paid_steps_removed_in_two_goes_on_different_days_still_give_back_their_days(): void
+    {
+        $this->paidLine($this->row($this->ram, 5, 1000), 1000);
+
+        // 15 Oct, 17 days left: 600 × 17/31 = 329.
+        $this->assertSame(-329, app(ResourceChanges::class)->start($this->service->fresh(), ['ram' => 2])->difference);
+
+        // 22 Oct, 10 days left: the last 2 steps were paid for these days too, 400 × 10/31 = 129.
+        $this->travelTo('2026-10-22 10:00');
+        $this->assertSame(129, app(ResourceChanges::class)->quote($this->service->fresh(), ['ram' => 0])['credit']);
+    }
+
+    public function test_steps_added_after_an_early_renewal_are_priced_until_the_new_due_date(): void
+    {
+        // The 1 Nov renewal was paid on 25 Oct, so the service is due on 1 Dec.
+        $this->travelTo('2026-10-25 10:00');
+        $this->service->update(['next_due_date' => '2026-12-01']);
+        $this->row($this->ram, 2, 400);
+
+        $quote = app(ResourceChanges::class)->quote($this->service->fresh(), ['ram' => 5]);
+
+        $this->assertSame([30, 30], [$quote['period_days'], $quote['days_left']]);
+        $this->assertSame(740, $quote['items'][0]['cost'], '600 × 37/30: the steps run 37 days, not 30.');
+    }
+
+    public function test_a_service_due_in_the_past_must_renew_before_it_changes(): void
+    {
+        // A free plan with no paid extras never renews, so its due date stays in July.
+        $this->vps->prices()->update(['price' => 0]);
+        $this->service->update(['recurring_amount' => 0, 'registration_date' => '2026-06-01', 'next_due_date' => '2026-07-01']);
+        $this->ram->prices()->update(['price' => 500]);
+
+        $this->assertSame('This service must renew before its resources can change.', app(ResourceChanges::class)->blockedReason($this->service->fresh()));
+        $this->assertSame('This service must renew before its resources can change.', app(ResourceChanges::class)->blockedReason($this->service->fresh(), staff: true));
+        $this->assertSame('This service must renew before its plan can change.', app(PlanChanges::class)->blockedReason($this->service->fresh()));
+
+        try {
+            app(ResourceChanges::class)->start($this->service->fresh(), ['ram' => 8]);
+            $this->fail('A change with no days left to price must be refused.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('This service must renew before its resources can change.', $exception->getMessage());
+        }
+
+        $this->assertSame(0, ResourceChange::query()->count());
+        $this->assertSame(0, $this->service->resources()->count());
+        $this->assertNull(app(ResourceChanges::class)->blockedReason($this->service->fresh()->forceFill(['next_due_date' => today()])), 'Due today is not in the past.');
+    }
+
+    public function test_the_setup_fee_of_steps_added_on_the_renewal_date_is_billed_on_the_renewal(): void
+    {
+        $this->setSettings(['billing.downgrade' => 'renewal', 'billing.renewal_days_before' => 7]);
+        $ipv4 = ResourceOption::factory()->kind('ipv4', 1)->priced(100)->create(['product_id' => $this->vps->id, 'sort_order' => 1]);
+        $ipv4->prices()->update(['setup_fee' => 500]);
+        $this->row($this->ram, 8, 1600);
+
+        // IPv4 55 + setup 500, less RAM 1600 × 17/31 = 877 back: -322, which waits for the renewal.
+        $change = app(ResourceChanges::class)->start($this->service, ['ram' => 0, 'ipv4' => 1]);
+        $this->assertSame([ResourceChange::MODE_RENEWAL, -322], [$change->mode, $change->difference]);
+
+        $this->travelTo('2026-10-26 09:00');
+        app(RenewalGenerator::class)->generate();
+
+        $renewal = Invoice::query()->whereHas('items', fn ($query) => $query->where('type', InvoiceItem::TYPE_SERVICE))->sole();
+        $row = $this->service->resources()->where('kind', 'ipv4')->sole();
+        $setup = $renewal->items()->where('description', 'like', 'Setup fee%')->sole();
+        $this->assertSame([500, $row->id], [$setup->amount, (int) $setup->service_resource_option_id]);
+        $this->assertStringContainsString('IPv4', $setup->description);
+        $this->assertSame(1000 + 100 + 500, $renewal->total);
+    }
+
     public function test_a_kind_added_on_the_renewal_date_is_billed_on_its_own_row(): void
     {
         $this->setSettings(['billing.downgrade' => 'renewal', 'billing.renewal_days_before' => 7]);

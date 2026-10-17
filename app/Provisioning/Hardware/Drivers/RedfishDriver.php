@@ -438,7 +438,8 @@ final class RedfishDriver implements PowerDriver
             90 => BmcException::pinMismatch(),
             51, 60, 83 => BmcException::notTrusted(__('The BMC certificate is not from a trusted CA. Use pinned mode and trust its certificate instead.')),
             35 => BmcException::unreachable(__('We could not open a secure connection to the BMC.')),
-            63 => BmcException::refused(__('The BMC sent too much data.')),
+            // 63: over the size limit; 42: the size check stopped a chunked answer as it arrived.
+            42, 63 => BmcException::refused(__('The BMC sent too much data.')),
             default => BmcException::unreachable(),
         };
     }

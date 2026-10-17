@@ -54,7 +54,12 @@ final class PinnedCurlFactory implements CurlFactoryInterface
         $applied = $pin === false || curl_setopt($easy->handle, CURLOPT_PINNEDPUBLICKEY, $pin);
 
         if ($applied && isset($options[self::MAX_BODY_OPTION])) {
-            $applied = curl_setopt($easy->handle, CURLOPT_MAXFILESIZE, (int) $options[self::MAX_BODY_OPTION]);
+            $max = (int) $options[self::MAX_BODY_OPTION];
+            $applied = curl_setopt($easy->handle, CURLOPT_MAXFILESIZE, $max)
+                // Before curl 8.4 the limit above holds only when the size is sent in advance, so a
+                // chunked answer is also stopped as it arrives (curl error 42).
+                && curl_setopt($easy->handle, CURLOPT_NOPROGRESS, false)
+                && curl_setopt($easy->handle, CURLOPT_XFERINFOFUNCTION, static fn (mixed $handle, int $downloadTotal, int $downloaded, int $uploadTotal, int $uploaded): int => $downloaded > $max ? 1 : 0);
         }
 
         if (! $applied) {

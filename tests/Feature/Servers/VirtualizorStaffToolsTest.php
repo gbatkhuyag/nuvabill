@@ -248,6 +248,39 @@ class VirtualizorStaffToolsTest extends TestCase
         $this->assertSame([], $this->sent('addvs'));
     }
 
+    public function test_a_new_vps_is_never_filed_under_a_user_nuvabill_has_not_linked_to_this_client(): void
+    {
+        $this->fakeVirtualizor([
+            'users' => ['users' => ['58' => ['uid' => '58', 'email' => self::CLIENT_EMAIL, 'type' => '0']]],
+            'addvs' => ['done' => 1, 'vs_info' => ['vpsid' => '95', 'uid' => '58', 'ips' => ['203.0.113.95']]],
+        ]);
+        // The client's email is confirmed: before, that alone let the VPS go to user 58.
+        $client = $this->client('Mer Las', ['email' => self::CLIENT_EMAIL, 'email_verified_at' => now()]);
+        $create = fn () => app(Provisioner::class)->create($this->vpsService(attributes: ['status' => ServiceStatus::Pending, 'module_data' => null], client: $client));
+        $refusal = 'A Virtualizor user with this client\'s email exists that Nuvabill has not linked to this client. Link one of the client\'s VPS to it, or change that user in Virtualizor. No VPS was made.';
+
+        // (b) User 58 is on none of this client's services: someone else may have made it.
+        $result = $create();
+        $this->assertFalse($result->success);
+        $this->assertSame($refusal, $result->message);
+        $this->assertSame([], $this->sent('addvs'));
+
+        // (a) User 58 holds a VPS of another client's service, even an ended one.
+        $this->vpsService(attributes: ['status' => ServiceStatus::Terminated, 'module_data' => ['vpsid' => '70', 'uid' => '58']], client: $this->client('Raz'));
+        $this->assertSame($refusal, $create()->message);
+        $this->assertSame([], $this->sent('addvs'));
+
+        // Also linked to this client: still not, while another client's service holds the user.
+        $this->vpsService(attributes: ['module_data' => ['vpsid' => '77', 'uid' => 58]], client: $client);
+        $this->assertSame($refusal, $create()->message);
+        $this->assertSame([], $this->sent('addvs'));
+
+        // A user on another master does not count.
+        Service::query()->where('client_id', '!=', $client->id)->update(['server_id' => $this->master(['hostname' => 'vz2.example.test'])->id]);
+        $this->assertTrue($create()->success);
+        $this->assertCount(1, $this->sent('addvs'));
+    }
+
     public function test_the_link_form_fields_need_no_server(): void
     {
         $this->fakeVirtualizor();

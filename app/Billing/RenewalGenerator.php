@@ -12,6 +12,7 @@ use App\Models\Domain;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\ResourceChange;
+use App\Models\ResourceChangeItem;
 use App\Models\Service;
 use App\Models\ServiceAddon;
 use App\Models\ServiceResourceOption;
@@ -241,6 +242,11 @@ class RenewalGenerator
             if ($steps > 0 && $amount > 0) {
                 $items[] = LineItems::resourcePeriod($service, $row, $start, $amount, $steps);
             }
+
+            // Steps a waiting change adds have no invoice of their own: their setup fee is billed here.
+            if ($change !== null && $change->setup_fee > 0) {
+                $items[] = LineItems::resourceSetupFee($service, self::addedSteps($row, $change), (int) $change->setup_fee);
+            }
         }
 
         foreach ($planned as $change) {
@@ -255,9 +261,30 @@ class RenewalGenerator
 
                 $items[] = LineItems::resourcePeriod($service, $row, $start, $change->new_amount);
             }
+
+            if ($change->setup_fee > 0) {
+                $items[] = LineItems::resourceSetupFee($service, self::addedSteps(new ServiceResourceOption, $change), (int) $change->setup_fee);
+            }
         }
 
         return $items;
+    }
+
+    /**
+     * The row as the steps a change adds, so a setup fee line says what it is for: "RAM +4 GB".
+     */
+    private static function addedSteps(ServiceResourceOption $row, ResourceChangeItem $change): ServiceResourceOption
+    {
+        $added = clone $row;
+        $added->forceFill([
+            'kind' => $change->kind,
+            'unit' => $change->unit,
+            'step_size' => $change->step_size,
+            'steps' => max(0, $change->to_steps - $change->from_steps),
+            'status' => ServiceResourceOption::STATUS_ACTIVE,
+        ]);
+
+        return $added->setRelation('option', $change->option ?? $row->option);
     }
 
     /**

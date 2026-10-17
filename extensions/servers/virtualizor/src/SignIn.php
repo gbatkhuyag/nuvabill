@@ -153,8 +153,10 @@ final class SignIn
      * that VPS. A link to a VPS that Virtualizor no longer lists (deleted when the service ended,
      * before staff set the service back to Pending) is removed, with the values that belong to that
      * VPS, so the service gets a new VPS. A new VPS is filed under the Virtualizor user with the
-     * client's email, so before one is sent that user is looked up: an admin or cloud user, or a
-     * user while the client has not confirmed that email, stops the create. A create with a note
+     * client's email, so before one is sent that user is looked up: an admin or cloud user, a user
+     * while the client has not confirmed that email, or a user that is not already linked to
+     * another service of this client (or is linked to another client's), stops the create. Staff
+     * link a VPS of such a user by hand ("Link existing VPS") first. A create with a note
      * was sent before and only looks for its VPS, so it is not checked again.
      *
      * @param  array<string, mixed>|null  $record  ResourceAddons::record() of the service.
@@ -203,7 +205,33 @@ final class SignIn
             return ModuleResult::fail(__('A Virtualizor user with this client\'s email already exists, and the client has not confirmed this email yet, so the VPS is not added to that user. Ask the client to confirm their email, then try again. No VPS was made.'));
         }
 
+        // An email alone does not show whose user it is: someone may have made it with an address
+        // they did not own. The user must already be linked to this client, and to no other client.
+        foreach ($matches as $user) {
+            $uid = AdminApi::userId($user['uid'] ?? null);
+
+            if ($uid === null || ! $this->userLinkedOnlyTo($service, $uid)) {
+                return ModuleResult::fail(__('A Virtualizor user with this client\'s email exists that Nuvabill has not linked to this client. Link one of the client\'s VPS to it, or change that user in Virtualizor. No VPS was made.'));
+            }
+        }
+
         return null;
+    }
+
+    /**
+     * Whether the Virtualizor user is stored on another service of this client on the same master,
+     * and on no service of another client there.
+     */
+    private function userLinkedOnlyTo(Service $service, string $uid): bool
+    {
+        $owners = Service::query()
+            ->whereIn('server_id', $this->masters($service->server))
+            ->whereKeyNot($service->id)
+            ->whereIn('module_data->uid', [$uid, (int) $uid])
+            ->get(['id', 'client_id', 'module_data'])
+            ->filter(fn (Service $linked): bool => AdminApi::userId($linked->module_data['uid'] ?? null) === $uid);
+
+        return $owners->isNotEmpty() && $owners->every(fn (Service $linked): bool => (int) $linked->client_id === (int) $service->client_id);
     }
 
     /**

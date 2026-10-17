@@ -124,6 +124,8 @@ final class ResourceChanges
         return match (true) {
             $service->status !== ServiceStatus::Active => __('Only active services can change resources.'),
             ! $service->billing_cycle->isRecurring() || $service->next_due_date === null => __('This service does not renew, so its resources cannot change.'),
+            // A due date in the past (a free plan that never renews, say) leaves no days to price.
+            $service->next_due_date->lt(today()) => __('This service must renew before its resources can change.'),
             $this->pendingFor($service) !== null => __('A resource change for this service is already waiting.'),
             $this->planChanges->pendingFor($service) !== null => __('A plan change for this service is already waiting.'),
             $this->hasUnpaidInvoice($service) => __('Pay the open invoice for this service first.'),
@@ -136,9 +138,9 @@ final class ResourceChanges
      * The fair price of the chosen steps for the days left of the current period, in minor units
      * of the service's currency. Kinds left out stay as they are.
      *
-     * Added steps cost today's price of the option for the days left, plus its setup fee per step
-     * (never given back). Removed steps take off the average price paid per step, and give back
-     * the days left of it, never more than was paid for them (see creditCap()). Staff may also set
+     * Added steps cost today's price of the option for the days until the due date, plus its setup
+     * fee per step (never given back). Removed steps take off the average price paid per step, and
+     * give back the days left of it, never more than was paid for them (see creditCap()). Staff may also set
      * a new renewal price per kind ($amounts); the cost and credit still come from the steps.
      *
      * @param  array<mixed>  $steps  kind => wanted steps
@@ -152,6 +154,9 @@ final class ResourceChanges
     {
         $service->loadMissing(['product', 'client', 'resources.option']);
         $period = Proration::period($service, $today);
+        // Added steps are priced for every day they run until the due date. After a renewal paid
+        // early that is more than one period (days_left stops at one), and none of it was paid.
+        $daysToEnd = max(0, (int) round(CarbonImmutable::instance($today ?? today())->startOfDay()->diffInDays($period['end'], false)));
         $sliders = collect($this->options->forService($service, $staff, $limits))->keyBy('kind');
         $options = $service->product->resourceOptions->keyBy('kind');
         $rows = $service->resources->keyBy('kind');
@@ -193,7 +198,7 @@ final class ResourceChanges
                 $added = $to - $from;
                 $price = $slider['prices'][$cycle] ?? null;
                 $recurring = $added * (int) ($price['step'] ?? 0);
-                $cost = Proration::forDays($recurring, $period['days_left'], $period['period_days']);
+                $cost = Proration::forDays($recurring, $daysToEnd, $period['period_days']);
                 $setup = $added * (int) ($price['setup'] ?? 0);
                 $new = $old + $recurring;
             } elseif ($to < $from) {
@@ -1142,17 +1147,58 @@ final class ResourceChanges
      * - without one, for a row no change of this period grew (imported or converted, paid outside
      *   Nuvabill): no cap.
      *
-     * @param  array{start: CarbonImmutable, end: CarbonImmutable, days_left: int}  $period
+     * With a paid line, what earlier removals of the kind already gave back this period is taken
+     * off first (see givenForDaysLeft()), so steps staff added without charging never turn the
+     * paid line into more credit when they are removed in two goes.
+     *
+     * @param  array{start: CarbonImmutable, end: CarbonImmutable, period_days: int, days_left: int}  $period
      */
     private function creditCap(ServiceResourceOption $row, int $removed, int $from, array $period): ?int
     {
         $paidLeft = $this->paidForDaysLeft($row, $period['end'], $period['days_left']);
 
         if ($paidLeft !== null) {
-            return (int) round($paidLeft * $removed / max(1, $from));
+            $left = max(0, $paidLeft - $this->givenForDaysLeft($row, $period));
+
+            return (int) round($left * $removed / max(1, $from));
         }
 
         return $this->paidByChanges($row, $period['start']);
+    }
+
+    /**
+     * The part for the days left of what this period's removals of the row's kind already gave
+     * back. A credit was priced for the days left on the day of its change, so only its share for
+     * the days still left counts. Removals that waited for the renewal gave nothing back.
+     *
+     * @param  array{start: CarbonImmutable, end: CarbonImmutable, period_days: int, days_left: int}  $period
+     */
+    private function givenForDaysLeft(ServiceResourceOption $row, array $period): int
+    {
+        $items = ResourceChangeItem::query()
+            ->with('change:id,created_at')
+            ->where('kind', $row->kind)
+            ->whereColumn('to_steps', '<', 'from_steps')
+            ->where('credit', '>', 0)
+            ->whereHas('change', fn ($query) => $query
+                ->where('service_id', $row->service_id)
+                ->where('status', ResourceChange::STATUS_APPLIED)
+                ->where('mode', '!=', ResourceChange::MODE_RENEWAL)
+                ->where('applied_at', '>=', $period['start']))
+            ->get();
+
+        $given = 0.0;
+
+        foreach ($items as $item) {
+            $priced = $item->change?->created_at;
+            $daysThen = $priced === null
+                ? $period['days_left']
+                : max(1, min($period['period_days'], (int) round(CarbonImmutable::instance($priced)->startOfDay()->diffInDays($period['end'], false))));
+
+            $given += $item->credit * min(1, $period['days_left'] / max(1, $daysThen));
+        }
+
+        return (int) round($given);
     }
 
     /**

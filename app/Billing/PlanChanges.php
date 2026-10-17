@@ -58,6 +58,8 @@ class PlanChanges
         return match (true) {
             $service->status !== ServiceStatus::Active => __('Only active services can change plan.'),
             ! $service->billing_cycle->isRecurring() || $service->next_due_date === null => __('This service does not renew, so its plan cannot change.'),
+            // A due date in the past (a free plan that never renews, say) leaves no days to price.
+            $service->next_due_date->lt(today()) => __('This service must renew before its plan can change.'),
             $this->pendingFor($service) !== null => __('A plan change for this service is already waiting.'),
             $this->hasPendingResourceChange($service) => __('A resource change for this service is waiting.'),
             $this->hasUnpaidInvoice($service) => __('Pay the open invoice for this service first.'),

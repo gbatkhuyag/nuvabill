@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Billing;
 
+use App\Automation\DailyAutomation;
+use App\Billing\InvoicePaidHandler;
 use App\Billing\PaymentRecorder;
 use App\Enums\InvoiceStatus;
 use App\Enums\ServiceStatus;
@@ -86,6 +88,41 @@ class DailyAutomationTest extends TestCase
         Http::assertSent(fn (Request $request) => str_contains($request->url(), 'unsuspendacct'));
     }
 
+    public function test_a_service_paid_while_the_run_terminates_others_is_not_terminated(): void
+    {
+        $this->setSettings(['automation.suspend_days' => 0, 'automation.terminate_days' => 20, 'automation.reminder_days' => []]);
+        Mail::fake();
+        [$first, $firstInvoice] = $this->overdueService('late1', ServiceStatus::Suspended);
+        [$second, $secondInvoice] = $this->overdueService('late2', ServiceStatus::Suspended);
+        // While the run removes the first account, the second client pays in full, which
+        // unsuspends their service.
+        $this->payDuring('removeacct', 'late1', $secondInvoice);
+
+        $summary = app(DailyAutomation::class)->run();
+
+        $this->assertSame(ServiceStatus::Terminated, $first->fresh()->status);
+        $this->assertSame(InvoiceStatus::Paid, $secondInvoice->fresh()->status);
+        $this->assertSame(ServiceStatus::Active, $second->fresh()->status);
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'removeacct') && $request['username'] === 'late2');
+        $this->assertSame([1, 1], [$summary['terminated'], $summary['failed']]);
+        $this->assertSame(InvoiceStatus::Unpaid, $firstInvoice->fresh()->status);
+    }
+
+    public function test_a_service_paid_while_the_run_suspends_others_is_not_suspended(): void
+    {
+        $this->setSettings(['automation.suspend_days' => 3, 'automation.terminate_days' => 0, 'automation.reminder_days' => []]);
+        Mail::fake();
+        [$first] = $this->overdueService('late1', ServiceStatus::Active);
+        [$second, $secondInvoice] = $this->overdueService('late2', ServiceStatus::Active);
+        $this->payDuring('suspendacct', 'late1', $secondInvoice);
+
+        app(DailyAutomation::class)->run();
+
+        $this->assertSame(ServiceStatus::Suspended, $first->fresh()->status);
+        $this->assertSame(ServiceStatus::Active, $second->fresh()->status);
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'suspendacct') && $request['user'] === 'late2');
+    }
+
     public function test_services_suspended_by_staff_stay_suspended_after_payment(): void
     {
         $service = Service::factory()->suspended('Abuse report')->create();
@@ -105,5 +142,47 @@ class DailyAutomationTest extends TestCase
         $this->artisan('nuvabill:cron')->assertSuccessful();
 
         $this->assertSame(0, Invoice::query()->count());
+    }
+
+    /**
+     * A cPanel service with a renewal invoice 30 days overdue, suspended for it when asked.
+     *
+     * @return array{0: Service, 1: Invoice}
+     */
+    private function overdueService(string $username, ServiceStatus $status): array
+    {
+        $server = Server::factory()->create();
+        $service = Service::factory()->create([
+            'product_id' => Product::factory()->cpanel($server)->create()->id,
+            'server_id' => $server->id,
+            'username' => $username,
+            'status' => $status,
+            'suspension_reason' => $status === ServiceStatus::Suspended ? InvoicePaidHandler::OVERDUE_REASON : null,
+            'recurring_amount' => 1000,
+            'next_due_date' => today()->subDays(30),
+        ]);
+
+        $invoice = Invoice::factory()->create(['client_id' => $service->client_id, 'due_at' => today()->subDays(30), 'total' => 1000]);
+        $invoice->items()->create(['type' => 'service', 'service_id' => $service->id, 'description' => 'Renewal', 'amount' => 1000, 'period_start' => today()->subDays(30)]);
+
+        return [$service, $invoice];
+    }
+
+    /**
+     * cPanel answers every call; the given call for the given account first records a full
+     * payment of the invoice, as a client paying at that moment would.
+     */
+    private function payDuring(string $call, string $username, Invoice $invoice): void
+    {
+        $paid = false;
+
+        Http::fake(function (Request $request) use ($call, $username, $invoice, &$paid) {
+            if (! $paid && str_contains($request->url(), '/'.$call) && ($request['user'] ?? $request['username']) === $username) {
+                $paid = true;
+                app(PaymentRecorder::class)->record($invoice->fresh(), 1000, 'banktransfer');
+            }
+
+            return Http::response(['metadata' => ['result' => 1, 'reason' => 'OK']]);
+        });
     }
 }

@@ -470,6 +470,68 @@ class RedfishDriverTest extends TestCase
         $this->assertSame(1, $machine->fresh()->bmc_failures);
     }
 
+    public function test_an_answer_stopped_by_the_size_check_says_the_bmc_sent_too_much_data(): void
+    {
+        $this->fakeBmc([self::SYSTEM => fn (Request $request) => Create::rejectionFor(new ConnectException(
+            'cURL error 42: Callback aborted (see https://curl.se/libcurl/c/libcurl-errors.html)',
+            $request->toPsrRequest(),
+        ))]);
+        $machine = $this->machine();
+
+        $this->assertSame(PowerState::Unknown, app(PowerControl::class)->state($machine, fresh: true));
+        $this->assertSame('The BMC sent too much data.', $machine->fresh()->bmc_last_error);
+    }
+
+    /**
+     * Against a real server on this computer that streams a chunked answer with no length: the
+     * request stops soon after the limit, instead of reading until the timeout.
+     */
+    public function test_a_chunked_answer_without_a_length_stops_at_the_size_limit(): void
+    {
+        $folder = sys_get_temp_dir().DIRECTORY_SEPARATOR.'nuvabill-chunked-'.bin2hex(random_bytes(6));
+        mkdir($folder);
+        file_put_contents($folder.'/server.php', <<<'PHP'
+            <?php
+            $server = stream_socket_server('tcp://127.0.0.1:0', $code, $text);
+            echo 'port '.substr((string) strrchr((string) stream_socket_get_name($server, false), ':'), 1)."\n";
+            $client = @stream_socket_accept($server, 20);
+            if ($client === false) { exit; }
+            $head = '';
+            while (! str_contains($head, "\r\n\r\n") && ($line = fgets($client)) !== false) { $head .= $line; }
+            fwrite($client, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n");
+            $chunk = str_repeat('a', 65536);
+            $sent = 0;
+            // Up to 64 MB, far more than the limit; it stops when the client hangs up.
+            for ($i = 0; $i < 1024; $i++) {
+                if (@fwrite($client, dechex(strlen($chunk))."\r\n".$chunk."\r\n") === false) { break; }
+                $sent += strlen($chunk);
+            }
+            echo 'sent '.$sent."\n";
+            PHP);
+
+        $server = new Process([PHP_BINARY, $folder.'/server.php']);
+        $server->setTimeout(60);
+        $server->start();
+
+        try {
+            $server->waitUntil(fn (string $type, string $output): bool => str_contains($server->getOutput(), "\n"));
+            $port = (int) substr(trim($server->getOutput()), 5);
+            $client = new GuzzleClient(['handler' => HandlerStack::create(new CurlHandler(['handle_factory' => new PinnedCurlFactory]))]);
+            $limit = 200_000;
+
+            try {
+                $client->get("http://127.0.0.1:{$port}/redfish/v1/", ['timeout' => 20, PinnedCurlFactory::PIN_OPTION => false, PinnedCurlFactory::MAX_BODY_OPTION => $limit]);
+                $this->fail('A chunked answer over the limit must stop.');
+            } catch (TransferException $exception) {
+                $this->assertMatchesRegularExpression('/cURL error (42|63)\b/', $exception->getMessage());
+            }
+        } finally {
+            $server->wait();
+            array_map('unlink', glob($folder.'/*') ?: []);
+            rmdir($folder);
+        }
+    }
+
     public function test_a_changed_certificate_can_be_checked_and_trusted_again(): void
     {
         $this->fakeBmc(['/redfish/v1/' => fn (Request $request) => $this->pinMismatch($request)]);

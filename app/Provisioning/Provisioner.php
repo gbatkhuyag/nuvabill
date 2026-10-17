@@ -355,8 +355,11 @@ class Provisioner
      * Suspend the service on its server. It waits up to 30 seconds for other work on the service
      * (a client's power action, say), so a suspended server is never started again under it. When
      * the service stays busy it fails, and the next nightly run tries again.
+     *
+     * @param  (Closure(): bool)|null  $stillDue  Asked inside the lock before the server is: false
+     *                                            (the client paid meanwhile) changes nothing.
      */
-    public function suspend(Service $service, string $reason): ModuleResult
+    public function suspend(Service $service, string $reason, ?Closure $stillDue = null): ModuleResult
     {
         $lock = $this->lockFor($service, 120);
 
@@ -367,6 +370,10 @@ class Provisioner
         try {
             // Read again inside the lock: the service may have changed while this waited.
             $service->refresh();
+
+            if ($stillDue !== null && ! $stillDue()) {
+                return ModuleResult::fail('no longer overdue');
+            }
 
             [$result, $suspended] = $this->runSuspend($service, $reason);
         } finally {
@@ -609,8 +616,11 @@ class Provisioner
     /**
      * Remove the service from its server. Not while other work holds it (a setup would finish and
      * make it active again): then it fails with data['busy'] = true and changes nothing.
+     *
+     * @param  (Closure(): bool)|null  $stillDue  Asked inside the lock before the server is: false
+     *                                            (the client paid meanwhile) changes nothing.
      */
-    public function terminate(Service $service): ModuleResult
+    public function terminate(Service $service, ?Closure $stillDue = null): ModuleResult
     {
         $lock = $this->lockFor($service);
 
@@ -621,6 +631,10 @@ class Provisioner
         try {
             // Read again inside the lock: a setup that just finished left an account to remove.
             $service->refresh();
+
+            if ($stillDue !== null && ! $stillDue()) {
+                return ModuleResult::fail('no longer overdue');
+            }
 
             [$result, $terminated] = $this->runTerminate($service);
         } finally {
