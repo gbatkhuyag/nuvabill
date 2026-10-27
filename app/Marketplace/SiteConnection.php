@@ -56,6 +56,13 @@ class SiteConnection
 
     private const STATE_CACHE = 'nuvabill.marketplace.connect.';
 
+    private const USED_CACHE = 'nuvabill.marketplace.connect.used.';
+
+    /**
+     * The one-time code for the store's check of a new server address (see verifyMove()).
+     */
+    private const MOVE_CACHE = 'nuvabill.marketplace.move.';
+
     public function __construct(private Settings $settings) {}
 
     public function isConnected(): bool
@@ -148,11 +155,21 @@ class SiteConnection
             return null;
         }
 
-        $saved = Cache::pull(self::STATE_CACHE.hash('sha256', $state));
+        $stateHash = hash('sha256', $state);
+        $saved = Cache::pull(self::STATE_CACHE.$stateHash);
 
-        if (! is_array($saved) || ! is_string($saved['hash'] ?? null) || ! hash_equals($saved['hash'], hash('sha256', $state))) {
-            return null;
+        if (! is_array($saved) || ! is_string($saved['hash'] ?? null) || ! hash_equals($saved['hash'], $stateHash)) {
+            // The store may ask a second time with the same code and key when it lost the first
+            // answer (for example a time-out). Only the very same key, for a few minutes.
+            $used = Cache::get(self::USED_CACHE.$stateHash);
+
+            return is_array($used) && is_string($used['key'] ?? null) && hash_equals($used['key'], hash('sha256', $key)) && ($used['site_id'] ?? null) === $siteId
+                && setting('marketplace.site_key') === $key
+                ? ['ip' => (string) $used['ip'], 'family' => (string) $used['family']]
+                : null;
         }
+
+        Cache::put(self::USED_CACHE.$stateHash, ['key' => hash('sha256', $key), 'site_id' => $siteId, 'ip' => (string) $saved['ip'], 'family' => (string) $saved['family']], now()->addMinutes(5));
 
         $this->settings->setMany([
             'marketplace.site_key' => $key,
@@ -215,7 +232,15 @@ class SiteConnection
         }
 
         $egress = $this->detectEgress($this->family());
-        $answer = $client->heartbeat($egress['ip'] ?? (string) setting('marketplace.site_ip'));
+        $moveToken = null;
+
+        if ($egress !== null && $egress['ip'] !== setting('marketplace.site_ip')) {
+            // The store lets the new address through only when it reaches this site at it with this code.
+            $moveToken = self::base64url(random_bytes(32));
+            Cache::put(self::MOVE_CACHE.hash('sha256', $moveToken), ['ip' => $egress['ip']], now()->addMinutes(10));
+        }
+
+        $answer = $client->heartbeat($egress['ip'] ?? (string) setting('marketplace.site_ip'), $moveToken);
 
         if ($answer === null) {
             // The store could not be reached. From another address Cloudflare stops it, so tell staff.
@@ -255,6 +280,21 @@ class SiteConnection
         }
 
         return (string) $values['marketplace.site_status'];
+    }
+
+    /**
+     * The store's check of a new server address: it calls this site at that address with the code
+     * from the heartbeat. Works once. Returns the address the code was made for, or null.
+     */
+    public function verifyMove(string $token): ?string
+    {
+        if (! $this->isConnected() || ! preg_match('/^[A-Za-z0-9_-]{43}$/', $token)) {
+            return null;
+        }
+
+        $saved = Cache::pull(self::MOVE_CACHE.hash('sha256', $token));
+
+        return is_array($saved) && is_string($saved['ip'] ?? null) ? $saved['ip'] : null;
     }
 
     public function markReconnect(): void

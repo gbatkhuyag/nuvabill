@@ -77,6 +77,9 @@ return Application::configure(basePath: dirname(__DIR__))
             Route::post('nuvabill-marketplace/connect', MarketplaceConnectCallbackController::class)
                 ->middleware('throttle:10,1')
                 ->name('marketplace.connect.callback');
+            Route::post('nuvabill-marketplace/verify', [MarketplaceConnectCallbackController::class, 'verify'])
+                ->middleware('throttle:10,1')
+                ->name('marketplace.connect.verify');
 
             // Add-ons that receive data from other services. No session, cookies or form token: each
             // add-on checks its own requests.

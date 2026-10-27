@@ -6,6 +6,10 @@
         <div class="flash" data-tone="warn"><span>{{ __('Cloudflare is not set up, so connected sites get a key but their servers are not let through Bot Fight Mode. Add the zone ID and API token below.') }}</span></div>
     @endunless
 
+    @if ($pendingRemovals > 0)
+        <div class="flash" data-tone="warn"><span>{{ trans_choice('Cloudflare did not remove :count rule of a site that no longer needs it. The store tries again every day.|Cloudflare did not remove :count rules of sites that no longer need them. The store tries again every day.', $pendingRemovals, ['count' => $pendingRemovals]) }}</span></div>
+    @endif
+
     <form class="filters" method="GET" role="search">
         <a class="chip" href="{{ route('admin.store.sites.index', array_filter(['q' => $term ?: null])) }}" @if ($status === '') aria-current="true" @endif>{{ __('All') }}</a>
         @foreach (['pending' => __('Waiting'), 'active' => __('Active'), 'revoked' => __('Removed'), 'expired' => __('Expired')] as $key => $label)
@@ -22,7 +26,7 @@
             <tbody>
             @forelse ($sites as $site)
                 <tr>
-                    <td><a href="https://{{ $site->host }}" target="_blank" rel="noopener noreferrer">{{ $site->host }}</a>@if ($site->notes)<div class="faint" style="font-size:.78rem">{{ $site->notes }}</div>@endif</td>
+                    <td><a href="https://{{ $site->host }}" target="_blank" rel="noopener noreferrer">{{ $site->host }}</a>@if ($site->status === 'pending' && $site->reasonText())<div class="faint" style="font-size:.78rem">{{ $site->reasonText() }}</div>@endif</td>
                     <td>
                         @switch ($site->status)
                             @case ('active')<x-pill tone="good">{{ __('Active') }}</x-pill>@break
@@ -68,6 +72,20 @@
                 <button class="btn btn-primary" type="submit" name="action" value="save">{{ __('Save') }}</button>
                 <button class="btn" type="submit" name="action" value="test">{{ __('Test connection') }}</button>
             </div>
+        </form>
+    </section>
+
+    <section class="card" style="display:grid;gap:.8rem;max-width:720px">
+        <h2 style="margin:0;font-size:1.05rem">{{ __('Limits') }}</h2>
+        <p class="muted" style="margin:0;font-size:.88rem">{{ __('A registered name counts with all its sub-domains, so one domain cannot use up the limits.') }}</p>
+        <form method="POST" action="{{ route('admin.store.sites.limits') }}" style="display:grid;gap:.8rem">
+            @csrf
+            @method('PUT')
+            <x-input name="daily_limit" type="number" min="1" max="100000" :label="__('New connections a day, in total')" :value="old('daily_limit', $limits['daily_limit'])" required />
+            <x-input name="domain_daily_limit" type="number" min="1" max="100000" :label="__('New connections a day, per registered name')" :value="old('domain_daily_limit', $limits['domain_daily_limit'])" required />
+            <x-input name="hosts_per_domain" type="number" min="1" max="100000" :label="__('Connected sites per registered name')" :value="old('hosts_per_domain', $limits['hosts_per_domain'])" required />
+            <x-input name="sites_per_ip" type="number" min="1" max="100000" :label="__('Active sites per server address')" :help="__('More sites on the same address wait for staff.')" :value="old('sites_per_ip', $limits['sites_per_ip'])" required />
+            <div><button class="btn btn-primary" type="submit">{{ __('Save') }}</button></div>
         </form>
     </section>
 </x-layouts.admin>

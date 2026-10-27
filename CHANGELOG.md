@@ -110,6 +110,10 @@ free Hetzner modules.
 - Connected sites check in once a day, get a new key every 90 days, and are told when their server address changes.
 - **Security:** the site key is stored encrypted and only sent to the marketplace store; the store keeps only a hash.
   The store only calls sites on public internet addresses over HTTPS, and never follows redirects.
+- **Security:** the store only lets an address through when it reached your site at that very address over HTTPS,
+  also when your server moves. Starting to connect someone else's site changes nothing for it, a site staff removed
+  waits for staff when it connects again, and limits count per domain with all its sub-domains. Site health warns
+  when Cloudflare stops your server or the connection needs you.
 
 **Also**
 

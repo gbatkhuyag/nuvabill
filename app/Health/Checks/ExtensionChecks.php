@@ -8,7 +8,11 @@ use App\Health\CoreFiles;
 use App\Marketplace\LicenseChecker;
 use App\Marketplace\MarketplaceClient;
 use App\Marketplace\PackageType;
+use App\Marketplace\SiteConnection;
+use App\Marketplace\Store\CloudflareAccess;
+use App\Marketplace\Store\ConnectedSites;
 use App\Models\MarketplaceInstall;
+use App\Models\MarketplaceSite;
 use App\Support\Demo;
 use App\Support\Themes;
 use Illuminate\Support\Collection;
@@ -24,6 +28,7 @@ class ExtensionChecks extends CheckGroup
         private readonly LicenseChecker $licenses,
         private readonly Themes $themes,
         private readonly CoreFiles $coreFiles,
+        private readonly SiteConnection $connection,
     ) {}
 
     public function key(): string
@@ -60,6 +65,8 @@ class ExtensionChecks extends CheckGroup
             $this->licenses($installs),
             $this->updates($installs),
             $this->unusedThemes(),
+            $this->marketplaceConnection(),
+            ...(config('nuvabill.marketplace.store') ? [$this->connectedSites()] : []),
         ];
     }
 
@@ -169,6 +176,49 @@ class ExtensionChecks extends CheckGroup
             items: $waiting->map(fn (MarketplaceInstall $install): array => ['label' => $install->name, 'value' => $install->version.' → '.$catalog[$install->slug]['version'], 'status' => 'warning'])->values()->all(),
             link: $this->link('admin.marketplace.index', 'Open the marketplace'),
         );
+    }
+
+    /**
+     * Cloudflare stops this server's calls to the marketplace (license checks and updates too), or
+     * the connection to the marketplace needs staff.
+     */
+    private function marketplaceConnection(): CheckResult
+    {
+        $check = $this->check('extensions.marketplace_connection', 'This server can reach the marketplace', weight: 1);
+        $link = $this->link('admin.marketplace.index', 'Open the marketplace');
+
+        return match (true) {
+            $this->connection->status() === SiteConnection::RECONNECT => $check->warning('The marketplace no longer accepts this site\'s key',
+                advice: 'Click Connect again on the Marketplace page. Until then Cloudflare may stop license checks and updates.', link: $link),
+            $this->connection->status() === SiteConnection::IP_CHANGED => $check->warning('This server\'s address changed since it connected to the marketplace',
+                advice: 'Click Connect again on the Marketplace page, so the marketplace lets the new address through.', link: $link),
+            $this->connection->summary()['blocked'] => $check->warning('Cloudflare stops this server from reaching the marketplace',
+                advice: 'License checks, downloads and updates fail until the server is let through. Click Connect to marketplace on the Marketplace page.', link: $link),
+            default => $check->passed(),
+        };
+    }
+
+    /**
+     * The marketplace store only: connected sites get keys but are not let through when Cloudflare
+     * is not set up, and rules that could not be removed still let old addresses through.
+     */
+    private function connectedSites(): CheckResult
+    {
+        $check = $this->check('extensions.connected_sites', 'Connected sites are let through Cloudflare', weight: 1);
+        $link = $this->link('admin.store.sites.index', 'Open connected sites');
+        $removals = app(ConnectedSites::class)->pendingRemovals();
+
+        if (! app(CloudflareAccess::class)->isConfigured() && MarketplaceSite::query()->where('status', MarketplaceSite::STATUS_ACTIVE)->exists()) {
+            return $check->warning('Cloudflare is not set up for connected sites',
+                advice: 'Active sites have keys, but their servers are not let through Bot Fight Mode. Add the zone ID and API token.', link: $link);
+        }
+
+        if ($removals > 0) {
+            return $check->warning(':count Cloudflare rules wait to be removed', ['count' => $removals],
+                advice: 'Until they are removed, Cloudflare still lets the addresses of ended sites through. The store tries again every day; check the API token.', link: $link);
+        }
+
+        return $check->passed();
     }
 
     private function unusedThemes(): CheckResult

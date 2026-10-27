@@ -39,4 +39,16 @@ class MarketplaceConnectCallbackController extends Controller
             'return_path' => route('admin.marketplace.index', [], false),
         ]);
     }
+
+    /**
+     * The store checks a new server address: it calls this site at that address with the one-time
+     * code this site sent with its heartbeat. Nothing is saved here.
+     */
+    public function verify(Request $request, SiteConnection $connection): JsonResponse
+    {
+        $token = $request->input('token');
+        $ip = is_string($token) ? $connection->verifyMove($token) : null;
+
+        return $ip === null ? response()->json([], 404) : response()->json(['ok' => true, 'ip' => $ip]);
+    }
 }

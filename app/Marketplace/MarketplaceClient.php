@@ -189,14 +189,14 @@ class MarketplaceClient
      *
      * @return array{status: string, rotate: bool, ip: ?string}|null
      */
-    public function heartbeat(string $ip): ?array
+    public function heartbeat(string $ip, ?string $moveToken = null): ?array
     {
         if ($this->siteKey() === null) {
             return null;
         }
 
         try {
-            $response = $this->send('post', '/api/marketplace/v1/sites/heartbeat', ['ip' => $ip], retryWithoutKey: false);
+            $response = $this->send('post', '/api/marketplace/v1/sites/heartbeat', array_filter(['ip' => $ip, 'move_token' => $moveToken]), retryWithoutKey: false);
         } catch (Throwable) {
             return null;
         }
@@ -217,7 +217,7 @@ class MarketplaceClient
     }
 
     /**
-     * Ask the store for a new key. The old one stops working at once.
+     * Ask the store for a new key. The old one keeps working for a day, until the new one is used.
      */
     public function rotateKey(): ?string
     {

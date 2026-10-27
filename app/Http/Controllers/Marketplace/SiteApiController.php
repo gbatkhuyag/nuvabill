@@ -19,14 +19,24 @@ class SiteApiController extends Controller
     public function heartbeat(Request $request): JsonResponse
     {
         $site = $this->site($request);
-        $ip = (string) $request->validate(['ip' => ['required', 'string', 'max:45', 'ip']])['ip'];
+        $data = $request->validate([
+            'ip' => ['required', 'string', 'max:45', 'ip'],
+            // A one-time code the site keeps when its server goes out from a new address: the store
+            // calls the site at that address with it, to check that the address is the site's own.
+            'move_token' => ['nullable', 'string', 'regex:/^[A-Za-z0-9_-]{43}$/'],
+        ]);
 
-        return response()->json($this->sites->heartbeat($site, $ip));
+        return response()->json($this->sites->heartbeat(
+            $site,
+            (string) $data['ip'],
+            isset($data['move_token']) ? (string) $data['move_token'] : null,
+            (bool) $request->attributes->get(AuthenticateMarketplaceSite::PREVIOUS_KEY),
+        ));
     }
 
     public function rotate(Request $request): JsonResponse
     {
-        return response()->json(['key' => $this->sites->rotate($this->site($request))]);
+        return response()->json(['key' => $this->sites->rotate($this->site($request), (string) $request->bearerToken())]);
     }
 
     private function site(Request $request): MarketplaceSite

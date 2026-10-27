@@ -92,7 +92,8 @@ class CloudflareAccess
     }
 
     /**
-     * Check the zone ID and token: null when they work, otherwise what went wrong.
+     * Check the zone ID and token by reading the zone's IP Access rules, the permission the store
+     * needs: null when they work, otherwise Cloudflare's reason (never the token).
      */
     public function test(?string $zone = null, ?string $token = null): ?string
     {
@@ -104,7 +105,8 @@ class CloudflareAccess
         }
 
         try {
-            $response = $this->http($token)->get(self::API.'/zones/'.rawurlencode($zone));
+            // The same list the store adds rules to, so a token without "Firewall Services" fails here.
+            $response = $this->http($token)->get(self::API.'/zones/'.rawurlencode($zone).'/firewall/access_rules/rules', ['per_page' => 5]);
         } catch (Throwable) {
             return __('Cloudflare could not be reached. Try again in a few minutes.');
         }

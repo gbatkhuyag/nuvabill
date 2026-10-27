@@ -69,6 +69,12 @@ class PackageInstaller
             // A site connected to the marketplace sends its key, so Cloudflare lets the download through.
             $response = $this->client->authorize(Http::timeout(180)->withOptions(['sink' => $zipPath]), $download['url'])->get($download['url']);
 
+            if (MarketplaceClient::isChallenge($response)) {
+                Cache::put(SiteConnection::BLOCKED_CACHE, true, now()->addDay());
+
+                throw new RuntimeException(MarketplaceClient::blockedMessage());
+            }
+
             if ($response->failed() || ! is_file($zipPath)) {
                 throw new RuntimeException(__('The package could not be downloaded. Try again later.'));
             }

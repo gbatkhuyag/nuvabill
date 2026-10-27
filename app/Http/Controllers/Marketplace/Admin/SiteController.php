@@ -41,6 +41,8 @@ class SiteController extends Controller
             'cloudflareReady' => $cloudflare->isConfigured(),
             'zoneId' => (string) setting('marketplace.cloudflare_zone_id'),
             'hasToken' => filled(setting('marketplace.cloudflare_token')),
+            'pendingRemovals' => $this->sites->pendingRemovals(),
+            'limits' => self::currentLimits(),
         ]);
     }
 
@@ -67,6 +69,37 @@ class SiteController extends Controller
         return back()->with('status', __(':site was removed. Its key no longer works.', ['site' => $site->host]));
     }
 
+    /**
+     * The limits on connecting.
+     */
+    public function limits(Request $request, Settings $settings): RedirectResponse
+    {
+        $data = $request->validate(array_map(fn (): array => ['required', 'integer', 'min:1', 'max:100000'], self::LIMITS));
+
+        $settings->setMany(collect(self::LIMITS)->mapWithKeys(fn (string $setting, string $field): array => [$setting => (int) $data[$field]])->all());
+        Activity::log('marketplace.limits', 'Limits for connecting sites to the marketplace saved');
+
+        return back()->with('status', __('Limits saved.'));
+    }
+
+    /**
+     * Form field => setting.
+     */
+    private const LIMITS = [
+        'daily_limit' => 'marketplace.connect_daily_limit',
+        'domain_daily_limit' => 'marketplace.connect_domain_daily_limit',
+        'hosts_per_domain' => 'marketplace.connect_hosts_per_domain',
+        'sites_per_ip' => 'marketplace.connect_sites_per_ip',
+    ];
+
+    /**
+     * @return array<string, int>
+     */
+    private static function currentLimits(): array
+    {
+        return collect(self::LIMITS)->map(fn (string $setting): int => (int) setting($setting))->all();
+    }
+
     public function cloudflare(Request $request, Settings $settings, CloudflareAccess $cloudflare): RedirectResponse
     {
         $data = $request->validate([
@@ -86,10 +119,17 @@ class SiteController extends Controller
             return back()->withInput($request->only('zone_id'))->with($error === null ? 'status' : 'error', $error ?? __('Cloudflare accepted the zone ID and token.'));
         }
 
+        // Rules in the old zone could then never be removed: keep the zone while the store has rules there.
+        if ($zone !== (string) setting('marketplace.cloudflare_zone_id') && $this->sites->hasRules()) {
+            return back()->withInput($request->only('zone_id'))->with('error', __('Cloudflare still has rules for connected sites in this zone. Remove those sites first, or keep the zone ID. You can change the token.'));
+        }
+
         $settings->setMany(['marketplace.cloudflare_zone_id' => $zone, 'marketplace.cloudflare_token' => $zone === '' ? '' : $token]);
         Activity::log('marketplace.cloudflare', 'Cloudflare settings for connected sites saved');
-        // Active sites that connected before Cloudflare was set up get their rules now.
+        // Active sites that connected before Cloudflare was set up get their rules now, and rules that
+        // could not be removed before are removed.
         $added = $this->sites->syncRules();
+        $this->sites->retryRemovals();
 
         return back()->with('status', $added > 0
             ? trans_choice('Cloudflare settings saved. :count site was let through.|Cloudflare settings saved. :count sites were let through.', $added, ['count' => $added])

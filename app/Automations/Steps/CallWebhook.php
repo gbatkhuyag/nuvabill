@@ -54,14 +54,13 @@ class CallWebhook extends Step
         $port = (int) (parse_url($url, PHP_URL_PORT) ?: 443);
         // Connect to the address that was checked, over IPv4, so a second DNS answer (an IPv6
         // record, or a name that changes its answer) cannot lead to this server or the network.
-        $options = ['force_ip_resolve' => 'v4'];
-
-        if ($address !== '' && $address !== $host) {
-            $options['curl'] = [CURLOPT_RESOLVE => ["{$host}:{$port}:{$address}"]];
-        }
+        // In tests, made-up names have no address and their calls are faked.
+        $request = $address !== '' && $address !== $host
+            ? PublicAddress::pinned($host, $address, $port, 10, maxBytes: 1048576)
+            : Http::timeout(10)->withoutRedirecting()->withOptions(['force_ip_resolve' => 'v4']);
 
         try {
-            $response = Http::timeout(10)->withoutRedirecting()->withOptions($options)->acceptJson()->post($url, $context->webhookData());
+            $response = $request->acceptJson()->post($url, $context->webhookData());
         } catch (Throwable $exception) {
             // The reason goes to the error log only: on the run page it would tell which ports are
             // open. The full address is left out, because services such as Zapier, Slack and

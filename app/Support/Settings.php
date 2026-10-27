@@ -95,6 +95,9 @@ class Settings
         'marketplace.cloudflare_token' => '',
         'marketplace.connect_daily_limit' => 200,
         'marketplace.connect_sites_per_ip' => 5,
+        // Per registered name (example.com and its sub-domains): connects a day, and sites with a key.
+        'marketplace.connect_domain_daily_limit' => 10,
+        'marketplace.connect_hosts_per_domain' => 20,
 
         'automation.enabled' => true,
         'automation.reminder_days' => [1, 3, 7],

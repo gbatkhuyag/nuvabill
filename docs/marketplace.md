@@ -26,15 +26,16 @@ connect work as before.
 - Nuvabill 0.7.0 or newer.
 - Your site on a public web address with a valid HTTPS certificate, and `APP_URL` in `.env` set to that address
   (for example `https://billing.yourname.com`).
+- Nuvabill at the root of that web address, not in a subfolder (`https://example.com/billing` cannot connect),
+  because the store calls `https://your-address/nuvabill-marketplace/connect`.
 - Staff permission **Install themes and extensions from the marketplace**.
 
 ### How the store checks your server's address
 
-Your server notes the address it uses to reach the internet. The store lets that address through by itself when
-either:
-
-- your site's DNS points to that address, or
-- the store can reach your site directly at that address (this also works when your site is behind Cloudflare).
+Your server notes the address it uses to reach the internet. The store lets that address through by itself when it
+can reach your site at that very address over HTTPS, with a valid certificate for your site's name. This works for
+most servers, also when your site is behind Cloudflare, as long as the server itself answers HTTPS for your site's
+name. Being in your DNS alone is not enough.
 
 Otherwise (for example when your server sends its traffic out from another address than the one your site runs
 on) the connection waits for marketplace staff, which usually takes less than a day. The box shows **Waiting for
@@ -42,8 +43,11 @@ the store** until then.
 
 ### After connecting
 
-- Your site checks in with the store once a day. Every 90 days it gets a new key by itself.
-- If your server moves to a new address, the box shows **Address changed**: click **Connect again**.
+- Your site checks in with the store once a day. Every 90 days it gets a new key by itself. The old key keeps
+  working for a day, so a lost answer does not break the connection.
+- If your server moves to a new address, the store checks it the same way, by calling your site at the new address.
+  When that works, nothing changes for you. Otherwise the box shows **Address changed**: click **Connect again**.
+- **Site health** warns when Cloudflare stops this server or the connection needs you.
 - If the store no longer accepts your key (for example the connection was not used for 60 days), the box shows
   **Connect again**.
 
@@ -52,6 +56,8 @@ the store** until then.
 - The key is stored encrypted in your database and is only sent to the marketplace store, never to other
   addresses. The store keeps only a hash of it.
 - The one-time code from your click works once and only for 30 minutes.
+- Starting to connect someone else's site changes nothing for that site: the store only saves a new key after the
+  site itself took it.
 - Connecting is turned off in demo mode.
 
 ## For the marketplace store operator
@@ -60,7 +66,8 @@ This part is only for the store itself (`NUVABILL_MARKETPLACE_STORE=true`).
 
 Connected sites are listed under **Marketplace store → Connected sites** in the admin menu: their status, server address, whether the
 address is in the site's DNS or was reached directly, and when the site was last seen. **Approve** lets a waiting
-site through; **Remove** stops its key and removes its Cloudflare rule. The menu shows how many sites wait.
+site through; **Remove** stops its key and removes its Cloudflare rule. A removed site that connects again waits
+for staff until someone approves it. The menu shows how many sites wait, and the page shows why each one waits.
 
 ### Cloudflare token
 
@@ -77,11 +84,23 @@ servers are not let through, and the page says that Cloudflare is not set up. Ac
 get their rules when you save.
 
 One rule serves every site on the same address. A rule is only removed when no active site uses its address any
-more. Rules you added by hand are used but never removed.
+more. Rules you added by hand are used but never removed. When Cloudflare cannot remove a rule (it is down, or the
+token expired), the store notes it, tries again every day and shows a warning on the page and in Site health. The
+zone ID cannot be changed or cleared while the store has rules in the zone; the token can.
+
+An IP Access rule with **Allow** lets that address past all of Cloudflare's security for the whole zone (WAF, rate
+limits, challenges), not only the marketplace API. Keep the store's own rate limits on sign-in, and if you can,
+serve the marketplace API from a host name in its own Cloudflare zone, so allowed addresses only skip checks there.
 
 ### Limits
 
-- At most 200 new connections a day (setting `marketplace.connect_daily_limit`).
-- At most 5 active sites per server address (setting `marketplace.connect_sites_per_ip`); more wait for staff.
+Change these under **Limits** on the Connected sites page. A registered name (`example.com`) counts with all its
+sub-domains.
+
+- At most 200 new connections a day in total, and 10 per registered name.
+- At most 20 connected sites per registered name.
+- At most 5 active sites per server address; more wait for staff. This also applies when a site moves to a new
+  address.
 - The connect form can ask for a CAPTCHA: tick **Connect a site to the marketplace** under **Settings → Security**.
-- A daily task ends sites not seen for 60 days and waiting sites not approved in 14 days, and removes their rules.
+- A daily task ends sites not seen for 60 days and sites that waited 14 days without approval, and removes their
+  rules.

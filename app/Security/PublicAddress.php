@@ -119,7 +119,7 @@ class PublicAddress
 
     /**
      * An HTTPS request pinned to one checked address: no redirects, certificates checked, a short
-     * timeout and a small answer. Port 443 unless another one is given.
+     * timeout and a small answer (never more than $maxBytes is read). Port 443 unless another one is given.
      */
     public static function pinned(string $host, string $address, int $port = 443, int $timeout = 10, int $maxBytes = 65536): PendingRequest
     {
@@ -132,9 +132,15 @@ class PublicAddress
                 'verify' => true,
                 'force_ip_resolve' => str_contains($address, ':') ? 'v6' : 'v4',
                 'curl' => [CURLOPT_RESOLVE => ["{$host}:{$port}:{$target}"]],
-                // Do not read an answer that says it is larger than expected. The timeout limits the rest.
+                // Do not read an answer that says it is larger than expected...
                 'on_headers' => function (ResponseInterface $response) use ($maxBytes): void {
                     if ((int) $response->getHeaderLine('Content-Length') > $maxBytes) {
+                        throw new RuntimeException('The answer is too large.');
+                    }
+                },
+                // ...and stop reading one without a length (chunked) as soon as it grows past the limit.
+                'progress' => function (int $downloadTotal, int $downloaded) use ($maxBytes): void {
+                    if ($downloaded > $maxBytes) {
                         throw new RuntimeException('The answer is too large.');
                     }
                 },
