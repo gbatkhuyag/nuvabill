@@ -19,10 +19,12 @@ use App\Models\Order;
 use App\Models\Service;
 use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\HealthReading;
+use App\Provisioning\Hardware\HealthReport;
 use App\Provisioning\Hardware\InventoryException;
 use App\Provisioning\Hardware\PowerControl;
 use App\Provisioning\Hardware\ServerSetup;
 use App\Provisioning\Provisioner;
+use App\Support\AttentionItems;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
@@ -30,6 +32,7 @@ use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Route;
+use RuntimeException;
 use Tests\Fakes\FakePowerDriver;
 use Tests\Fixtures\RackHooks\RackHooks;
 use Tests\TestCase;
@@ -202,6 +205,41 @@ class HardwareHooksTest extends TestCase
         $this->getJson(route('client.services.sections.show', [$pending, 'install']))->assertNotFound();
     }
 
+    public function test_addons_add_checked_items_to_the_dashboard_attention_list(): void
+    {
+        app(AttentionItems::class)->add(fn (Admin $admin): array => $admin->hasPermission('hardware.manage') ? [
+            ['key' => 'ext.rackhooks.faults', 'tone' => 'crit', 'text' => '2 machines report a <b>hardware</b> fault.', 'url' => '/admin/hardware', 'action' => 'Review'],
+            ['key' => 'orders.pending', 'tone' => 'crit', 'text' => 'Not an add-on key', 'url' => null, 'action' => null],
+            ['key' => 'ext.rackhooks.away', 'tone' => 'warn', 'text' => 'Leaves the site', 'url' => 'https://example.org/x', 'action' => null],
+            ['key' => 'ext.rackhooks.tone', 'tone' => 'good', 'text' => 'Wrong tone', 'url' => null, 'action' => null],
+        ] : []);
+        app(AttentionItems::class)->add(fn (Admin $admin): array => throw new RuntimeException('broken add-on'));
+        Exceptions::fake();
+
+        $this->signInAdmin(Admin::factory()->create(['name' => 'Raz']));
+        $this->get(route('admin.dashboard'))->assertOk()
+            ->assertSee('2 machines report a hardware fault.')
+            ->assertDontSee(['Not an add-on key', 'Leaves the site', 'Wrong tone', '<b>hardware</b>'], false);
+        Exceptions::assertReported(RuntimeException::class);
+
+        $this->signInAdmin(Admin::factory()->withPermissions(['billing.view'])->create(['name' => 'Las']));
+        $this->get(route('admin.dashboard'))->assertOk()->assertDontSee('2 machines report a hardware fault.');
+    }
+
+    public function test_health_readings_keep_their_key_and_say_which_parts_were_not_read(): void
+    {
+        $report = new HealthReport([
+            new HealthReading('Prozessoren', 'OK', HealthReading::OK, 'system:processors'),
+            new HealthReading('Power', 'Not read this time', HealthReading::UNKNOWN, HealthReading::SKIPPED.'power'),
+            new HealthReading('Old driver', 'OK', HealthReading::OK),
+        ], 120, now());
+        $copy = HealthReport::fromArray($report->toArray());
+
+        $this->assertSame(['system:processors', 'skipped:power', ''], array_map(fn (HealthReading $reading): string => $reading->key, $copy->readings));
+        $this->assertSame(['power'], $copy->skippedParts());
+        $this->assertSame(HealthReading::OK, $copy->status());
+    }
+
     public function test_addons_hear_about_suspend_unsuspend_and_the_end_and_a_failing_listener_stops_nothing(): void
     {
         $service = $this->dedicatedService();
@@ -218,7 +256,7 @@ class HardwareHooksTest extends TestCase
         $this->assertTrue($result->success);
         $this->assertSame(ServiceStatus::Terminated, $service->fresh()->status);
         $this->assertSame(MachineStatus::Wiping, $machine->fresh()->status);
-        Exceptions::assertReported(fn (\RuntimeException $exception): bool => $exception->getMessage() === 'A listener of DedicatedServerReleased failed: RuntimeException');
+        Exceptions::assertReported(fn (RuntimeException $exception): bool => $exception->getMessage() === 'A listener of DedicatedServerReleased failed: RuntimeException');
 
         RackHooks::$listenerFails = false;
         $machine->forceFill(['status' => MachineStatus::Available, 'service_id' => null])->save();

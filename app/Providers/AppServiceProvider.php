@@ -38,6 +38,7 @@ use App\Models\TicketReply;
 use App\Models\Transaction;
 use App\Push\StaffAlerts;
 use App\Seo\Seo;
+use App\Support\AttentionItems;
 use App\Support\Demo;
 use App\Support\Installation;
 use App\Support\ServicePanels;
@@ -69,6 +70,7 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->singleton(Settings::class);
         $this->app->singleton(ServicePanels::class);
+        $this->app->singleton(AttentionItems::class);
         $this->app->scoped(Seo::class);
         $this->app->singleton(Registry::class);
         $this->app->singleton(Themes::class, fn (): Themes => new Themes(config('nuvabill.themes_path'), config('nuvabill.orderforms_path')));

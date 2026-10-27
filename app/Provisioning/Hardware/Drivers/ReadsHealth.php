@@ -14,7 +14,9 @@ use App\Provisioning\Hardware\HealthReading;
 interface ReadsHealth
 {
     /**
-     * At most 50 readings; texts must be cleaned (no tags, no login, short).
+     * At most 50 readings; texts must be cleaned (no tags, no login, short). Each reading should
+     * have a key in no language ("part:id"), and a part that could not be read this time a
+     * "skipped:part" reading, so health checks never take an unread fault as fixed.
      *
      * @return list<HealthReading>
      *

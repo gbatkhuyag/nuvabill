@@ -9,6 +9,7 @@ use App\Enums\OrderStatus;
 use App\Enums\PowerState;
 use App\Enums\ServiceStatus;
 use App\Models\ActivityLog;
+use App\Models\Admin;
 use App\Models\Domain;
 use App\Models\HealthRun;
 use App\Models\Invoice;
@@ -83,6 +84,10 @@ final class AttentionList
 
         array_push($items, ...self::hardware($may));
         array_push($items, ...self::resourceChanges($may));
+
+        if ($admin instanceof Admin) {
+            array_push($items, ...app(AttentionItems::class)->for($admin));
+        }
 
         $waitingDomains = ! $may('domains.manage') ? 0 : Domain::query()
             ->where('status', DomainStatus::Pending)

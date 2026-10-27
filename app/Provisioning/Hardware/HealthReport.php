@@ -37,7 +37,18 @@ final readonly class HealthReport
     }
 
     /**
-     * @return array{readings: list<array{name: string, value: string, status: string}>, watts: ?int, read_at: string, error: ?string}
+     * The parts of the BMC that were not read this time (HealthReading::SKIPPED): a health check
+     * must not take a fault from such a part as fixed.
+     *
+     * @return list<string>
+     */
+    public function skippedParts(): array
+    {
+        return array_values(array_unique(array_filter(array_map(fn (HealthReading $reading): ?string => $reading->skippedPart(), $this->readings))));
+    }
+
+    /**
+     * @return array{readings: list<array{name: string, value: string, status: string, key: string}>, watts: ?int, read_at: string, error: ?string}
      */
     public function toArray(): array
     {
