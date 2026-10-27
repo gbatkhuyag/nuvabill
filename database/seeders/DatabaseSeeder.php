@@ -58,6 +58,8 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use RuntimeException;
+use Throwable;
 
 /**
  * Demo data for local development, screenshots and the public demo: php artisan migrate:fresh --seed
@@ -84,6 +86,10 @@ class DatabaseSeeder extends Seeder
 
     public function run(): void
     {
+        // The demo reset moves to a new database in the same process, so extension rows cached from
+        // the old database are dropped first. Saving over a stale row could leave an extension off.
+        app(ExtensionManager::class)->refresh();
+
         $this->call(DefaultDataSeeder::class);
         (new DemoCatalogSeeder)->run('USD');
         $this->vpsPlans();
@@ -215,18 +221,27 @@ class DatabaseSeeder extends Seeder
 
             $migrations = $manifest->path.DIRECTORY_SEPARATOR.'database'.DIRECTORY_SEPARATOR.'migrations';
 
-            if (is_dir($migrations) && (glob($migrations.DIRECTORY_SEPARATOR.'*.php') ?: []) !== []) {
-                if (! in_array('database', $manifest->permissions, true)) {
-                    $this->warn("The demo add-on {$slug} changes the database but does not ask for the database permission, so it was not switched on.");
+            $hasMigrations = is_dir($migrations) && (glob($migrations.DIRECTORY_SEPARATOR.'*.php') ?: []) !== [];
 
-                    continue;
-                }
+            if ($hasMigrations && ! in_array('database', $manifest->permissions, true)) {
+                $this->warn("The demo add-on {$slug} changes the database but does not ask for the database permission, so it was not switched on.");
 
-                Artisan::call('migrate', ['--path' => $migrations, '--realpath' => true, '--force' => true]);
+                continue;
             }
 
-            // A broken demo hook is reported and the add-on is switched on with its defaults.
-            $extensions->saveSettings($slug, rescue(fn (): array => $extensions->addon($slug)->demoSettings(), []), true);
+            // A broken add-on is reported and left off, and the reset carries on with the others, so
+            // one bad migration never stops the demo from getting fresh data.
+            try {
+                if ($hasMigrations && Artisan::call('migrate', ['--path' => $migrations, '--realpath' => true, '--force' => true]) !== 0) {
+                    throw new RuntimeException("The migrations of the demo add-on [{$slug}] did not finish.");
+                }
+
+                // A broken demo hook is reported and the add-on is switched on with its defaults.
+                $extensions->saveSettings($slug, rescue(fn (): array => $extensions->addon($slug)->demoSettings(), []), true);
+            } catch (Throwable $exception) {
+                report($exception);
+                $this->warn("The demo add-on {$slug} could not be switched on.");
+            }
         }
     }
 

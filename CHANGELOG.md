@@ -66,6 +66,9 @@ A small fix release for demo sites and the marketplace store.
   (for example `dedicated-server-power`), so the demo's dedicated servers show power buttons, health checks and
   power use instead of "needs the add-on". It only works with `NUVABILL_DEMO=true`, only for add-ons already in
   the extensions folder, and it never makes a license for them. See [Configuration](docs/configuration.md).
+- An add-on in that list that is broken, such as one whose database update fails, is left off with a warning in
+  the log, and the reset still finishes with the other add-ons on. A second reset in a row switches everything on
+  again too.
 - The demo's made-up server management boards (BMCs) now also report health, temperatures, fans, power supplies,
   drives and power use.
 - **For developers:** add-ons can give the settings a demo should use with `Addon::demoSettings()`.
@@ -79,6 +82,9 @@ A small fix release for demo sites and the marketplace store.
 - Prices, icons and screenshots are checked too. Screenshots must be images in the listing's own folder.
 - The developer and staff forms use the same limits. A very long developer name no longer causes an error page,
   and saving an official item in the staff form keeps its category.
+- A package version longer than 40 characters is refused with a clear message in the developer forms and the
+  command line, instead of a database error. A version sent again after it was approved is marked as a duplicate
+  in a way that still fits.
 
 ## 0.7.0
 

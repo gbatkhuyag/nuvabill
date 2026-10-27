@@ -4111,6 +4111,7 @@
     "The package is too big when unpacked.": "O pacote fica grande demais quando descompactado.",
     "The package slug may only use lowercase letters, numbers, dashes and underscores.": "O slug do pacote só pode ter letras minúsculas, números, hifens e sublinhados.",
     "The package version must look like 1.0.0.": "A versão do pacote deve estar no formato 1.0.0.",
+    "The package version can be at most :max characters long.": "A versão do pacote pode ter no máximo :max caracteres.",
     "The passkey could not be added. Try again.": "Não foi possível adicionar a chave de acesso. Tente novamente.",
     "The passkey was not added. Try again.": "A chave de acesso não foi adicionada. Tente novamente.",
     "The password and every query travel over the network. That is fine inside a private network; otherwise turn on SSL for the connection (MYSQL_ATTR_SSL_CA).": "A senha e cada consulta trafegam pela rede. Isso não é problema dentro de uma rede privada; caso contrário, ative o SSL para a conexão (MYSQL_ATTR_SSL_CA).",

@@ -4111,6 +4111,7 @@
     "The package is too big when unpacked.": "Пакет слишком большой в распакованном виде.",
     "The package slug may only use lowercase letters, numbers, dashes and underscores.": "Короткое имя пакета может содержать только строчные латинские буквы, цифры, дефисы и подчёркивания.",
     "The package version must look like 1.0.0.": "Версия пакета должна быть в формате 1.0.0.",
+    "The package version can be at most :max characters long.": "Версия пакета может содержать не более :max символов.",
     "The passkey could not be added. Try again.": "Не удалось добавить ключ доступа. Попробуйте ещё раз.",
     "The passkey was not added. Try again.": "Ключ доступа не добавлен. Попробуйте ещё раз.",
     "The password and every query travel over the network. That is fine inside a private network; otherwise turn on SSL for the connection (MYSQL_ATTR_SSL_CA).": "Пароль и каждый запрос передаются по сети. Внутри частной сети это нормально; иначе включите SSL для соединения (MYSQL_ATTR_SSL_CA).",

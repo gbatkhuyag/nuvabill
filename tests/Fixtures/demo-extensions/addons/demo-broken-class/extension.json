@@ -1,0 +1,11 @@
+{
+    "slug": "demo-broken-class",
+    "type": "addon",
+    "name": "Demo with a broken class",
+    "version": "1.0.0",
+    "namespace": "Tests\\Fixtures\\DemoBrokenClass\\",
+    "class": "Tests\\Fixtures\\DemoBrokenClass\\DemoBrokenClass",
+    "description": "An add-on that only exists in the test suite: its class cannot be made.",
+    "requires": ">=0.7.1",
+    "permissions": ["events"]
+}

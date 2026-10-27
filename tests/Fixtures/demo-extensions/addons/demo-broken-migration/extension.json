@@ -1,0 +1,11 @@
+{
+    "slug": "demo-broken-migration",
+    "type": "addon",
+    "name": "Demo with a broken migration",
+    "version": "1.0.0",
+    "namespace": "Tests\\Fixtures\\DemoBrokenMigration\\",
+    "class": "Tests\\Fixtures\\DemoBrokenMigration\\DemoBrokenMigration",
+    "description": "An add-on that only exists in the test suite: its migration fails half-way.",
+    "requires": ">=0.7.1",
+    "permissions": ["database"]
+}

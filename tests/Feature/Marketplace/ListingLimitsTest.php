@@ -4,9 +4,11 @@ namespace Tests\Feature\Marketplace;
 
 use App\Marketplace\Store\ListingLimits;
 use App\Marketplace\Store\SigningKey;
+use App\Marketplace\Store\VersionUploader;
 use App\Models\Client;
 use App\Models\Developer;
 use App\Models\MarketplaceItem;
+use App\Models\MarketplaceVersion;
 use App\Providers\MarketplaceStoreServiceProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -167,6 +169,39 @@ class ListingLimitsTest extends TestCase
             'changelog' => str_repeat('l', 2001),
             'package' => new UploadedFile($this->zip('calm', '1.1.0'), 'calm.zip', 'application/zip', null, true),
         ])->assertSessionHasErrors('changelog');
+    }
+
+    public function test_the_developer_forms_refuse_a_version_that_does_not_fit(): void
+    {
+        $client = Client::factory()->create(['first_name' => 'Raz', 'last_name' => '', 'company_name' => null]);
+        $this->actingAs($client, 'web')->post(route('developer.join.store'), ['name' => 'Raz Studio', 'agree' => '1']);
+        $form = ['name' => 'Calm', 'slug' => 'calm', 'type' => 'theme', 'summary' => 'A calm theme.', 'own_code' => '1'];
+        $long = '1.0.0-'.str_repeat('b', ListingLimits::VERSION - 5);
+        $this->assertSame(41, strlen($long));
+
+        // A first upload with a 41-character version gets a clear message, not an error page.
+        $this->post(route('developer.items.store'), $form + ['package' => new UploadedFile($this->zip('calm', $long), 'calm.zip', 'application/zip', null, true)])
+            ->assertSessionHasErrors(['package' => 'The automatic checks found these problems: Package could not be read (The package version can be at most 40 characters long.)']);
+        $this->assertSame(0, MarketplaceItem::query()->count());
+
+        // A new version with one is kept back for changes, with the same message.
+        $this->post(route('developer.items.store'), $form + ['package' => new UploadedFile($this->zip('calm'), 'calm.zip', 'application/zip', null, true)])
+            ->assertRedirect(route('developer.items.show', 'calm'));
+        $item = MarketplaceItem::query()->where('slug', 'calm')->sole();
+        $this->post(route('developer.items.versions.store', $item), ['package' => new UploadedFile($this->zip('calm', $long), 'calm.zip', 'application/zip', null, true)])
+            ->assertSessionHas('error');
+        $version = $item->versions()->latest('id')->first();
+        $this->assertSame(MarketplaceVersion::STATUS_CHANGES, $version->status);
+        $this->assertStringContainsString('at most 40 characters', $version->messages()->value('message'));
+
+        // An approved version sent again with a long version still fits the column with its mark.
+        $fits = '1.0.0-'.str_repeat('c', ListingLimits::VERSION - 6);
+        $first = app(VersionUploader::class)->upload($item->refresh(), $this->zip('calm', $fits));
+        $first->update(['status' => MarketplaceVersion::STATUS_APPROVED]);
+        $again = app(VersionUploader::class)->upload($item->refresh(), $this->zip('calm', $fits));
+        $this->assertSame(MarketplaceVersion::STATUS_CHANGES, $again->status);
+        $this->assertSame(ListingLimits::VERSION, strlen($again->version));
+        $this->assertMatchesRegularExpression('/^1\.0\.0-c+-duplicate-[a-z0-9]{4}$/', $again->version);
     }
 
     public function test_the_staff_form_checks_the_limits_and_keeps_an_official_category(): void

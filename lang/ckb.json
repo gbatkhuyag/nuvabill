@@ -4111,6 +4111,7 @@
     "The package is too big when unpacked.": "پاکێجەکە دوای کردنەوە زۆر گەورەیە.",
     "The package slug may only use lowercase letters, numbers, dashes and underscores.": "ناوی کورتی پاکێج تەنها دەتوانێت پیتی بچووکی ئینگلیزی، ژمارە، هێڵ و ژێرهێڵ بەکاربهێنێت.",
     "The package version must look like 1.0.0.": "وەشانی پاکێج دەبێت وەک 1.0.0 بێت.",
+    "The package version can be at most :max characters long.": "وەشانی پاکێج دەتوانێت لە :max پیت زیاتر نەبێت.",
     "The passkey could not be added. Try again.": "پاسکییەکە زیاد نەکرا. دووبارە هەوڵ بدەرەوە.",
     "The passkey was not added. Try again.": "پاسکییەکە زیاد نەکرا. دووبارە هەوڵ بدەرەوە.",
     "The password and every query travel over the network. That is fine inside a private network; otherwise turn on SSL for the connection (MYSQL_ATTR_SSL_CA).": "وشەی نهێنی و هەموو داواکارییەک بە تۆڕدا دەڕۆن. لەناو تۆڕێکی تایبەتدا ئەمە کێشە نییە؛ ئەگەرنا SSL بۆ پەیوەندییەکە هەڵبکە (MYSQL_ATTR_SSL_CA).",

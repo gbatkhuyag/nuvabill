@@ -4111,6 +4111,7 @@
     "The package is too big when unpacked.": "安装包解压后过大。",
     "The package slug may only use lowercase letters, numbers, dashes and underscores.": "安装包 slug 只能包含小写字母、数字、短横线和下划线。",
     "The package version must look like 1.0.0.": "安装包版本号格式必须类似 1.0.0。",
+    "The package version can be at most :max characters long.": "安装包版本号最多只能有 :max 个字符。",
     "The passkey could not be added. Try again.": "无法添加通行密钥。请重试。",
     "The passkey was not added. Try again.": "通行密钥未添加。请重试。",
     "The password and every query travel over the network. That is fine inside a private network; otherwise turn on SSL for the connection (MYSQL_ATTR_SSL_CA).": "密码和每条查询都会通过网络传输。在私有网络内这没有问题；否则请为连接开启 SSL（MYSQL_ATTR_SSL_CA）。",

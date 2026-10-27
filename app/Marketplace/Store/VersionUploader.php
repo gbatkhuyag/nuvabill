@@ -39,7 +39,9 @@ class VersionUploader
             @unlink($existing->path());
             $existing->delete();
         } elseif ($existing !== null) {
-            $version .= '-duplicate-'.Str::lower(Str::random(4));
+            // The version is cut first, so the version and the mark still fit the version column.
+            $mark = '-duplicate-'.Str::lower(Str::random(4));
+            $version = substr($version, 0, ListingLimits::VERSION - strlen($mark)).$mark;
             $report['checks'][] = ['key' => 'version', 'title' => __('Version already released'), 'text' => __('Raise the version number in the manifest.'), 'level' => 'fail'];
             $report['ok'] = false;
         }

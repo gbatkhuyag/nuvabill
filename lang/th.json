@@ -4111,6 +4111,7 @@
     "The package is too big when unpacked.": "แพ็กเกจมีขนาดใหญ่เกินไปเมื่อแตกไฟล์",
     "The package slug may only use lowercase letters, numbers, dashes and underscores.": "slug ของแพ็กเกจใช้ได้เฉพาะตัวอักษรพิมพ์เล็ก ตัวเลข ขีดกลาง และขีดล่าง",
     "The package version must look like 1.0.0.": "เวอร์ชันของแพ็กเกจต้องอยู่ในรูปแบบ 1.0.0",
+    "The package version can be at most :max characters long.": "เวอร์ชันของแพ็กเกจยาวได้ไม่เกิน :max ตัวอักษร",
     "The passkey could not be added. Try again.": "ไม่สามารถเพิ่มพาสคีย์ได้ โปรดลองอีกครั้ง",
     "The passkey was not added. Try again.": "ไม่ได้เพิ่มพาสคีย์ โปรดลองอีกครั้ง",
     "The password and every query travel over the network. That is fine inside a private network; otherwise turn on SSL for the connection (MYSQL_ATTR_SSL_CA).": "รหัสผ่านและทุกคำสั่งสืบค้นถูกส่งผ่านเครือข่าย ซึ่งไม่เป็นปัญหาภายในเครือข่ายส่วนตัว มิฉะนั้นโปรดเปิด SSL สำหรับการเชื่อมต่อ (MYSQL_ATTR_SSL_CA)",

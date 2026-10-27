@@ -27,6 +27,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -225,6 +226,79 @@ class DemoResetTest extends TestCase
             $this->getJson(route('admin.machines.power.show', Machine::query()->where('name', 'DS-101')->sole()))->assertOk()->assertJsonPath('state', 'on');
             $this->getJson(route('admin.machines.power.show', Machine::query()->where('name', 'DS-104')->sole()))->assertOk()->assertJsonPath('state', 'off');
         });
+    }
+
+    public function test_a_broken_demo_addon_does_not_stop_the_reset(): void
+    {
+        $this->useDemoExtensions();
+        config(['nuvabill.demo_addons' => 'demo-broken-migration,demo-power,demo-broken-class']);
+        Log::spy();
+
+        $this->inFreshDemo('demo-reset-broken.sqlite', function (): void {
+            $extensions = app(ExtensionManager::class);
+
+            // The demo still has fresh data, and the add-ons listed after the broken one are on.
+            $this->assertTrue(Admin::query()->where('email', Demo::ADMIN_EMAIL)->exists());
+            $this->assertTrue($extensions->isEnabled('demo-power'));
+            $this->assertTrue(Schema::hasTable('demo_power_readings'));
+
+            // The add-on whose migration fails stays off. A table it made before failing is left as
+            // it is, and the next reset starts from an empty database again.
+            $this->assertFalse($extensions->isEnabled('demo-broken-migration'));
+
+            // An add-on whose class cannot be made is never run, so it never reaches a visitor.
+            $this->assertArrayNotHasKey('demo-broken-class', $extensions->activeAddons()->all());
+            $this->assertSame(['demo-power'], $extensions->activeAddons()->keys()->all());
+        });
+
+        // The warning names the add-on only, never the error behind it.
+        Log::shouldHaveReceived('warning')->with('The demo add-on demo-broken-migration could not be switched on.')->once();
+    }
+
+    public function test_a_second_reset_switches_the_addons_on_again(): void
+    {
+        $this->useDemoExtensions();
+        config(['nuvabill.demo_addons' => 'demo-power']);
+
+        $this->inFreshDemo('demo-reset-twice.sqlite', function (): void {
+            // The live database now has the add-on and the gateways switched on, and those rows are
+            // cached, as they are when the hourly cron boots the add-ons before the reset.
+            $extensions = app(ExtensionManager::class);
+            $this->assertTrue($extensions->isEnabled('demo-power'));
+            $this->assertTrue($extensions->isEnabled('banktransfer'));
+
+            $this->artisan('nuvabill:demo-reset')->assertSuccessful();
+            DB::purge('sqlite');
+
+            foreach (['demo-power', 'banktransfer', 'stripe', 'paypal'] as $slug) {
+                $this->assertTrue((bool) DB::table('extensions')->where('slug', $slug)->value('is_enabled'), $slug);
+            }
+
+            $this->assertTrue(Schema::hasTable('demo_power_readings'));
+        });
+    }
+
+    public function test_a_forced_reset_outside_demo_mode_switches_no_addons_on(): void
+    {
+        $this->useDemoExtensions();
+
+        $database = storage_path('framework/testing/demo-reset-forced.sqlite');
+        File::ensureDirectoryExists(dirname($database));
+        File::put($database, '');
+
+        config(['nuvabill.demo' => false, 'nuvabill.demo_addons' => 'demo-power', 'database.default' => 'sqlite', 'database.connections.sqlite.database' => $database]);
+        DB::purge('sqlite');
+
+        try {
+            $this->artisan('nuvabill:demo-reset', ['--force' => true])->assertSuccessful();
+
+            $this->assertFalse(DB::table('extensions')->where('slug', 'demo-power')->exists());
+            $this->assertFalse(app(ExtensionManager::class)->isEnabled('demo-power'));
+            $this->assertFalse(Schema::hasTable('demo_power_readings'));
+        } finally {
+            DB::purge('sqlite');
+            File::delete([$database, $database.'-journal', $database.'.next']);
+        }
     }
 
     public function test_demo_addons_are_only_read_in_demo_mode(): void

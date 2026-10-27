@@ -2,6 +2,7 @@
 
 namespace App\Marketplace;
 
+use App\Marketplace\Store\ListingLimits;
 use RuntimeException;
 use ZipArchive;
 
@@ -214,6 +215,11 @@ class PackageArchive
 
                 if (! preg_match('/^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$/', $this->version())) {
                     throw new RuntimeException(__('The package version must look like 1.0.0.'));
+                }
+
+                // The store keeps versions in a column of this length.
+                if (strlen($this->version()) > ListingLimits::VERSION) {
+                    throw new RuntimeException(__('The package version can be at most :max characters long.', ['max' => ListingLimits::VERSION]));
                 }
 
                 return;
