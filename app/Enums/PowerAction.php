@@ -3,7 +3,8 @@
 namespace App\Enums;
 
 /**
- * A power action on a dedicated server machine, sent to its BMC.
+ * A power action on a dedicated server machine, sent to its BMC by a power driver. How an action
+ * is sent (a Redfish reset type, an ipmitool verb) is up to the driver.
  */
 enum PowerAction: string
 {
@@ -30,34 +31,5 @@ enum PowerAction: string
     public function isForced(): bool
     {
         return in_array($this, [self::Reset, self::Off], true);
-    }
-
-    /**
-     * The Redfish ComputerSystem.Reset type. A shut down may fall back to PushPowerButton when the
-     * BMC lacks GracefulShutdown; the driver decides that.
-     */
-    public function redfishResetType(): string
-    {
-        return match ($this) {
-            self::On => 'On',
-            self::Shutdown => 'GracefulShutdown',
-            self::Restart => 'GracefulRestart',
-            self::Reset => 'ForceRestart',
-            self::Off => 'ForceOff',
-        };
-    }
-
-    /**
-     * The "ipmitool chassis power" verb, or null when IPMI has no such action (a graceful restart).
-     */
-    public function ipmiVerb(): ?string
-    {
-        return match ($this) {
-            self::On => 'on',
-            self::Shutdown => 'soft',
-            self::Restart => null,
-            self::Reset => 'reset',
-            self::Off => 'off',
-        };
     }
 }

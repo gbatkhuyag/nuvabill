@@ -1,0 +1,11 @@
+{
+    "slug": "rackhooks",
+    "type": "addon",
+    "name": "Rack hooks",
+    "version": "1.0.0",
+    "namespace": "Tests\\Fixtures\\RackHooks\\",
+    "class": "Tests\\Fixtures\\RackHooks\\RackHooks",
+    "description": "An add-on that only exists in the test suite: it uses every dedicated server hook.",
+    "requires": ">=0.7.0",
+    "permissions": ["hardware", "events"]
+}

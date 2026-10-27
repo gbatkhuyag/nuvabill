@@ -129,13 +129,12 @@ class Settings
 
         // Dedicated servers (Admin → Hardware). The systems clients may ask for in a reinstall
         // request, the ticket department for those requests (null: the first visible one), the
-        // wait after a shut down signal before the power is forced off, whether clients see the
-        // machine's location, and whether IPMI is offered (needs ipmitool on this server).
+        // wait after a shut down signal before the power is forced off, and whether clients see the
+        // machine's location. Power drivers keep their settings in the add-on that brings them.
         'hardware.os_choices' => ['Ubuntu 24.04', 'Debian 12', 'AlmaLinux 9', 'Rocky Linux 9'],
         'hardware.ticket_department' => null,
         'hardware.suspend_grace_minutes' => 10,
         'hardware.show_location' => true,
-        'hardware.allow_ipmi' => false,
 
         'orders.accept_terms_url' => '',
         // New orders still unpaid this many days after their invoice was due are cancelled, so the

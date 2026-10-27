@@ -2,6 +2,7 @@
 
 namespace App\Provisioning\Hardware;
 
+use App\Enums\BootDevice;
 use App\Enums\MachineStatus;
 use App\Enums\PowerAction;
 use App\Enums\PowerState;
@@ -10,12 +11,18 @@ use App\Mail\TemplateMailer;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Machine;
+use App\Models\MachinePowerEvent;
 use App\Models\Service;
+use App\Provisioning\Hardware\Drivers\ChoosesBootDevice;
 use App\Provisioning\Hardware\Drivers\PowerDriver;
 use App\Provisioning\Hardware\Drivers\PowerDrivers;
+use App\Provisioning\Hardware\Drivers\ReadsHealth;
+use App\Provisioning\Hardware\Drivers\ReadsPowerUsage;
 use App\Provisioning\Hardware\Tls\CertificateProbe;
 use App\Provisioning\Hardware\Tls\PeerCertificate;
 use App\Support\Activity;
+use App\Support\Locales;
+use Closure;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
@@ -23,9 +30,13 @@ use RuntimeException;
 use Throwable;
 
 /**
- * The only way to a machine's BMC. Staff pages, the dedicated server module (for clients) and the
- * scheduler all come through here, so every power action takes the machine's power lock and
- * cool-down, power states are cached for a few seconds, and every action is in the activity log.
+ * The only way to a machine's BMC. Staff pages, the dedicated server module (for clients), add-ons
+ * and the scheduler all come through here, so every power action takes the machine's power lock and
+ * cool-down, power states and health are cached for a while, and every action is in the activity
+ * log and in the machine's power history (MachinePowerEvent), whichever driver ran it.
+ *
+ * Core has no driver of its own (see PowerDrivers). Without one every machine has no power control:
+ * nothing here calls a BMC, and staff are reminded to switch machines by hand.
  *
  * Messages are short and plain. A client never sees BMC details: their failures get a general
  * message, while staff get the cleaned BMC reason.
@@ -50,6 +61,9 @@ final class PowerControl
     /** Minutes a failing power check waits at most. */
     public const RETRY_MAX_MINUTES = 60;
 
+    /** Seconds a health reading is reused unless staff ask for a fresh one. */
+    public const HEALTH_SECONDS = 600;
+
     /** A saved power state that did not change is written again after this many seconds. */
     private const SAVE_STATE_AFTER_SECONDS = 300;
 
@@ -60,6 +74,8 @@ final class PowerControl
     private const COOLDOWN_KEY = 'nuvabill:machine:power-cooldown:';
 
     private const ALERT_KEY = 'nuvabill:machine:alert:';
+
+    private const HEALTH_KEY = 'nuvabill:machine:health:';
 
     public function __construct(
         private readonly PowerDrivers $drivers,
@@ -76,6 +92,7 @@ final class PowerControl
         $driver = $this->drivers->for($machine);
 
         $result = match (true) {
+            $driver === null && $machine->hasBmc() => BmcTestResult::failed(self::needsAddonMessage()),
             $driver === null => BmcTestResult::failed(__('Choose a power control type and enter the BMC address first.')),
             ! $driver->available() => BmcTestResult::failed(__('This power control type is not available on this site.')),
             default => $this->runTest($driver, $machine),
@@ -179,6 +196,22 @@ final class PowerControl
     }
 
     /**
+     * Whether Nuvabill can reach the machine's BMC through an installed, usable driver.
+     */
+    public function hasControl(Machine $machine): bool
+    {
+        return $this->drivers->for($machine)?->available() === true;
+    }
+
+    /**
+     * What staff read when power control needs the Dedicated Server Power add-on.
+     */
+    public static function needsAddonMessage(): string
+    {
+        return __('Automatic power control needs the Dedicated Server Power add-on. Until then, switch this machine on and off by hand.');
+    }
+
+    /**
      * The power actions the machine's BMC offers.
      *
      * @return list<PowerAction>
@@ -235,6 +268,165 @@ final class PowerControl
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * The boot devices the machine's BMC can choose for its next boot (ChoosesBootDevice).
+     *
+     * @return list<BootDevice>
+     */
+    public function bootDevices(Machine $machine): array
+    {
+        $driver = $this->drivers->for($machine);
+
+        if (! $driver instanceof ChoosesBootDevice || ! $driver->available()) {
+            return [];
+        }
+
+        try {
+            return array_values(array_filter($driver->bootDevices($machine), fn (mixed $device): bool => $device instanceof BootDevice));
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Start the machine from this device on its next boot only, for a client, staff or an add-on
+     * (such as an automatic install that boots from the network). It does not restart the machine.
+     * With a service, the machine must belong to it. It takes the machine's power lock and is
+     * written to the power history.
+     *
+     * @param  Model  $actor  The client or staff member who asked, or the machine itself for automatic work.
+     */
+    public function setBootDevice(Machine $machine, BootDevice $device, Model $actor, ?Service $service = null): PowerResult
+    {
+        if ($service !== null && (int) $machine->service_id !== (int) $service->getKey()) {
+            return PowerResult::failed(__('This server is not ready yet.'));
+        }
+
+        $driver = $this->drivers->for($machine);
+
+        if (! $driver instanceof ChoosesBootDevice || ! $driver->available() || ! in_array($device, $this->bootDevices($machine), true)) {
+            return PowerResult::failed(__('Not supported by this server.'));
+        }
+
+        $lock = Cache::lock(self::LOCK_KEY.$machine->getKey(), self::LOCK_SECONDS);
+
+        if (! $lock->get()) {
+            return PowerResult::failed(__('Another power action is running. Try again in a minute.'), busy: true);
+        }
+
+        $service ??= $machine->service;
+        $client = $actor instanceof Client ? $actor : $service?->client;
+        $action = MachinePowerEvent::BOOT_PREFIX.$device->value;
+        $on = $machine->name.($service !== null ? " (service #{$service->getKey()})" : '');
+
+        try {
+            $driver->setBootDevice($machine, $device);
+        } catch (Throwable $exception) {
+            $failure = $exception instanceof BmcException ? $exception : null;
+
+            if ($failure === null) {
+                report(new RuntimeException("Boot device of machine #{$machine->getKey()} failed: ".$exception::class));
+            }
+
+            $message = $failure?->getMessage() ?? __('We could not set the boot device. Try again later.');
+            $this->record($machine, $driver, $service, $actor, $action, MachinePowerEvent::RESULT_FAILED, $message);
+            Activity::log('machine.boot_device_failed', self::who($actor)." next boot device \"{$device->value}\" on {$on} failed: {$message}", $machine, $client, $actor);
+
+            return PowerResult::failed($actor instanceof Client ? self::clientMessage($failure) : $message);
+        } finally {
+            $lock->release();
+        }
+
+        $this->record($machine, $driver, $service, $actor, $action, MachinePowerEvent::RESULT_OK, null);
+        Activity::log('machine.boot_device', self::who($actor)." next boot device \"{$device->value}\" on {$on}: accepted", $machine, $client, $actor);
+
+        return PowerResult::done(__('The server starts from :device on its next boot.', ['device' => $device->label()]));
+    }
+
+    /**
+     * The machine's hardware health and power use (ReadsHealth, ReadsPowerUsage), reused for
+     * HEALTH_SECONDS unless $fresh. Null when its driver can read neither. A BMC that fails gives a
+     * report with the error. Only staff see health, never clients.
+     */
+    public function health(Machine $machine, bool $fresh = false): ?HealthReport
+    {
+        if (! $this->readsHealth($machine)) {
+            return null;
+        }
+
+        if (! $fresh && ($saved = $this->lastHealth($machine)) !== null) {
+            return $saved;
+        }
+
+        $driver = $this->drivers->for($machine);
+        $readings = [];
+        $watts = null;
+        $error = null;
+
+        try {
+            if ($driver instanceof ReadsHealth) {
+                $readings = array_values(array_filter(array_slice($driver->health($machine), 0, 50), fn (mixed $reading): bool => $reading instanceof HealthReading));
+            }
+
+            if ($driver instanceof ReadsPowerUsage) {
+                $used = $driver->powerUsage($machine);
+                $watts = is_int($used) && $used >= 0 && $used < 100_000 ? $used : null;
+            }
+        } catch (BmcException $exception) {
+            $error = Str::limit($exception->getMessage(), 250, '…');
+        } catch (Throwable $exception) {
+            report(new RuntimeException("Health of machine #{$machine->getKey()} failed: ".$exception::class));
+            $error = __('We could not read the health of this server. Try again later.');
+        }
+
+        $report = new HealthReport($readings, $watts, now(), $error);
+        Cache::put(self::HEALTH_KEY.$machine->getKey(), $report->toArray(), self::HEALTH_SECONDS);
+
+        return $report;
+    }
+
+    /**
+     * The last health report read, without asking the BMC.
+     */
+    public function lastHealth(Machine $machine): ?HealthReport
+    {
+        $saved = Cache::get(self::HEALTH_KEY.$machine->getKey());
+
+        return is_array($saved) ? HealthReport::fromArray($saved) : null;
+    }
+
+    /**
+     * Whether the machine's driver can read its health or power use.
+     */
+    public function readsHealth(Machine $machine): bool
+    {
+        $driver = $this->drivers->for($machine);
+
+        return $driver !== null && $driver->available() && ($driver instanceof ReadsHealth || $driver instanceof ReadsPowerUsage);
+    }
+
+    /**
+     * Email staff to switch a machine by hand because Nuvabill cannot, written in the site's
+     * language. A reminder to switch it off also stops the scheduler's own reminder for a day, so
+     * staff get one email.
+     *
+     * @param  Closure(): string  $message
+     */
+    public function remindByHand(Machine $machine, PowerAction $wanted, Closure $message): void
+    {
+        [$title, $text] = Locales::in(Locales::default(), fn (): array => [
+            $wanted === PowerAction::On ? __('Switch it on by hand') : __('Switch it off by hand'),
+            $message(),
+        ]);
+
+        if ($wanted !== PowerAction::On) {
+            Cache::put(self::ALERT_KEY.'manual:'.$machine->getKey(), true, 86400);
+        }
+
+        $this->alert($machine, $title, $text);
+        Activity::log('machine.power_by_hand', "Staff asked to switch {$machine->name} ".($wanted === PowerAction::On ? 'on' : 'off').' by hand: it has no power control', $machine);
     }
 
     /**
@@ -372,11 +564,7 @@ final class PowerControl
         $id = $machine->getKey();
         $service ??= $machine->service;
         $client = $actor instanceof Client ? $actor : $service?->client;
-        $who = match (true) {
-            $actor instanceof Client => 'Client',
-            $actor instanceof Admin => 'Staff',
-            default => 'Automatic',
-        };
+        $who = self::who($actor);
         $on = $machine->name.($service !== null ? " (service #{$service->getKey()})" : '');
 
         Cache::put(self::COOLDOWN_KEY.$id, true, self::COOLDOWN_SECONDS);
@@ -393,6 +581,7 @@ final class PowerControl
 
             if ($failure?->reason === BmcException::CONFLICT && $action !== PowerAction::Restart && $action !== PowerAction::Reset) {
                 $isOn = $action === PowerAction::On;
+                $this->record($machine, $driver, $service, $actor, $action->value, MachinePowerEvent::RESULT_ALREADY, null);
                 Activity::log('machine.power', "{$who} power action \"{$action->value}\" on {$on}: the server was already ".($isOn ? 'on' : 'off'), $machine, $client, $actor);
 
                 return PowerResult::done($isOn ? __('The server is already on.') : __('The server is already off.'), null, $isOn ? PowerState::On : PowerState::Off);
@@ -400,12 +589,14 @@ final class PowerControl
 
             $message = $failure?->getMessage() ?? __('We could not switch the power. Try again later.');
             $machine->forceFill(['bmc_last_error' => Str::limit($message, 250, '…')])->save();
+            $this->record($machine, $driver, $service, $actor, $action->value, MachinePowerEvent::RESULT_FAILED, $message);
             Activity::log('machine.power_failed', "{$who} power action \"{$action->value}\" on {$on} failed: {$message}", $machine, $client, $actor);
 
             return PowerResult::failed($actor instanceof Client ? self::clientMessage($failure) : $message);
         }
 
         Cache::forget(self::STATE_KEY.$id);
+        $this->record($machine, $driver, $service, $actor, $action->value, MachinePowerEvent::RESULT_OK, null);
         Activity::log('machine.power', "{$who} power action \"{$action->value}\" on {$on}: accepted", $machine, $client, $actor);
 
         return PowerResult::done(match ($action) {
@@ -415,6 +606,44 @@ final class PowerControl
             PowerAction::Reset => __('The server was reset.'),
             PowerAction::Off => __('The server is powered off.'),
         }, $action, PowerState::Changing);
+    }
+
+    /**
+     * Write one line of the machine's power history. A history that cannot be written never stops
+     * the action, which already happened.
+     */
+    private function record(Machine $machine, PowerDriver $driver, ?Service $service, ?Model $actor, string $action, string $result, ?string $message): void
+    {
+        $person = $actor instanceof Client || $actor instanceof Admin ? $actor : null;
+
+        rescue(fn () => MachinePowerEvent::query()->forceCreate([
+            'machine_id' => $machine->getKey(),
+            'service_id' => $service?->getKey(),
+            'actor_type' => $person?->getMorphClass(),
+            'actor_id' => $person?->getKey(),
+            'actor_kind' => match (true) {
+                $actor instanceof Client => 'client',
+                $actor instanceof Admin => 'staff',
+                default => 'automatic',
+            },
+            'action' => Str::limit($action, 32, ''),
+            'result' => $result,
+            'message' => $message === null ? null : Str::limit($message, 250, '…'),
+            'driver' => Str::limit($driver->type(), 40, ''),
+            'created_at' => now(),
+        ]));
+    }
+
+    /**
+     * Who asked, for the activity log, which stays in English.
+     */
+    private static function who(?Model $actor): string
+    {
+        return match (true) {
+            $actor instanceof Client => 'Client',
+            $actor instanceof Admin => 'Staff',
+            default => 'Automatic',
+        };
     }
 
     /**
@@ -457,6 +686,10 @@ final class PowerControl
                 if ($suspended && Cache::add(self::ALERT_KEY.'manual:'.$machine->getKey(), true, 86400)) {
                     $this->alert($machine, __('Switch it off by hand'), __('Service #:service is suspended, but Nuvabill cannot switch :machine off because it has no power control. Switch it off by hand or block its network port.', [
                         'service' => $machine->service_id,
+                        'machine' => $machine->name,
+                    ]));
+                } elseif ($wiping && Cache::add(self::ALERT_KEY.'manual:'.$machine->getKey(), true, 86400)) {
+                    $this->alert($machine, __('Switch it off by hand'), __(':machine waits for a wipe, but Nuvabill cannot switch it off because it has no power control. Switch it off by hand, then erase its disks and press Confirm wipe.', [
                         'machine' => $machine->name,
                     ]));
                 }

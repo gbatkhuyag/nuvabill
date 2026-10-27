@@ -145,6 +145,7 @@ class Demo
         'admin.services.access-check',
         'admin.services.link',
         'admin.machines.*',
+        'admin.hardware-addons.*',
         'admin.services.machine.*',
     ];
 

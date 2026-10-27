@@ -30,6 +30,8 @@ use App\Models\Product;
 use App\Models\ResourceOption;
 use App\Models\Server;
 use App\Models\Service;
+use App\Provisioning\Hardware\DedicatedPanelExtensions;
+use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\InventoryException;
 use App\Provisioning\Hardware\MachineInventory;
 use App\Provisioning\Hardware\PowerControl;
@@ -52,7 +54,10 @@ use Illuminate\Support\Facades\DB;
  * come from the machine's own free extra IPs, and a traffic change waits for staff to set the limit.
  *
  * Every machine status change goes through MachineInventory and every power action through
- * PowerControl, which hold the locks, pauses and the activity log.
+ * PowerControl, which hold the locks, pauses, the activity log and the power history. Power control
+ * itself is an add-on (Dedicated Server Power): without it, suspend, unsuspend and terminate ask
+ * staff by email to switch the machine by hand, and clients have no power buttons. Add-ons can add
+ * panel tabs (DedicatedPanelExtensions) and take over the install (MachineInstallers).
  */
 class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSetupLater, HasPanelSections, HasPanelState, HasResourceOptions, LimitsPlanChanges, UsesMachineInventory, WaitsForPayment
 {
@@ -95,7 +100,7 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
                     'basic' => __('Basic: power on, shut down and restart'),
                     'none' => __('None'),
                 ],
-            ],
+            ] + (app(PowerDrivers::class)->isEmpty() ? ['help' => __('Power buttons need the Dedicated Server Power add-on.')] : []),
             'reinstall_requests' => [
                 'label' => __('Clients can ask for a reinstall'),
                 'type' => 'select',
@@ -334,6 +339,12 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
             return ModuleResult::ok(__('Active again.'));
         }
 
+        if ($this->power()->actions($machine) === []) {
+            $this->power()->remindByHand($machine, PowerAction::On, fn (): string => __('Service #:service on :machine is active again. Switch the machine on by hand if it is off.', ['service' => $service->getKey(), 'machine' => $machine->name]));
+
+            return ModuleResult::ok(__('Active again. This server has no power control, so switch it on by hand if it is off.'));
+        }
+
         $result = $this->switchPower($machine, $service, PowerAction::On);
 
         return ModuleResult::ok($result !== null && $result->ok
@@ -353,11 +364,19 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
             return ModuleResult::ok(__('No machine was assigned.'));
         }
 
-        $off = in_array($machine->status, [MachineStatus::Active, MachineStatus::Suspended], true)
-            ? $this->switchPower($machine, $service, PowerAction::Off)
-            : null;
+        $inUse = in_array($machine->status, [MachineStatus::Active, MachineStatus::Suspended], true);
+        $off = $inUse ? $this->switchPower($machine, $service, PowerAction::Off) : null;
+        $byHand = $this->power()->actions($machine) === [];
 
         $this->inventory()->release($machine, 'terminated');
+
+        if ($byHand) {
+            if ($inUse) {
+                $this->power()->remindByHand($machine, PowerAction::Off, fn (): string => __('Service #:service ended. Switch :machine off by hand, then erase its disks and press Confirm wipe.', ['service' => $service->getKey(), 'machine' => $machine->name]));
+            }
+
+            return ModuleResult::ok(__('The machine waits for a wipe. This server has no power control, so switch it off by hand.'));
+        }
 
         return ModuleResult::ok($off !== null && $off->ok
             ? __('The machine is powered off and waits for a wipe.')
@@ -406,17 +425,17 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
 
     public function availablePanelSections(Service $service, ClientContext $context): ?array
     {
-        return $this->sections()->available($service);
+        return $this->sections()->available($service, $context);
     }
 
     public function readPanelSection(Service $service, string $section, array $input, ClientContext $context): PanelResult
     {
-        return $this->sections()->read($service, $section);
+        return $this->sections()->read($service, $section, $input, $context);
     }
 
     public function runPanelAction(Service $service, string $section, string $action, array $input, ClientContext $context): PanelResult
     {
-        return $this->sections()->run($service, $section, $action, $input);
+        return $this->sections()->run($service, $section, $action, $input, $context);
     }
 
     /**
@@ -713,9 +732,13 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
         $result = $this->switchPower($machine, $service, $action);
 
         if ($result === null) {
-            return $action !== PowerAction::Off && in_array(PowerAction::Off, $this->power()->actions($machine), true)
-                ? __('Suspended. The server is forced off after the wait time.')
-                : __('Marked suspended. This server has no power control, so switch it off by hand.');
+            if ($action !== PowerAction::Off && in_array(PowerAction::Off, $this->power()->actions($machine), true)) {
+                return __('Suspended. The server is forced off after the wait time.');
+            }
+
+            $this->power()->remindByHand($machine, PowerAction::Off, fn (): string => __('Service #:service is suspended, but Nuvabill cannot switch :machine off because it has no power control. Switch it off by hand or block its network port.', ['service' => $service->getKey(), 'machine' => $machine->name]));
+
+            return __('Marked suspended. This server has no power control, so switch it off by hand.');
         }
 
         return $result->ok
@@ -790,7 +813,7 @@ class DedicatedModule extends Module implements ChoosesWelcomeEmail, FinishesSet
 
     private function sections(): Sections
     {
-        return $this->sections ??= new Sections($this, $this->inventory(), $this->power());
+        return $this->sections ??= new Sections($this, $this->inventory(), $this->power(), app(DedicatedPanelExtensions::class));
     }
 
     private function inventory(): MachineInventory

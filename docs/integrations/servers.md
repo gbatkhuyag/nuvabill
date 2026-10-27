@@ -260,16 +260,18 @@ the VPS keeps its Virtualizor plan.
 
 ## Dedicated servers
 
-Built in. Sell your own dedicated servers: stock comes from free machines under **Hardware**, Nuvabill switches the
-power through each machine's BMC (Redfish or IPMI), and every machine is wiped before it is sold again.
+Built in. Sell your own dedicated servers: stock comes from free machines under **Hardware**, and every machine is
+wiped before it is sold again. The Dedicated Server Power add-on switches the power through each machine's BMC
+(Redfish or IPMI); without it your team switches machines by hand and Nuvabill reminds them by email.
 
 - **Connection**: none. Add your machines under **Hardware**, not under **Servers**.
 - **Plan settings**: power buttons for clients, reinstall requests, what happens on suspend, the default system and
   the login name.
 - **What it does**: reserves a free machine at order, emails your team to install the system after payment, activates
-  the service when staff press **Server is ready**, switches the power off on suspend and on at unsuspend, and moves the
-  machine to **Needs wipe** at the end.
-- **In the client area**: overview, power, IP addresses and a reinstall request that opens a ticket.
+  the service when staff press **Server is ready**, switches the power off on suspend and on at unsuspend (or emails
+  your team to do it by hand), and moves the machine to **Needs wipe** at the end.
+- **In the client area**: overview, power (with Dedicated Server Power), IP addresses and a reinstall request that
+  opens a ticket.
 
 The full guide: [Dedicated servers](../hardware.md).
 

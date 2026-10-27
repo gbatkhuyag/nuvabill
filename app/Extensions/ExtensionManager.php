@@ -458,6 +458,23 @@ class ExtensionManager
     }
 
     /**
+     * Hardware pages of active add-ons that may control dedicated server hardware, under
+     * /admin/hardware/addons/{slug}/. Call inside the admin route group, behind hardware.manage.
+     */
+    public function registerHardwareRoutes(): void
+    {
+        $addons = $this->activeAddons()->filter(fn (Addon $addon): bool => in_array('hardware', (array) $this->find($addon->slug())?->permissions, true));
+
+        foreach ($addons as $slug => $addon) {
+            $this->tryMake(function () use ($slug, $addon): bool {
+                Route::prefix($slug)->name($slug.'.')->group(fn () => $addon->hardwareRoutes());
+
+                return true;
+            });
+        }
+    }
+
+    /**
      * The active add-on that shows the home page instead of the store, if any.
      */
     public function homePageAddon(): ?Addon

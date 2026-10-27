@@ -9,12 +9,16 @@ use App\Provisioning\Hardware\BmcException;
 use App\Provisioning\Hardware\BmcTestResult;
 
 /**
- * One way to switch a machine's power through its BMC, such as Redfish or IPMI. Core registers its
- * drivers in PowerDrivers; a package may register its own type there.
+ * One way to switch a machine's power through its BMC, such as Redfish or IPMI. Core ships no
+ * driver: an add-on registers its own in PowerDrivers when it boots (the Dedicated Server Power
+ * add-on registers Redfish and IPMI). Without one, staff switch the power by hand.
  *
- * Only PowerControl calls drivers, so locks, caching, cool-downs and the audit log always apply. A
- * driver sends requests only to the machine's checked BMC address (BmcAddress), never follows a
- * redirect, and never puts the BMC login or a raw error into a message or log.
+ * Only PowerControl calls drivers, so locks, caching, cool-downs, the activity log and the power
+ * history always apply. A driver sends requests only to the machine's checked BMC address
+ * (BmcAddress), never follows a redirect, runs programs with an argument list (never a shell), and
+ * never puts the BMC login or a raw error into a message or log.
+ *
+ * A driver may also implement ChoosesBootDevice, ReadsHealth and ReadsPowerUsage.
  */
 interface PowerDriver
 {

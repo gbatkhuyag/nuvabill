@@ -6,9 +6,9 @@ use App\Enums\BmcType;
 use App\Models\Machine;
 
 /**
- * The power drivers this site knows, by machines.bmc_type. Core registers Redfish and IPMI; a
- * package may add its own with register() when it boots. A machine whose type no driver knows has
- * no power control.
+ * The power drivers this site knows, by machines.bmc_type. Core registers none: an add-on adds its
+ * drivers in its boot(), for example app(PowerDrivers::class)->register(new RedfishDriver(...)).
+ * A machine whose type no driver knows has no power control, and staff switch it by hand.
  */
 final class PowerDrivers
 {
@@ -19,7 +19,7 @@ final class PowerDrivers
 
     public function register(PowerDriver $driver): void
     {
-        if ($driver->type() === BmcType::None->value) {
+        if ($driver->type() === BmcType::None->value || preg_match('/^[a-z0-9][a-z0-9_-]{0,39}$/D', $driver->type()) !== 1) {
             return;
         }
 
@@ -37,6 +37,14 @@ final class PowerDrivers
     public function for(Machine $machine): ?PowerDriver
     {
         return $machine->hasBmc() ? $this->get((string) $machine->bmc_type) : null;
+    }
+
+    /**
+     * Whether no driver is installed, so no machine can have its power switched by Nuvabill.
+     */
+    public function isEmpty(): bool
+    {
+        return $this->drivers === [];
     }
 
     /**

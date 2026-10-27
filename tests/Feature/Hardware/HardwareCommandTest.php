@@ -10,7 +10,6 @@ use App\Models\Client;
 use App\Models\Machine;
 use App\Models\Product;
 use App\Models\Service;
-use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\MachineInventory;
 use App\Provisioning\Hardware\PowerControl;
 use App\Provisioning\Hardware\Tls\PinningSupport;
@@ -20,6 +19,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Tests\Fakes\FakePowerDriver;
 use Tests\TestCase;
 
 /**
@@ -57,7 +57,7 @@ class HardwareCommandTest extends TestCase
 
         Mail::fake();
         $this->app->instance(PinningSupport::class, new PinningSupport(fn (string $function): bool => true, ['version' => '8.5.0', 'ssl_version' => 'OpenSSL/3.0.13']));
-        $this->app->forgetInstance(PowerDrivers::class);
+        FakePowerDriver::install();
 
         Http::fake(function (Request $request) {
             $host = (string) parse_url($request->url(), PHP_URL_HOST);

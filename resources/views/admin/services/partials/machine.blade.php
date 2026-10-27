@@ -48,6 +48,19 @@
         <p class="muted" style="margin:0">{{ $card['pending'] ? __('No machine yet. Assign one, or press Create account to take the first free machine sold as this product.') : __('This service has no machine. Assign the machine it runs on.') }}</p>
     @endif
 
+    @if ($card['pending'] && $card['waitsForInstall'] && $card['installer'] !== null)
+        <div class="flash" data-tone="{{ filled($machine->setup_error) ? 'warn' : 'info' }}" role="status">
+            <span>
+                @if (filled($machine->setup_error))
+                    {{ __('The automatic install by :name did not finish: :reason', ['name' => $card['installer'], 'reason' => $machine->setup_error]) }}
+                @else
+                    {{ __('The system is being installed automatically by :name (started :time). The service is set up when it is done.', ['name' => $card['installer'], 'time' => $machine->setup_started_at?->diffForHumans() ?? '']) }}
+                @endif
+                {{ __('You can also install it by hand and press Server is ready.') }}
+            </span>
+        </div>
+    @endif
+
     @if ($card['pending'] && $card['waitsForInstall'])
         <ol style="margin:0;padding-inline-start:1.3rem;display:grid;gap:.25rem;list-style:decimal">
             <li>{{ __('Install the system on :machine.', ['machine' => $machine->name.($machine->rack ? ' ('.__('Rack :rack', ['rack' => trim($machine->rack.' '.$machine->rack_unit)]).')' : '')]) }}@if (filled($service->product->module_config['default_os'] ?? null)) <span class="muted">({{ $service->product->module_config['default_os'] }})</span>@endif</li>

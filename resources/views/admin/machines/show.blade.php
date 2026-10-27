@@ -131,6 +131,63 @@
                 @include('admin.machines.partials.power')
             </section>
 
+            @if ($readsHealth)
+                @php($healthTones = ['ok' => 'good', 'warning' => 'warn', 'critical' => 'crit'])
+                <section class="card" style="display:grid;gap:.8rem" aria-labelledby="health-title">
+                    <div class="card-header" style="margin:0">
+                        <h2 id="health-title">{{ __('Health') }}</h2>
+                        <form method="POST" action="{{ route('admin.machines.health', $machine) }}">
+                            @csrf
+                            <button class="btn btn-sm btn-ghost" type="submit"><x-icon name="refresh" />{{ __('Read now') }}</button>
+                        </form>
+                    </div>
+                    @if ($health === null)
+                        <p class="muted" style="margin:0">{{ __('Not read yet. Press Read now to ask the BMC.') }}</p>
+                    @else
+                        @if ($health->error)
+                            <p style="margin:0;color:var(--nb-crit)">{{ $health->error }}</p>
+                        @endif
+                        <dl class="dl">
+                            @if ($health->watts !== null)
+                                <dt>{{ __('Power use') }}</dt><dd>{{ __(':watts W', ['watts' => $health->watts]) }}</dd>
+                            @endif
+                            @foreach ($health->readings as $reading)
+                                <dt>{{ $reading->name }}</dt>
+                                <dd>@isset($healthTones[$reading->status])<x-pill :tone="$healthTones[$reading->status]">{{ $reading->value }}</x-pill>@else{{ $reading->value }}@endisset</dd>
+                            @endforeach
+                        </dl>
+                        <p class="faint" style="margin:0;font-size:.8rem">{{ __('Read :time', ['time' => $health->readAt->diffForHumans()]) }}</p>
+                    @endif
+                </section>
+            @endif
+
+            @if ($powerEvents->isNotEmpty())
+                <section class="card" aria-labelledby="power-history-title">
+                    <div class="card-header"><h2 id="power-history-title">{{ __('Power history') }}</h2></div>
+                    <ul class="list-plain">
+                        @foreach ($powerEvents as $event)
+                            <li class="feed-item">
+                                <span>
+                                    {{ $event->actionLabel() }}
+                                    @if ($event->result === \App\Models\MachinePowerEvent::RESULT_FAILED)
+                                        <x-pill tone="crit">{{ __('Failed') }}</x-pill>
+                                    @elseif ($event->result === \App\Models\MachinePowerEvent::RESULT_ALREADY)
+                                        <span class="faint">({{ __('already done') }})</span>
+                                    @endif
+                                    <span class="faint">· {{ $event->actorLabel() }}</span>
+                                    @if ($event->message)<div class="faint" style="font-size:.8rem">{{ $event->message }}</div>@endif
+                                </span>
+                                <time datetime="{{ $event->created_at->toIso8601String() }}" title="{{ $event->created_at->translatedFormat('d M Y H:i') }}">{{ $event->created_at->diffForHumans(short: true) }}</time>
+                            </li>
+                        @endforeach
+                    </ul>
+                </section>
+            @endif
+
+            @foreach ($addonCards as $card)
+                {!! $card !!}
+            @endforeach
+
             @if ($mayManage)
                 @if ($status === MachineStatus::Wiping)
                     <form method="POST" action="{{ route('admin.machines.wiped', $machine) }}" class="card" style="display:grid;gap:.9rem" aria-labelledby="wipe-title"

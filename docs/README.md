@@ -11,7 +11,7 @@ These pages cover running your own copy. The same guides, and the developer and 
 | [Control panels and VPS](integrations/servers.md) | cPanel & WHM, DirectAdmin, Plesk, Proxmox VE, Virtualizor, dedicated servers, and CyberPanel, HestiaCP, VirtFusion, SolusVM, Hetzner Cloud and Hetzner Dedicated from the Marketplace; the client server panel and console; notes for module authors |
 | [Marketplace](marketplace.md) | Connect to marketplace when Cloudflare stops your server, and the Cloudflare token for the store operator |
 | [Resource options](resource-options.md) | Sliders for extra CPU, RAM, disk, IP addresses and more: prices per step, changes on live services, and how they reach the server |
-| [Dedicated servers](hardware.md) | Selling your own machines: stock, BMC power control with Redfish or IPMI, certificate checks and the disk wipe before resale |
+| [Dedicated servers](hardware.md) | Selling your own machines: stock, the disk wipe before resale, power control with the Dedicated Server Power add-on, and hooks for add-ons |
 | [Payment gateways](integrations/payment-gateways.md) | Stripe, PayPal, FIB, FastPay, Wayl, bank transfer |
 | [Domain registrars](integrations/domain-registrars.md) | ResellerClub, Namecheap, Enom, OpenSRS |
 | [Migrating from WHMCS](whmcs-migration.md) | What the importer copies, configurable options, what it leaves out, and a safe switch-over plan |

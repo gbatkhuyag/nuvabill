@@ -8,6 +8,7 @@ use App\Models\Admin;
 use App\Models\Machine;
 use App\Models\MachineIp;
 use App\Models\Service;
+use App\Provisioning\Hardware\MachineInstallers;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\View\View;
 
@@ -50,6 +51,8 @@ class ServiceMachineComposer
             'pending' => $status === ServiceStatus::Pending,
             'setUp' => $setUp,
             'waitsForInstall' => $machine?->status === MachineStatus::Provisioning,
+            // An add-on installs the system (MachineInstaller): its name, or the key of one no longer installed.
+            'installer' => $machine?->setup_by === null ? null : (app(MachineInstallers::class)->get((string) $machine->setup_by)?->label() ?? (string) $machine->setup_by),
             'mayPower' => (bool) $admin?->hasPermission('hardware.power'),
             'mayManage' => $mayManage,
         ]);

@@ -17,7 +17,8 @@ use Illuminate\Support\Carbon;
  * events such as {@see OrderPlaced}, and it can add HTML to page heads and extra
  * sources to the content security policy. Since Nuvabill 0.4.2 it can also run on a schedule,
  * add admin pages and show a panel on its settings page. Since 0.6.1 it can show pages to visitors,
- * the home page included, and list them in sitemap.xml.
+ * the home page included, and list them in sitemap.xml. Since 0.7.0 it can hook into dedicated
+ * servers (Admin → Hardware): see docs/hardware.md and hardwareRoutes().
  */
 abstract class Addon
 {
@@ -115,6 +116,23 @@ abstract class Addon
      * permissions. Since Nuvabill 0.6.10.
      */
     public function webhookRoutes(): void {}
+
+    /**
+     * Pages and form targets for the Hardware area, registered under /admin/hardware/addons/{slug}/
+     * for staff who may manage dedicated server hardware (hardware.manage), with the admin area's
+     * sign-in, two-factor and form-token checks. For example the form that saves a machine's switch
+     * port. Give them short names and link to them with route($this->hardwareRouteName('port')).
+     * List "hardware" in the manifest's permissions. Since Nuvabill 0.7.0.
+     */
+    public function hardwareRoutes(): void {}
+
+    /**
+     * The full route name for one of this add-on's Hardware pages.
+     */
+    public function hardwareRouteName(string $name): string
+    {
+        return 'admin.hardware-addons.'.$this->slug().'.'.$name;
+    }
 
     /**
      * Whether this add-on shows the site's home page instead of the store. The store then moves to /store.

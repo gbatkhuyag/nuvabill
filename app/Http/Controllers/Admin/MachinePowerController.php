@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enums\BootDevice;
 use App\Enums\PowerAction;
 use App\Enums\PowerState;
 use App\Http\Controllers\Controller;
@@ -12,11 +13,13 @@ use App\Provisioning\Hardware\PowerResult;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
- * Admin → Hardware → a machine → Power: the power state from the BMC, and power actions. Every
- * call goes through PowerControl, so the machine's power lock, cool-down, state cache and activity
- * log apply to staff exactly as they do to clients.
+ * Admin → Hardware → a machine → Power: the power state from the BMC, power actions, the next boot
+ * device and the hardware health. Every call goes through PowerControl, so the machine's power
+ * lock, cool-down, state cache, activity log and power history apply to staff exactly as they do to
+ * clients.
  */
 class MachinePowerController extends Controller
 {
@@ -52,6 +55,36 @@ class MachinePowerController extends Controller
         }
 
         return back()->with($result->ok ? 'status' : 'error', $result->message);
+    }
+
+    /**
+     * Choose where the machine starts from on its next boot only.
+     */
+    public function boot(Request $request, Machine $machine): RedirectResponse
+    {
+        $data = $request->validate([
+            'device' => ['required', 'string', Rule::in(array_column(BootDevice::cases(), 'value'))],
+        ]);
+
+        /** @var Admin $admin */
+        $admin = $request->user('admin');
+        $result = app(PowerControl::class)->setBootDevice($machine, BootDevice::from($data['device']), $admin);
+
+        return back()->with($result->ok ? 'status' : 'error', $result->message);
+    }
+
+    /**
+     * Read the hardware health and power use from the BMC again.
+     */
+    public function health(Machine $machine): RedirectResponse
+    {
+        $report = app(PowerControl::class)->health($machine, fresh: true);
+
+        if ($report === null) {
+            return back()->with('error', __('Not supported by this server.'));
+        }
+
+        return back()->with($report->error === null ? 'status' : 'error', $report->error ?? __('Health read just now.'));
     }
 
     /**

@@ -19,6 +19,7 @@ use App\Extensions\Servers\Panel\StandardSections;
 use App\Mail\TemplateMailer;
 use App\Models\Product;
 use App\Models\Service;
+use App\Provisioning\Hardware\DedicatedPanelExtensions;
 use App\Support\Activity;
 use App\Support\Locales;
 use Illuminate\Support\Facades\Cache;
@@ -342,7 +343,7 @@ final class PanelGate
 
             // Without problems the key is plain letters, digits and dashes, safe for the log.
             if ($section instanceof PanelSection && $problems === []) {
-                if ($section->view !== null && ! str_starts_with($section->view, 'ext-'.$module->slug().'::')) {
+                if ($section->view !== null && ! str_starts_with($section->view, 'ext-'.$module->slug().'::') && ! $this->addonTab($module, $product, $section)) {
                     $problems[] = "Section [{$section->key}] uses a view of another extension.";
                 }
 
@@ -361,6 +362,21 @@ final class PanelGate
         }
 
         return array_values($sections);
+    }
+
+    /**
+     * Whether the section is a tab an add-on adds to dedicated servers (DedicatedPanelExtensions),
+     * with that add-on's own view.
+     */
+    private function addonTab(ServerModule $module, Product $product, PanelSection $section): bool
+    {
+        if (! $module instanceof UsesMachineInventory) {
+            return false;
+        }
+
+        $added = app(DedicatedPanelExtensions::class)->sections($product)[$section->key]['section'] ?? null;
+
+        return $added instanceof PanelSection && $added->view === $section->view;
     }
 
     /**

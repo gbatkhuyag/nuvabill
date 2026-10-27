@@ -78,6 +78,9 @@
         <section class="card" style="display:grid;gap:1.1rem" aria-labelledby="bmc-form-title">
             <div class="card-header" style="margin:0"><h2 id="bmc-form-title">{{ __('Power control (BMC)') }}</h2></div>
             <p class="muted" style="margin:0">{{ __('Use a BMC user with the Operator role, not Administrator. Keep the BMC on a private network that only this site can reach.') }}</p>
+            @if ($needsPowerAddon)
+                @include('admin.machines.partials.power-addon')
+            @endif
             <div class="form-grid">
                 <div class="field">
                     <label for="f-bmc_type">{{ __('Power control') }}</label>
@@ -86,7 +89,7 @@
                             <option value="{{ $value }}" @selected($type === (string) $value)>{{ $label }}</option>
                         @endforeach
                     </select>
-                    @error('bmc_type')<p class="error" id="f-bmc_type-error">{{ $message }}</p>@else<p class="help">{{ __('Redfish works with iDRAC, iLO, Supermicro and most new servers.') }}</p>@enderror
+                    @error('bmc_type')<p class="error" id="f-bmc_type-error">{{ $message }}</p>@elseif (! $needsPowerAddon)<p class="help">{{ __('Redfish works with iDRAC, iLO, Supermicro and most new servers.') }}</p>@enderror
                 </div>
                 <div x-show="type !== 'none'" @if ($type === 'none') style="display:none" @endif>
                     <x-input name="bmc_host" :label="__('BMC address')" :value="$machine->bmc_host" maxlength="190" dir="ltr" spellcheck="false" autocomplete="off" placeholder="10.20.0.11"

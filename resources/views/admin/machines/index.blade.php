@@ -23,6 +23,10 @@
         @endif
     </div>
 
+    @if ($needsPowerAddon)
+        <div class="flash" data-tone="info" role="note">@include('admin.machines.partials.power-addon')</div>
+    @endif
+
     @if ($all > 0)
         <div class="kpis">
             <a class="kpi" href="{{ route('admin.machines.index', ['status' => MachineStatus::Available->value]) }}"><small>{{ __('Available') }}</small><b>{{ $count(MachineStatus::Available) }}</b><span>{{ __('Free to sell') }}</span></a>
@@ -166,8 +170,6 @@
                         :help="__('After a suspension, the server gets a shutdown signal first. It is forced off when it is still on after this wait.')" />
                 </div>
                 <x-checkbox name="show_location" :label="__('Show the location to the client')" :checked="$settings['show_location']" />
-                <x-checkbox name="allow_ipmi" :label="__('Offer IPMI for power control')" :checked="$settings['allow_ipmi']"
-                    :help="$settings['ipmi_found'] ? __('IPMI is older and less safe than Redfish. Use it only on a private network.') : __('ipmitool was not found on this server, so IPMI cannot be used.')" />
             </div>
             <div><button class="btn btn-primary" type="submit">{{ __('Save settings') }}</button></div>
         </form>

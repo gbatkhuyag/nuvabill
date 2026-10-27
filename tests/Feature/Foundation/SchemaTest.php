@@ -268,7 +268,6 @@ class SchemaTest extends TestCase
         $this->assertNull(setting('hardware.ticket_department'));
         $this->assertSame(10, setting('hardware.suspend_grace_minutes'));
         $this->assertTrue(setting('hardware.show_location'));
-        $this->assertFalse(setting('hardware.allow_ipmi'));
     }
 
     public function test_money_entries_of_resource_changes_are_hidden_from_staff_without_billing_access(): void

@@ -9,7 +9,7 @@ use App\Models\Machine;
 use App\Models\Service;
 use App\Provisioning\Hardware\InventoryException;
 use App\Provisioning\Hardware\MachineInventory;
-use App\Provisioning\Provisioner;
+use App\Provisioning\Hardware\ServerSetup;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 
@@ -57,7 +57,7 @@ class ServiceMachineController extends Controller
     }
 
     /**
-     * Staff installed the system: save the login details and set the service up.
+     * Staff installed the system ("Server is ready"): save the login details and set the service up.
      */
     public function ready(Request $request, Service $service): RedirectResponse
     {
@@ -66,9 +66,9 @@ class ServiceMachineController extends Controller
         }
 
         $data = $request->validate([
-            'hostname' => ['nullable', 'string', 'max:190', 'regex:/^(?=.{1,190}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?$/'],
-            'login_name' => ['required', 'string', 'max:32', 'regex:/^[a-z_][a-z0-9_-]{0,31}$/i'],
-            'root_password' => ['nullable', 'string', 'min:12', 'max:190'],
+            'hostname' => ['nullable', 'string', 'max:190', 'regex:'.ServerSetup::HOSTNAME_PATTERN],
+            'login_name' => ['required', 'string', 'max:32', 'regex:'.ServerSetup::LOGIN_PATTERN],
+            'root_password' => ['nullable', 'string', 'min:'.ServerSetup::PASSWORD_MIN, 'max:'.ServerSetup::PASSWORD_MAX],
         ], [
             'hostname.regex' => __('Enter a host name such as server1.example.com.'),
             'login_name.regex' => __('Use a login name such as root or admin: letters, numbers, _ and -, starting with a letter or _.'),
@@ -82,10 +82,11 @@ class ServiceMachineController extends Controller
             return back()->with('error', __('Only a pending service can be marked ready.'));
         }
 
+        // The same code path an automatic install (an add-on) uses when it is done.
         try {
-            app(MachineInventory::class)->markInstalled(
+            $result = app(ServerSetup::class)->ready(
                 $service,
-                filled($data['hostname'] ?? null) ? rtrim((string) $data['hostname'], '.') : null,
+                $data['hostname'] ?? null,
                 (string) $data['login_name'],
                 $data['root_password'] ?? null,
                 $this->admin($request),
@@ -93,9 +94,6 @@ class ServiceMachineController extends Controller
         } catch (InventoryException $exception) {
             return back()->with('error', $exception->getMessage());
         }
-
-        // The module activates the service now; it sends the client the ready email.
-        $result = app(Provisioner::class)->create($service->fresh() ?? $service);
 
         return back()->with($result->success ? 'status' : 'error', $result->message);
     }

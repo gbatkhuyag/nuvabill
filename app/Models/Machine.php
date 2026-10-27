@@ -20,7 +20,7 @@ use Illuminate\Database\Query\Builder as QueryBuilder;
  * linked to, held by one service at a time, and wiped before it is sold again.
  *
  * The status, the holding service, the certificate pin and everything read from the BMC are not
- * fillable: only MachineInventory and the power gateway set them, so no form can skip a wipe or
+ * fillable: only MachineInventory, ServerSetup and the power gateway set them, so no form can skip a wipe or
  * trust a certificate. The BMC login is encrypted with the app key and never leaves the server.
  */
 class Machine extends Model
@@ -78,6 +78,7 @@ class Machine extends Model
             'power_check_at' => 'datetime',
             'bmc_checked_at' => 'datetime',
             'power_checked_at' => 'datetime',
+            'setup_started_at' => 'datetime',
         ];
     }
 
@@ -118,6 +119,16 @@ class Machine extends Model
     }
 
     /**
+     * The power history, newest first: every power action and boot device choice of any driver.
+     *
+     * @return HasMany<MachinePowerEvent, $this>
+     */
+    public function powerEvents(): HasMany
+    {
+        return $this->hasMany(MachinePowerEvent::class)->latest('id');
+    }
+
+    /**
      * @param  Builder<Machine>  $query
      */
     public function scopeAvailable(Builder $query): void
@@ -139,7 +150,7 @@ class Machine extends Model
     }
 
     /**
-     * The power driver type, or null for a type no installed driver knows (a removed package).
+     * The power control type by name, or null for a type only an add-on knows.
      */
     public function bmcType(): ?BmcType
     {

@@ -33,17 +33,4 @@ enum PowerState: string
             self::Changing, self::Unknown => 'unknown',
         };
     }
-
-    /**
-     * Read a Redfish PowerState value: On, Off, PoweringOn or PoweringOff. Anything else is unknown.
-     */
-    public static function fromRedfish(?string $value): self
-    {
-        return match ($value) {
-            'On' => self::On,
-            'Off' => self::Off,
-            'PoweringOn', 'PoweringOff' => self::Changing,
-            default => self::Unknown,
-        };
-    }
 }

@@ -9,17 +9,18 @@ use App\Models\Client;
 use App\Models\Machine;
 use App\Models\Product;
 use App\Models\Service;
-use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\Tls\PinningSupport;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Tests\Fakes\FakePowerDriver;
 
 /**
  * Shared setup of the dedicated server module tests: the client "Mer Las", a product sold from the
- * hardware inventory with the built-in "dedicated" module, and fake Redfish BMCs. Each fake BMC
- * answers by host with the power state set in $bmcStates (a host that is not listed does not
- * answer), and a power action changes that state the way a real server would.
+ * hardware inventory with the built-in "dedicated" module, and fake Redfish BMCs reached through
+ * the test power driver (core ships none; see FakePowerDriver). Each fake BMC answers by host
+ * with the power state set in $bmcStates (a host that is not listed does not answer), and a power
+ * action changes that state the way a real server would.
  */
 trait UsesDedicatedServers
 {
@@ -46,7 +47,7 @@ trait UsesDedicatedServers
         Mail::fake();
         $this->setSettings(['company.email' => 'staff@example.test', 'company.name' => 'RapidNet']);
         $this->app->instance(PinningSupport::class, new PinningSupport(fn (string $function): bool => true, ['version' => '8.5.0', 'ssl_version' => 'OpenSSL/3.0.13']));
-        $this->app->forgetInstance(PowerDrivers::class);
+        FakePowerDriver::install();
 
         Http::fake(function (Request $request) {
             $host = (string) parse_url($request->url(), PHP_URL_HOST);
@@ -67,6 +68,11 @@ trait UsesDedicatedServers
                     default => $this->bmcStates[$host],
                 };
 
+                return Http::response(null, 204);
+            }
+
+            // The next boot device.
+            if ($request->method() === 'PATCH' && $path === self::SYSTEM) {
                 return Http::response(null, 204);
             }
 

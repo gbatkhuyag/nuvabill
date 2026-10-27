@@ -13,10 +13,11 @@ use App\Models\MachineIp;
 use App\Models\Product;
 use App\Models\Service;
 use App\Models\TicketDepartment;
-use App\Provisioning\Hardware\Drivers\IpmiTool;
 use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\InventoryException;
 use App\Provisioning\Hardware\MachineInventory;
+use App\Provisioning\Hardware\MachineSections;
+use App\Provisioning\Hardware\PowerControl;
 use App\Provisioning\Hardware\Tls\PinningSupport;
 use App\Support\Activity;
 use App\Support\Settings;
@@ -94,18 +95,20 @@ class MachineController extends Controller
                 'ticket_department' => setting('hardware.ticket_department'),
                 'suspend_grace_minutes' => (int) setting('hardware.suspend_grace_minutes'),
                 'show_location' => (bool) setting('hardware.show_location'),
-                'allow_ipmi' => (bool) setting('hardware.allow_ipmi'),
                 'departments' => TicketDepartment::query()->orderBy('sort_order')->orderBy('name')->pluck('name', 'id')->all(),
-                'ipmi_found' => app(IpmiTool::class)->path() !== null,
             ] : null,
+            'needsPowerAddon' => app(PowerDrivers::class)->isEmpty(),
+            'mayMarketplace' => $admin->hasPermission('marketplace.manage'),
         ]);
     }
 
     /**
-     * One machine: details, IP addresses, the service on it, BMC status, power and history.
+     * One machine: details, IP addresses, the service on it, BMC status, power, its power history,
+     * health, history, and the cards add-ons add (MachineSections).
      */
     public function show(Machine $machine): View
     {
+        $power = app(PowerControl::class);
         $machine->load(['service.client', 'service.product', 'products:id,name,slug', 'ips' => fn ($query) => $query->orderBy('id'), 'ips.service']);
         $admin = $this->admin(request());
 
@@ -131,6 +134,11 @@ class MachineController extends Controller
             'pinning' => app(PinningSupport::class)->available(),
             'driverLabel' => self::driverLabel($machine),
             'deletable' => self::deletable($machine),
+            'powerEvents' => $machine->powerEvents()->with('actor')->limit(10)->get(),
+            'readsHealth' => $power->readsHealth($machine),
+            'health' => $power->lastHealth($machine),
+            'mayMarketplace' => $admin->hasPermission('marketplace.manage'),
+            'addonCards' => app(MachineSections::class)->render($machine, $admin),
         ]);
     }
 
@@ -261,6 +269,7 @@ class MachineController extends Controller
 
     /**
      * Save the hardware settings (the systems clients may ask for, ticket department, wait times).
+     * Settings of power drivers belong to the add-on that brings them.
      */
     public function settings(Request $request): RedirectResponse
     {
@@ -269,7 +278,6 @@ class MachineController extends Controller
             'ticket_department' => ['nullable', 'integer', Rule::exists('ticket_departments', 'id')],
             'suspend_grace_minutes' => ['required', 'integer', 'between:1,120'],
             'show_location' => ['boolean'],
-            'allow_ipmi' => ['boolean'],
         ], [], [
             'os_choices' => __('Systems clients can ask for'),
             'ticket_department' => __('Department for reinstall requests'),
@@ -285,12 +293,6 @@ class MachineController extends Controller
             $problems['os_choices'] = __('":name" is too long or has signs that are not allowed. Use letters, numbers, spaces and . ( ) + - only, at most 60 characters.', ['name' => mb_substr($bad, 0, 60)]);
         }
 
-        $allowIpmi = $request->boolean('allow_ipmi');
-
-        if ($allowIpmi && ! (bool) setting('hardware.allow_ipmi') && app(IpmiTool::class)->path() === null) {
-            $problems['allow_ipmi'] = __('ipmitool was not found on this server, so IPMI cannot be switched on.');
-        }
-
         if ($problems !== []) {
             throw ValidationException::withMessages($problems);
         }
@@ -300,10 +302,8 @@ class MachineController extends Controller
             'hardware.ticket_department' => isset($data['ticket_department']) ? (int) $data['ticket_department'] : null,
             'hardware.suspend_grace_minutes' => (int) $data['suspend_grace_minutes'],
             'hardware.show_location' => $request->boolean('show_location'),
-            'hardware.allow_ipmi' => $allowIpmi,
         ]);
-        app()->forgetInstance(PowerDrivers::class);
-        Activity::log('settings.hardware', 'Hardware settings changed'.($allowIpmi ? ' (IPMI on)' : ''));
+        Activity::log('settings.hardware', 'Hardware settings changed');
 
         return redirect()->route('admin.machines.index')->with('status', __('Hardware settings saved.'));
     }
@@ -374,6 +374,8 @@ class MachineController extends Controller
             ],
             'pinning' => app(PinningSupport::class)->available(),
             'savedLogin' => $machine->exists && filled($machine->bmc_username) && filled($machine->bmc_password),
+            'needsPowerAddon' => app(PowerDrivers::class)->isEmpty(),
+            'mayMarketplace' => $this->admin(request())->hasPermission('marketplace.manage'),
         ]);
     }
 

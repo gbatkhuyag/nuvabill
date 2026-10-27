@@ -14,8 +14,6 @@ use App\Models\Product;
 use App\Models\Service;
 use App\Models\TicketDepartment;
 use App\Provisioning\Hardware\BmcAddress;
-use App\Provisioning\Hardware\Drivers\IpmiTool;
-use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\Tls\CertificateProbe;
 use App\Provisioning\Hardware\Tls\PinningSupport;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -25,6 +23,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fakes\FakeCertificateProbe;
+use Tests\Fakes\FakePowerDriver;
 use Tests\TestCase;
 
 /**
@@ -56,7 +55,7 @@ class MachineAdminTest extends TestCase
         $this->probe = new FakeCertificateProbe(FakeCertificateProbe::certificate('A'));
         $this->app->instance(CertificateProbe::class, $this->probe);
         $this->app->instance(PinningSupport::class, new PinningSupport(fn (string $function): bool => true, ['version' => '8.5.0', 'ssl_version' => 'OpenSSL/3.0.13']));
-        $this->installIpmiTool(null);
+        FakePowerDriver::install();
         $this->product = Product::factory()->withoutDomain()->create(['name' => 'Dedicated E-2388G', 'uses_machines' => true]);
     }
 
@@ -241,32 +240,6 @@ class MachineAdminTest extends TestCase
         $this->post(route('admin.machines.store'), $this->form(['bmc_host' => $host]))->assertSessionHasNoErrors();
 
         $this->assertSame($host, Machine::query()->sole()->bmc_host);
-    }
-
-    public function test_ipmi_is_not_offered_without_ipmitool_or_the_setting(): void
-    {
-        $this->signInAdmin(Admin::factory()->create(['name' => 'Raz']));
-        $ipmi = $this->form(['bmc_type' => 'ipmi', 'bmc_host' => '10.20.0.12', 'bmc_ipmi_cipher' => 17]);
-
-        $this->get(route('admin.machines.create'))->assertOk()->assertSee('value="redfish"', false)->assertDontSee('value="ipmi"', false);
-        $this->post(route('admin.machines.store'), $ipmi)->assertSessionHasErrors('bmc_type');
-
-        // The setting alone is not enough without ipmitool on this server.
-        $this->setSettings(['hardware.allow_ipmi' => true]);
-        $this->app->forgetInstance(PowerDrivers::class);
-        $this->get(route('admin.machines.create'))->assertDontSee('value="ipmi"', false);
-        $this->post(route('admin.machines.store'), $ipmi)->assertSessionHasErrors('bmc_type');
-
-        $this->installIpmiTool('/usr/bin/ipmitool');
-        $this->get(route('admin.machines.create'))->assertSee('value="ipmi"', false);
-        $this->post(route('admin.machines.store'), $ipmi)->assertSessionHasNoErrors();
-        $this->assertSame(17, Machine::query()->sole()->bmc_ipmi_cipher);
-
-        // The setting cannot be switched on where ipmitool is missing.
-        $this->setSettings(['hardware.allow_ipmi' => false]);
-        $this->installIpmiTool(null);
-        $this->put(route('admin.machines.settings'), $this->settingsForm(['allow_ipmi' => '1']))->assertSessionHasErrors('allow_ipmi');
-        $this->assertFalse((bool) setting('hardware.allow_ipmi'));
     }
 
     public function test_ip_lines_are_parsed_and_must_be_unique(): void
@@ -455,33 +428,6 @@ class MachineAdminTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_a_bmc_with_several_systems_is_chosen_from_the_tested_list_only(): void
-    {
-        $this->fakeBmc([
-            '/redfish/v1/' => ['Systems' => ['@odata.id' => '/redfish/v1/Systems']],
-            '/redfish/v1/Systems' => ['Members' => [['@odata.id' => '/redfish/v1/Systems/Node1'], ['@odata.id' => '/redfish/v1/Systems/Node2']]],
-            '/redfish/v1/Systems/Node2' => ['Manufacturer' => 'Supermicro', 'PowerState' => 'On', 'Actions' => ['#ComputerSystem.Reset' => [
-                'target' => '/redfish/v1/Systems/Node2/Actions/ComputerSystem.Reset',
-                'ResetType@Redfish.AllowableValues' => ['On', 'ForceOff'],
-            ]]],
-        ]);
-        $machine = Machine::factory()->redfish()->create(['name' => 'DS-131']);
-        $machine->forceFill(['bmc_system_path' => null, 'bmc_reset_target' => null, 'bmc_reset_types' => null])->save();
-        $this->signInAdmin(Admin::factory()->create(['name' => 'Raz']));
-
-        $this->post(route('admin.machines.test', $machine))->assertSessionHas('warning');
-        $this->get(route('admin.machines.show', $machine))->assertSee(['/redfish/v1/Systems/Node1', '/redfish/v1/Systems/Node2', 'Use this system and test again']);
-
-        $this->post(route('admin.machines.test', $machine), ['system' => '/redfish/v1/Systems/Other'])
-            ->assertSessionHas('error', 'Run Test connection again, then choose a system from its list.');
-        $this->assertNull($machine->fresh()->bmc_system_path);
-
-        $this->post(route('admin.machines.test', $machine), ['system' => '/redfish/v1/Systems/Node2'])->assertSessionHas('status', 'Connected: Supermicro.');
-        $machine->refresh();
-        $this->assertSame('/redfish/v1/Systems/Node2', $machine->bmc_system_path);
-        $this->assertSame('/redfish/v1/Systems/Node2/Actions/ComputerSystem.Reset', $machine->bmc_reset_target);
-    }
-
     public function test_staff_read_the_power_state_and_switch_the_power(): void
     {
         $state = 'On';
@@ -544,7 +490,6 @@ class MachineAdminTest extends TestCase
         $this->assertSame($department->id, setting('hardware.ticket_department'));
         $this->assertSame(30, setting('hardware.suspend_grace_minutes'));
         $this->assertFalse(setting('hardware.show_location'));
-        $this->assertFalse(setting('hardware.allow_ipmi'));
     }
 
     public function test_the_service_card_assigns_a_machine_and_marks_the_server_ready(): void
@@ -695,7 +640,6 @@ class MachineAdminTest extends TestCase
             'ticket_department' => '',
             'suspend_grace_minutes' => 10,
             'show_location' => '1',
-            'allow_ipmi' => '0',
         ], $overrides);
     }
 
@@ -704,25 +648,6 @@ class MachineAdminTest extends TestCase
         $client = Client::factory()->create(['first_name' => 'Mer', 'last_name' => 'Las', 'email' => 'mer.las@example.test', 'company_name' => null]);
 
         return Service::factory()->create(['client_id' => $client->id, 'product_id' => $this->product->id, 'status' => $status, 'domain' => null]);
-    }
-
-    private function installIpmiTool(?string $path): void
-    {
-        $this->app->instance(IpmiTool::class, new class($path) extends IpmiTool
-        {
-            public function __construct(private readonly ?string $fakePath) {}
-
-            public function path(): ?string
-            {
-                return $this->fakePath;
-            }
-
-            public function canRun(): bool
-            {
-                return true;
-            }
-        });
-        $this->app->forgetInstance(PowerDrivers::class);
     }
 
     /**

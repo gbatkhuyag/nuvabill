@@ -5,6 +5,10 @@ namespace App\Provisioning\Hardware;
 use App\Billing\SoldOut;
 use App\Enums\MachineStatus;
 use App\Enums\ServiceStatus;
+use App\Events\DedicatedServerActivated;
+use App\Events\DedicatedServerReleased;
+use App\Events\DedicatedServerSuspended;
+use App\Events\DedicatedServerUnsuspended;
 use App\Mail\TemplateMailer;
 use App\Models\Admin;
 use App\Models\Machine;
@@ -18,6 +22,8 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use RuntimeException;
+use Throwable;
 
 /**
  * The stock and status of dedicated server machines (Admin → Hardware). A machine's status moves
@@ -29,6 +35,10 @@ use Illuminate\Support\Facades\Route;
  * (id order), then services, then a machine's IP rows (see Product::lockedStockLeft()).
  *
  * Refusals throw InventoryException with a plain message staff can read.
+ *
+ * After each saved change of a machine that holds a service, add-ons hear about it through the
+ * events DedicatedServerActivated, DedicatedServerSuspended, DedicatedServerUnsuspended and
+ * DedicatedServerReleased (for example to open or block a network port).
  */
 final class MachineInventory
 {
@@ -201,13 +211,20 @@ final class MachineInventory
             $machine->setRawAttributes($assigned->getAttributes(), true);
         }
 
+        match ($assigned->status) {
+            MachineStatus::Active => $this->announce($assigned, DedicatedServerActivated::class),
+            MachineStatus::Suspended => $this->announce($assigned, DedicatedServerSuspended::class),
+            default => null,
+        };
+
         return $assigned;
     }
 
     /**
-     * The service's reserved machine waits for staff to install the OS: reserved → provisioning.
-     * Staff get the "admin.machine_install" email once, when this move happens. Its "ready" time
-     * (provisioned_at) is cleared, so only "Server is ready" for this service can set it.
+     * The service's reserved machine waits for its system to be installed: reserved → provisioning.
+     * When this move happens, ServerSetup::begin() hands it to an add-on installer, or emails staff
+     * "admin.machine_install" once. Its "ready" time (provisioned_at) is cleared, so only "Server is
+     * ready" (ServerSetup::ready()) for this service can set it.
      *
      * @throws InventoryException
      */
@@ -221,10 +238,10 @@ final class MachineInventory
             }
 
             $this->move($locked, MachineStatus::Provisioning);
-            $locked->forceFill(['provisioned_at' => null])->save();
+            $locked->forceFill(['provisioned_at' => null, 'setup_by' => null, 'setup_started_at' => null, 'setup_error' => null])->save();
 
             Activity::log('machine.provisioning', "Machine {$locked->name} waits for the OS install (service #{$service->getKey()})", $locked, $service->client);
-            DB::afterCommit(fn () => rescue(fn () => $this->mailer->sendToStaff('admin.machine_install', $this->installContext($locked, $service))));
+            DB::afterCommit(fn () => rescue(fn () => app(ServerSetup::class)->begin($locked, $service)));
 
             return $locked;
         }, 3);
@@ -235,13 +252,15 @@ final class MachineInventory
     }
 
     /**
-     * Staff pressed "Server is ready": the OS is installed. The service gets its host name, login
-     * name and password (encrypted on the service; never emailed), and the machine's
-     * provisioned_at is set, so the next create() activates the service.
+     * The OS is installed ("Server is ready", by staff or an installer through ServerSetup::ready()).
+     * The service gets its host name, login name and password (encrypted on the service; never
+     * emailed), and the machine's provisioned_at is set, so the next create() activates the service.
+     *
+     * @param  string  $by  Who did it when no staff member did, for the activity log.
      *
      * @throws InventoryException
      */
-    public function markInstalled(Service $service, ?string $hostname, string $username, ?string $password, Admin $admin): Machine
+    public function markInstalled(Service $service, ?string $hostname, string $username, ?string $password, ?Admin $admin = null, string $by = ''): Machine
     {
         $username = trim($username);
 
@@ -249,7 +268,7 @@ final class MachineInventory
             throw new InventoryException(__('Enter the login name.'));
         }
 
-        return DB::transaction(function () use ($service, $hostname, $username, $password, $admin): Machine {
+        return DB::transaction(function () use ($service, $hostname, $username, $password, $admin, $by): Machine {
             $id = Machine::query()->where('service_id', $service->getKey())->value('id');
 
             if ($id === null) {
@@ -279,10 +298,11 @@ final class MachineInventory
             }
 
             $current->forceFill($details)->save();
-            $locked->forceFill(['provisioned_at' => now()])->save();
+            $locked->forceFill(['provisioned_at' => now(), 'setup_error' => null])->save();
             $service->setRawAttributes($current->getAttributes(), true);
 
-            Activity::log('machine.install_done', "Machine {$locked->name} marked ready for service #{$service->getKey()}", $locked, $current->client, $admin);
+            $via = $admin === null && $by !== '' ? ' by '.mb_substr($by, 0, 64) : '';
+            Activity::log('machine.install_done', "Machine {$locked->name} marked ready for service #{$service->getKey()}{$via}", $locked, $current->client, $admin);
 
             return $locked;
         }, 3);
@@ -295,7 +315,9 @@ final class MachineInventory
      */
     public function activate(Machine $machine): void
     {
-        $this->change($machine, function (Machine $locked): ?string {
+        $from = null;
+
+        $this->change($machine, function (Machine $locked) use (&$from): ?string {
             if ($locked->status === MachineStatus::Active) {
                 return null;
             }
@@ -304,11 +326,16 @@ final class MachineInventory
                 throw new InventoryException(__('Press Server is ready first.'));
             }
 
+            $from = $locked->status;
             $this->move($locked, MachineStatus::Active);
             $locked->forceFill(['power_check_at' => null]);
 
             return 'machine.activated';
         }, fn (Machine $locked): string => "Machine {$locked->name} in use by service #{$locked->service_id}");
+
+        if ($from !== null) {
+            $this->announce($machine, $from === MachineStatus::Suspended ? DedicatedServerUnsuspended::class : DedicatedServerActivated::class);
+        }
     }
 
     /**
@@ -319,7 +346,9 @@ final class MachineInventory
      */
     public function suspend(Machine $machine, ?CarbonInterface $powerCheckAt): void
     {
-        $this->change($machine, function (Machine $locked) use ($powerCheckAt): ?string {
+        $moved = false;
+
+        $this->change($machine, function (Machine $locked) use ($powerCheckAt, &$moved): ?string {
             if ($locked->status === MachineStatus::Suspended) {
                 if ($powerCheckAt !== null) {
                     $locked->forceFill(['power_check_at' => $powerCheckAt]);
@@ -330,9 +359,14 @@ final class MachineInventory
 
             $this->move($locked, MachineStatus::Suspended);
             $locked->forceFill(['power_check_at' => $powerCheckAt]);
+            $moved = true;
 
             return 'machine.suspended';
         }, fn (Machine $locked): string => "Machine {$locked->name} suspended (service #{$locked->service_id})");
+
+        if ($moved) {
+            $this->announce($machine, DedicatedServerSuspended::class);
+        }
     }
 
     /**
@@ -342,7 +376,9 @@ final class MachineInventory
      */
     public function unsuspend(Machine $machine): void
     {
-        $this->change($machine, function (Machine $locked): ?string {
+        $moved = false;
+
+        $this->change($machine, function (Machine $locked) use (&$moved): ?string {
             if ($locked->status === MachineStatus::Active) {
                 $locked->forceFill(['power_check_at' => null]);
 
@@ -351,9 +387,14 @@ final class MachineInventory
 
             $this->move($locked, MachineStatus::Active);
             $locked->forceFill(['power_check_at' => null]);
+            $moved = true;
 
             return 'machine.unsuspended';
         }, fn (Machine $locked): string => "Machine {$locked->name} unsuspended (service #{$locked->service_id})");
+
+        if ($moved) {
+            $this->announce($machine, DedicatedServerUnsuspended::class);
+        }
     }
 
     /**
@@ -431,7 +472,7 @@ final class MachineInventory
                 ? "Machine {$locked->name} released{$from} ({$reason}). It needs a wipe before it is sold again."
                 : "Machine {$locked->name} released{$from} ({$reason}). It is on sale again.", $locked, $service?->client);
 
-            return ['machine' => $locked, 'service_id' => $serviceId, 'wipe' => $wipe];
+            return ['machine' => $locked, 'service' => $service, 'service_id' => $serviceId, 'wipe' => $wipe];
         });
 
         if ($released === null) {
@@ -439,6 +480,7 @@ final class MachineInventory
         }
 
         $machine->setRawAttributes($released['machine']->getAttributes(), true);
+        DB::afterCommit(fn () => self::dispatchSafely(new DedicatedServerReleased($released['machine'], $released['service'], $released['wipe'], $reason)));
 
         if ($released['wipe']) {
             // After the transaction, so no email goes out for a release that was rolled back.
@@ -576,6 +618,8 @@ final class MachineInventory
             Activity::log('machine.replaced', "Service #{$service->getKey()} moved from {$old->name} to {$fresh->name}", $current, null, $admin);
             $new->setRawAttributes($fresh->getAttributes(), true);
         }, 3);
+
+        $this->announce($new, $new->status === MachineStatus::Suspended ? DedicatedServerSuspended::class : DedicatedServerActivated::class);
     }
 
     /**
@@ -653,6 +697,36 @@ final class MachineInventory
         }
 
         return $fixed;
+    }
+
+    /**
+     * Tell add-ons about a machine whose service it holds, once the change is saved.
+     *
+     * @param  class-string<DedicatedServerActivated|DedicatedServerSuspended|DedicatedServerUnsuspended>  $event
+     */
+    private function announce(Machine $machine, string $event): void
+    {
+        $snapshot = (new Machine)->newFromBuilder($machine->getAttributes());
+
+        DB::afterCommit(function () use ($snapshot, $event): void {
+            $service = $snapshot->service_id !== null ? Service::query()->find($snapshot->service_id) : null;
+
+            if ($service !== null) {
+                self::dispatchSafely(new $event($snapshot, $service));
+            }
+        });
+    }
+
+    /**
+     * Send an event to add-ons. One that fails is reported and never undoes the saved change.
+     */
+    private static function dispatchSafely(object $event): void
+    {
+        try {
+            event($event);
+        } catch (Throwable $exception) {
+            report(new RuntimeException('A listener of '.class_basename($event).' failed: '.$exception::class));
+        }
     }
 
     /**
@@ -745,6 +819,7 @@ final class MachineInventory
             $machine->setRawAttributes($locked->getAttributes(), true);
 
             Activity::log('machine.status_synced', "Machine {$locked->name} set to ".self::englishStatus($to)." to match service #{$service->getKey()}", $locked, $service->client);
+            $this->announce($locked, $to === MachineStatus::Suspended ? DedicatedServerSuspended::class : DedicatedServerUnsuspended::class);
 
             return true;
         }, 3);
@@ -822,29 +897,6 @@ final class MachineInventory
         if ($from === false || $until === false || $from > $until) {
             throw new InventoryException(__('Not possible from :status.', ['status' => $machine->status->label()]));
         }
-    }
-
-    /**
-     * The staff email that asks for the OS install.
-     *
-     * @return array<string, mixed>
-     */
-    private function installContext(Machine $machine, Service $service): array
-    {
-        $service->loadMissing(['client', 'product']);
-
-        return [
-            'client' => TemplateMailer::clientContext($service->client),
-            'service' => ['id' => $service->getKey(), 'product' => $service->product->name],
-            'machine' => [
-                'name' => $machine->name,
-                'location' => (string) $machine->location,
-                'rack' => (string) $machine->rack,
-                'rack_unit' => (string) $machine->rack_unit,
-                'default_os' => (string) ($service->product->module_config['default_os'] ?? ''),
-            ],
-            'admin_url' => route('admin.services.show', $service),
-        ];
     }
 
     /**

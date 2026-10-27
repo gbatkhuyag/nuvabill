@@ -204,6 +204,15 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
         Route::put('settings', [MachineController::class, 'settings'])->middleware('admin.can:settings.manage')->name('settings');
     });
 
+    Route::middleware('admin.can:hardware.power')->prefix('hardware')->name('machines.')->group(function (): void {
+        Route::post('{machine}/boot', [MachinePowerController::class, 'boot'])->whereNumber('machine')->middleware('throttle:10,1')->name('boot');
+        Route::post('{machine}/health', [MachinePowerController::class, 'health'])->whereNumber('machine')->middleware('throttle:6,1')->name('health');
+    });
+
+    // Hardware pages of switched-on add-ons, for example the switch port of a machine.
+    Route::middleware(['admin.can:hardware.manage', 'throttle:30,1'])->prefix('hardware/addons')->name('hardware-addons.')
+        ->group(fn () => rescue(fn () => app(ExtensionManager::class)->registerHardwareRoutes(), report: false));
+
     Route::middleware('admin.can:domains.manage')->group(function (): void {
         Route::get('domains', [DomainController::class, 'index'])->name('domains.index');
         Route::get('domains/{domain}', [DomainController::class, 'show'])->name('domains.show');

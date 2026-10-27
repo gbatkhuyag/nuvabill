@@ -6,10 +6,10 @@ use App\Enums\InvoiceStatus;
 use App\Enums\ServiceStatus;
 use App\Models\Machine;
 use App\Models\Service;
-use App\Provisioning\Hardware\Drivers\IpmiDriver;
-use App\Provisioning\Hardware\Drivers\IpmiTool;
+use App\Provisioning\Hardware\DedicatedPanelExtensions;
 use App\Provisioning\Hardware\Drivers\PowerDrivers;
-use App\Provisioning\Hardware\Drivers\RedfishDriver;
+use App\Provisioning\Hardware\MachineInstallers;
+use App\Provisioning\Hardware\MachineSections;
 use App\Provisioning\Hardware\ServiceMachineObserver;
 use App\Provisioning\Hardware\Tls\CertificateProbe;
 use App\Provisioning\Hardware\Tls\PinningSupport;
@@ -17,16 +17,20 @@ use App\Provisioning\Hardware\Tls\StreamCertificateProbe;
 use App\Support\ServicePanels;
 use App\View\Composers\ProductMachineStockComposer;
 use App\View\Composers\ServiceMachineComposer;
-use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
 
 /**
- * Dedicated servers in your own rack (Admin → Hardware): the power drivers, the certificate check
- * of BMCs, freeing a machine when its service ends, and the "being prepared" card on the client's
- * service page. The view composers of the admin pages register here too.
+ * Dedicated servers in your own rack (Admin → Hardware): the certificate check of BMCs, freeing a
+ * machine when its service ends, and the "being prepared" card on the client's service page. The
+ * view composers of the admin pages register here too.
  *
- * A package may add its own power driver in its boot(): app(PowerDrivers::class)->register(...).
+ * Add-ons hook in through these registries in their boot() (see docs/hardware.md):
+ * - PowerDrivers: power drivers (the Dedicated Server Power add-on adds Redfish and IPMI);
+ * - MachineSections: cards on a machine's admin page;
+ * - DedicatedPanelExtensions: tabs in the client server panel;
+ * - MachineInstallers: automatic installs that take over the "Setting up" step;
+ * and through the DedicatedServer* events and the add-on's hardwareRoutes().
  */
 class HardwareServiceProvider extends ServiceProvider
 {
@@ -38,16 +42,14 @@ class HardwareServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(PinningSupport::class, fn (): PinningSupport => new PinningSupport);
-        $this->app->singleton(IpmiTool::class);
         $this->app->bind(CertificateProbe::class, StreamCertificateProbe::class);
 
-        $this->app->singleton(PowerDrivers::class, function (Application $app): PowerDrivers {
-            $drivers = new PowerDrivers;
-            $drivers->register($app->make(RedfishDriver::class));
-            $drivers->register($app->make(IpmiDriver::class));
-
-            return $drivers;
-        });
+        // Core ships no power driver: an add-on registers its own, and without one staff switch
+        // the power by hand.
+        $this->app->singleton(PowerDrivers::class);
+        $this->app->singleton(MachineSections::class);
+        $this->app->singleton(DedicatedPanelExtensions::class);
+        $this->app->singleton(MachineInstallers::class);
     }
 
     public function boot(): void

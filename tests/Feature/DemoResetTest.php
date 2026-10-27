@@ -15,7 +15,6 @@ use App\Models\Product;
 use App\Models\Service;
 use App\Models\ServiceResourceOption;
 use App\Provisioning\Hardware\BmcException;
-use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\Tls\CertificateProbe;
 use App\Provisioning\Hardware\Tls\PinningSupport;
 use App\Support\Demo;
@@ -27,6 +26,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
 use LogicException;
 use PDO;
+use Tests\Fakes\FakePowerDriver;
 use Tests\TestCase;
 
 class DemoResetTest extends TestCase
@@ -123,7 +123,7 @@ class DemoResetTest extends TestCase
     {
         $this->inFreshDemo('demo-reset-panels.sqlite', function (): void {
             $this->app->instance(PinningSupport::class, new PinningSupport(fn (string $function): bool => true, ['version' => '8.5.0', 'ssl_version' => 'OpenSSL/3.0.13']));
-            $this->app->forgetInstance(PowerDrivers::class);
+            FakePowerDriver::install();
             Demo::fakeServers();
 
             // The demo client's VPS shows every tab, read from the fake Virtualizor node.

@@ -3,8 +3,10 @@
 namespace App\Enums;
 
 /**
- * How Nuvabill switches a machine's power through its BMC (iDRAC, iLO, IPMI and so on). A package
- * may add its own type, so machines.bmc_type is a plain string: read it with Machine::bmcType().
+ * The power control types Nuvabill knows by name, so a machine keeps a readable type while no
+ * driver for it is installed. The drivers themselves come from an add-on (Dedicated Server Power
+ * adds Redfish and IPMI) and may add other types, so machines.bmc_type is a plain string: read it
+ * with Machine::bmcType().
  */
 enum BmcType: string
 {

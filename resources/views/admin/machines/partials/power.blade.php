@@ -2,11 +2,16 @@
     A machine's power state and power buttons (staff with hardware.power), on the machine page and on
     the "Dedicated server" card of a service. The page shows the last saved state; machinePower()
     then asks the BMC through Nuvabill. Without JavaScript each button posts as a normal form.
+    Without a power driver for the machine (the Dedicated Server Power add-on), staff see a note.
     Values: $machine.
 --}}
 @php
     $power = app(\App\Provisioning\Hardware\PowerControl::class);
     $actions = $power->actions($machine);
+    $bootDevices = $power->bootDevices($machine);
+    $drivers = app(\App\Provisioning\Hardware\Drivers\PowerDrivers::class);
+    $noDriver = $drivers->for($machine) === null;
+    $mayMarketplace = (bool) auth('admin')->user()?->hasPermission('marketplace.manage');
     $state = $machine->powerState();
     $tones = ['on' => 'good', 'off' => 'crit', 'changing' => 'info'];
     $confirm = [
@@ -33,7 +38,7 @@
     $id = 'power-'.$machine->id;
 @endphp
 <div class="machine-power" style="display:grid;gap:.7rem" x-data="machinePower(@js($config))">
-    @if ($machine->hasBmc())
+    @if ($machine->hasBmc() && ! $noDriver)
     <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
         <span class="muted" id="{{ $id }}-label">{{ __('Power state') }}</span>
         <span class="pill" aria-describedby="{{ $id }}-label" @isset($tones[$state->value]) data-tone="{{ $tones[$state->value] }}" @endisset :data-tone="tone" x-text="label">{{ $state->label() }}</span>
@@ -46,6 +51,9 @@
 
     @if (! $machine->hasBmc())
         <p class="muted" style="margin:0">{{ __('This machine has no power control. Switch it on and off by hand.') }}</p>
+        @if ($drivers->isEmpty())@include('admin.machines.partials.power-addon', ['mayMarketplace' => $mayMarketplace])@endif
+    @elseif ($noDriver)
+        @include('admin.machines.partials.power-addon', ['mayMarketplace' => $mayMarketplace])
     @elseif ($actions === [])
         <p class="muted" style="margin:0">{{ __('No power buttons yet. Run Test connection on the machine, and trust its certificate when asked.') }}</p>
     @else
@@ -66,6 +74,19 @@
             </div>
         </form>
         <p class="muted" style="margin:0;font-size:.85rem" x-show="has('shutdown') && has('off')">{{ __('Shut down asks the system to stop cleanly. Force off cuts the power at once: use it only when Shut down does not work.') }}</p>
+    @endif
+    @if ($bootDevices !== [])
+        <form method="POST" action="{{ route('admin.machines.boot', $machine) }}" style="display:flex;flex-wrap:wrap;align-items:end;gap:8px">
+            @csrf
+            <div class="field" style="margin:0">
+                <label for="{{ $id }}-boot">{{ __('Next boot from') }}</label>
+                <select id="{{ $id }}-boot" name="device" class="select">
+                    @foreach ($bootDevices as $device)<option value="{{ $device->value }}">{{ $device->label() }}</option>@endforeach
+                </select>
+            </div>
+            <button class="btn btn-sm" type="submit">{{ __('Set') }}</button>
+            <p class="help" style="margin:0;flex-basis:100%">{{ __('Only for the next start. Restart the server to use it.') }}</p>
+        </form>
     @endif
     <p class="muted" style="margin:0;font-size:.9rem" role="status" aria-live="polite"><span x-text="message"></span></p>
 </div>

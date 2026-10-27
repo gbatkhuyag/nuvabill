@@ -7,6 +7,7 @@ use App\Enums\PowerAction;
 use App\Enums\PowerState;
 use App\Enums\TicketPriority;
 use App\Enums\TicketStatus;
+use App\Extensions\Servers\Panel\ClientContext;
 use App\Extensions\Servers\Panel\PanelAction;
 use App\Extensions\Servers\Panel\PanelException;
 use App\Extensions\Servers\Panel\PanelResult;
@@ -21,17 +22,21 @@ use App\Models\Product;
 use App\Models\Service;
 use App\Models\Ticket;
 use App\Models\TicketDepartment;
+use App\Provisioning\Hardware\DedicatedPanelExtension;
+use App\Provisioning\Hardware\DedicatedPanelExtensions;
 use App\Provisioning\Hardware\MachineInventory;
 use App\Provisioning\Hardware\PowerControl;
 use App\Support\Activity;
 use App\Support\TicketDesk;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 /**
  * The client server panel of a dedicated server, in the standard section shapes: the overview
  * (facts, addresses and the power state), the power buttons, the IP addresses and a reinstall
- * request that opens a ticket for staff.
+ * request that opens a ticket for staff. Add-ons may add tabs of their own (DedicatedPanelExtensions);
+ * those are only offered while the service holds a machine in use, and get that machine passed.
  *
  * Core has already checked the owner, the active service, the product's switches, the input and
  * the throttles. Each read and action checks again that the service holds an active machine, and
@@ -75,6 +80,7 @@ final class Sections
         private DedicatedModule $module,
         private MachineInventory $inventory,
         private PowerControl $power,
+        private DedicatedPanelExtensions $extensions,
     ) {}
 
     /**
@@ -116,16 +122,21 @@ final class Sections
             $sections[] = PanelSection::standard('power', actions: $actions);
         }
 
+        foreach ($this->extensions->sections($product) as $added) {
+            $sections[] = $added['section'];
+        }
+
         return $sections;
     }
 
     /**
      * Only the overview while the service has no machine in use; the power buttons only when the
-     * machine's BMC can do at least one of the product's power actions. Never asks the BMC.
+     * machine's BMC can do at least one of the product's power actions; add-on tabs as their
+     * add-on says. Never asks the BMC.
      *
      * @return list<string>
      */
-    public function available(Service $service): array
+    public function available(Service $service, ClientContext $context): array
     {
         $machine = $this->activeMachine($service);
 
@@ -144,10 +155,23 @@ final class Sections
             }
         }
 
+        foreach ($this->extensions->sections($service->product) as $key => $added) {
+            try {
+                if (in_array($key, $added['extension']->availableSections($service, $machine), true)) {
+                    $keys[] = $key;
+                }
+            } catch (Throwable $exception) {
+                report($exception);
+            }
+        }
+
         return $keys;
     }
 
-    public function read(Service $service, string $section): PanelResult
+    /**
+     * @param  array<string, mixed>  $input
+     */
+    public function read(Service $service, string $section, array $input, ClientContext $context): PanelResult
     {
         $machine = $this->machineOf($service);
 
@@ -155,22 +179,35 @@ final class Sections
             'overview' => $this->overview($service, $machine),
             'network' => $this->network($service, $machine),
             'reinstall' => $this->reinstall($service),
-            default => throw new PanelException(__('This feature is not available for this service.'), null, 404),
+            default => $this->added($service, $section)?->readSection($service, $machine, $section, $input, $context)
+                ?? throw new PanelException(__('This feature is not available for this service.'), null, 404),
         };
     }
 
     /**
      * @param  array<string, mixed>  $input
      */
-    public function run(Service $service, string $section, string $action, array $input): PanelResult
+    public function run(Service $service, string $section, string $action, array $input, ClientContext $context): PanelResult
     {
         $machine = $this->machineOf($service);
 
         return match (true) {
             $section === 'power' => $this->switchPower($service, $machine, $action),
             $section === 'reinstall' && $action === 'request' => $this->requestReinstall($service, (string) ($input['template'] ?? ''), $input['note'] ?? null),
-            default => throw new PanelException(__('This action is not available.'), null, 404),
+            default => $this->added($service, $section)?->runAction($service, $machine, $section, $action, $input, $context)
+                ?? throw new PanelException(__('This action is not available.'), null, 404),
         };
+    }
+
+    /**
+     * The add-on that owns a tab of the service's product, and that offers it to the service now.
+     */
+    private function added(Service $service, string $section): ?DedicatedPanelExtension
+    {
+        $machine = $this->activeMachine($service);
+        $owner = $this->extensions->owner($service->product, $section);
+
+        return $machine !== null && $owner !== null && in_array($section, $owner->availableSections($service, $machine), true) ? $owner : null;
     }
 
     private function overview(Service $service, Machine $machine): PanelResult

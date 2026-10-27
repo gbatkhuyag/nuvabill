@@ -11,7 +11,8 @@ namespace App\Marketplace;
  * from another service at /webhooks/addons/{slug}), "admin-settings", "admin-page", "events" (reacts to
  * orders, payments and tickets), "head-script" (adds a script to pages), "payments" (takes
  * payments), "servers" (manages accounts on servers), "domains" (registers domains),
- * "database" (adds its own tables), "schedule" (runs on a schedule), "backups" (reads the whole site
+ * "database" (adds its own tables), "schedule" (runs on a schedule), "hardware" (controls dedicated
+ * server machines under Hardware and adds pages there), "backups" (reads the whole site
  * to copy it) and "http:host.example.com" (connects to that host).
  */
 class Permissions
@@ -40,6 +41,7 @@ class Permissions
             'domains' => ['title' => __('Registers domains'), 'text' => __('Registers, renews and transfers domains.')],
             'database' => ['title' => __('Adds its own database tables'), 'text' => __('Keeps its own data.')],
             'schedule' => ['title' => __('Runs on a schedule'), 'text' => __('Does its work at set times through your cron job.')],
+            'hardware' => ['title' => __('Controls your dedicated server hardware'), 'text' => __('Switches the power, network ports or installs of your own machines under Hardware, and adds to the Hardware pages.')],
             'backups' => ['title' => __('Copies your whole site'), 'text' => __('Reads the database and every file of the site, including the .env settings file, to make backups.')],
             default => ['title' => $code, 'text' => ''],
         };

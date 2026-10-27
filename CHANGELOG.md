@@ -90,11 +90,23 @@ free Hetzner modules.
 
 **Dedicated servers**
 
-- Keep your own machines on the new Hardware page, with specs, IPs and their power card (Redfish or IPMI). Product
-  stock comes from the free machines.
-- An order gets a free machine. Clients can power on, shut down, restart and force off, and ask for a reinstall.
-  Suspending switches the power off. A machine that ends goes to "wiping" until staff confirm the disks are clean.
+- Keep your own machines on the new Hardware page, with specs, IPs and their power card (BMC). Product stock comes
+  from the free machines. Free in Nuvabill.
+- An order gets a free machine, your team installs it and presses **Server is ready**, and clients can ask for a
+  reinstall. A machine that ends goes to "needs wipe" until staff confirm the disks are clean.
+- Without power control, Nuvabill emails your team to switch a machine off by hand when it is suspended or ends,
+  and on by hand when it is active again.
+- **Dedicated Server Power** ($29 on the marketplace) switches the power through the BMC: Redfish for iDRAC, iLO,
+  Supermicro and most new servers, IPMI for older boards. Clients get power buttons, suspended servers are switched
+  off by themselves, and staff can choose the next boot device and read the health and power use.
+- Every power action of any add-on is in the machine's new **Power history**: who, when, what and whether it worked.
 - **Security:** power card logins are encrypted, never shown again and never logged. Certificates can be pinned.
+- **For developers:** add-ons can add power drivers (`PowerDrivers`, with optional `ChoosesBootDevice`,
+  `ReadsHealth` and `ReadsPowerUsage`), cards on a machine's page (`MachineSections`), Hardware pages
+  (`hardwareRoutes()` with the new "hardware" permission), tabs in the client panel (`DedicatedPanelExtensions`),
+  automatic installs that finish through **Server is ready** (`MachineInstallers`, `ServerSetup`), and react to
+  the `DedicatedServerActivated`, `DedicatedServerSuspended`, `DedicatedServerUnsuspended` and
+  `DedicatedServerReleased` events. See docs/hardware.md.
 
 **Hetzner (free on the marketplace)**
 
