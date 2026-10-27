@@ -9,7 +9,7 @@ the [roadmap](ROADMAP.md).
 
 | Version | Released | Highlights |
 |---|---|---|
-| [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 17 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules |
+| [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 17 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Thai |
 | [0.6.13](https://github.com/meroxis/nuvabill/releases/tag/v0.6.13) | 10 Oct 2026 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
 | [0.6.12](https://github.com/meroxis/nuvabill/releases/tag/v0.6.12) | 4 Oct 2026 | Fixes from a full line-by-line review: sign-in security, payments, wallet, renewals, imports and site health |
 | [0.6.11](https://github.com/meroxis/nuvabill/releases/tag/v0.6.11) | 30 Sep 2026 | Sign in from an order and come back to it; themes and order forms bring their own translations |
@@ -114,6 +114,12 @@ free Hetzner modules.
   also when your server moves. Starting to connect someone else's site changes nothing for it, a site staff removed
   waits for staff when it connects again, and limits count per domain with all its sub-domains. Site health warns
   when Cloudflare stops your server or the connection needs you.
+
+**Thai**
+
+- Thai: Nuvabill, its emails and add-ons now speak Thai (11 languages).
+- New sites offer Thai to clients right away. A site that updates keeps the languages it had: turn Thai on in
+  Settings → General. Thai PDF invoices stay in English for now, like Arabic, Kurdish and Chinese ones.
 
 **Also**
 

@@ -24,6 +24,51 @@ class LocaleTest extends TestCase
             ->assertDontSee('Sign in to your account');
     }
 
+    public function test_visitors_switch_to_thai_and_the_page_reads_left_to_right(): void
+    {
+        $this->assertArrayHasKey('th', Locales::enabled());
+
+        $this->post(route('language.update'), ['locale' => 'th'])->assertRedirect();
+
+        $this->get(route('client.login'))
+            ->assertOk()
+            ->assertSee('lang="th" dir="ltr"', false)
+            ->assertSee('ลงชื่อเข้าใช้บัญชีของคุณ')
+            ->assertDontSee('Sign in to your account');
+    }
+
+    public function test_thai_has_one_plural_form_and_its_pdfs_stay_in_english(): void
+    {
+        app()->setLocale('th');
+
+        $this->assertSame('ใบแจ้งหนี้ 1 ใบ', trans_choice(':count invoice|:count invoices', 1));
+        $this->assertSame('ใบแจ้งหนี้ 5 ใบ', trans_choice(':count invoice|:count invoices', 5));
+        $this->assertSame('ใช้แล้ว 1 ครั้ง', trans_choice('Used once|Used :count times', 1));
+        $this->assertSame('ใช้แล้ว 5 ครั้ง', trans_choice('Used once|Used :count times', 5));
+        $this->assertSame('en', Locales::forPdf('th'));
+        $this->assertFalse(Locales::isRtl('th'));
+    }
+
+    public function test_a_site_that_updates_keeps_its_languages_and_thai_stays_off(): void
+    {
+        $migration = require database_path('migrations/2027_08_01_000013_keep_enabled_languages_on_update.php');
+
+        // A new site has no staff yet: nothing is saved and Thai is on.
+        $migration->up();
+        $this->assertArrayHasKey('th', Locales::enabled());
+
+        Admin::factory()->create();
+        $migration->up();
+        $this->assertArrayNotHasKey('th', Locales::enabled());
+        $this->assertCount(10, Locales::enabled());
+        $this->post(route('language.update'), ['locale' => 'th'])->assertSessionHasErrors('locale');
+
+        // A choice staff saved before is kept as it is.
+        $this->setSettings(['locale.enabled' => ['en', 'th']]);
+        $migration->up();
+        $this->assertSame(['en', 'th'], array_keys(Locales::enabled()));
+    }
+
     public function test_the_language_is_saved_on_the_account_and_follows_the_client(): void
     {
         $client = Client::factory()->create();
@@ -71,7 +116,7 @@ class LocaleTest extends TestCase
     public function test_every_language_translates_every_text_and_keeps_its_placeholders(): void
     {
         // How many plural forms Laravel picks from in each language; Kurdish uses explicit ranges instead.
-        $pluralForms = ['ar' => 6, 'tr' => 1, 'zh_CN' => 1, 'ru' => 3];
+        $pluralForms = ['ar' => 6, 'th' => 1, 'tr' => 1, 'zh_CN' => 1, 'ru' => 3];
         $english = null;
 
         foreach (array_diff(array_keys(Locales::ALL), ['en']) as $locale) {

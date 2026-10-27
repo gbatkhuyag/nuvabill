@@ -13,6 +13,7 @@ use App\Support\Locales;
 use Database\Seeders\EmailTemplateTranslations;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\View;
 use Tests\TestCase;
@@ -65,6 +66,38 @@ class EmailLanguageTest extends TestCase
         Mail::assertSent(TemplatedMessage::class, fn (TemplatedMessage $mail): bool => str_starts_with($mail->subjectLine, 'Bienvenue'));
     }
 
+    public function test_thai_clients_get_thai_emails(): void
+    {
+        Mail::fake();
+        $client = Client::factory()->create(['language' => 'th']);
+
+        app(TemplateMailer::class)->send('client.welcome', $client);
+
+        Mail::assertSent(TemplatedMessage::class, fn (TemplatedMessage $mail): bool => str_starts_with($mail->subjectLine, 'ยินดีต้อนรับสู่')
+            && str_contains($mail->render(), 'lang="th"'));
+    }
+
+    public function test_a_site_that_updates_gets_the_thai_emails_but_not_for_rewritten_templates(): void
+    {
+        $welcome = EmailTemplate::query()->where('key', 'client.welcome')->firstOrFail();
+        $invoice = EmailTemplate::query()->where('key', 'invoice.created')->firstOrFail();
+        DB::table('email_template_translations')->where('locale', 'th')->delete();
+        $invoice->translations()->where('locale', 'de')->delete();
+        $welcome->update(['subject' => 'Hello from our team']);
+
+        $migration = require database_path('migrations/2027_08_01_000014_add_thai_email_template_translations.php');
+        $migration->up();
+        $migration->up();
+
+        $this->assertSame(1, $invoice->translations()->where('locale', 'th')->count());
+        $this->assertSame(0, $invoice->translations()->where('locale', 'de')->count(), 'Other languages are left alone.');
+        $this->assertSame(0, $welcome->translations()->where('locale', 'th')->count());
+
+        $migration->down();
+        $this->assertSame(0, $invoice->translations()->where('locale', 'th')->count());
+        $this->assertSame(1, $invoice->translations()->where('locale', 'fr')->count());
+    }
+
     public function test_a_rewritten_template_keeps_the_hosts_words_in_every_language(): void
     {
         $template = EmailTemplate::query()->where('key', 'client.welcome')->firstOrFail();
@@ -75,7 +108,7 @@ class EmailLanguageTest extends TestCase
 
         $this->assertSame(0, $template->translations()->count());
         $this->assertSame('Hello from our team', $template->fresh('translations')->textFor('de')[0]);
-        $this->assertSame(9, EmailTemplate::query()->where('key', 'invoice.created')->firstOrFail()->translations()->count());
+        $this->assertSame(10, EmailTemplate::query()->where('key', 'invoice.created')->firstOrFail()->translations()->count());
     }
 
     public function test_staff_edit_and_remove_a_translation(): void
@@ -101,12 +134,12 @@ class EmailLanguageTest extends TestCase
             $seen[] = app()->getLocale();
         });
 
-        foreach (['de', 'ar', 'zh_CN'] as $language) {
+        foreach (['de', 'ar', 'th', 'zh_CN'] as $language) {
             $invoice = Invoice::factory()->create(['client_id' => Client::factory()->create(['language' => $language])->id]);
             app(InvoicePdf::class)->render($invoice);
         }
 
-        $this->assertSame(['de', 'en', 'en'], $seen);
+        $this->assertSame(['de', 'en', 'en', 'en'], $seen);
         $this->assertSame('en', app()->getLocale(), 'The request language comes back afterwards.');
     }
 }

@@ -28,11 +28,12 @@ class EmailTemplateTranslations
      * has rewritten keeps using their own words until they translate it themselves.
      *
      * @param  list<string>|null  $keys  Only these templates, or all of them.
+     * @param  list<string>|null  $locales  Only these languages, or all of them.
      */
-    public static function install(?array $keys = null): void
+    public static function install(?array $keys = null, ?array $locales = null): void
     {
         $english = DefaultDataSeeder::templates();
-        $shipped = self::all();
+        $shipped = $locales === null ? self::all() : array_intersect_key(self::all(), array_flip($locales));
         $now = now();
         $rows = [];
         $existing = DB::table('email_template_translations')->get(['email_template_id', 'locale'])

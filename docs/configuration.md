@@ -6,7 +6,7 @@ has all of them.
 ## Company details
 
 **Settings → General → Your company**: company name, email address, postal address, phone and tax number (shown on
-invoices and in emails), the default language, and which of the 10 languages clients can choose.
+invoices and in emails), the default language, and which of the 11 languages clients can choose.
 
 **Settings → General → Your icon**: every page shows the Nuvabill icon in the browser tab. With a White-label License
 you can upload your own square PNG (at least 512 × 512 pixels). It becomes the browser tab icon, the icon next to your
@@ -88,7 +88,7 @@ for the client.
 
 **Settings → General → Sending email**: SMTP details, then send yourself a test email. Email templates are in
 **Settings → Email templates**, with a tab for each language. Emails and PDF invoices go out in the language each client
-picked (staff emails in your default language). Arabic, Kurdish and Chinese PDFs stay in English for now, because the PDF engine cannot draw those scripts.
+picked (staff emails in your default language). Arabic, Kurdish, Thai and Chinese PDFs stay in English for now, because the PDF engine cannot draw those scripts.
 
 ## Automation
 

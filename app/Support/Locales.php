@@ -9,7 +9,7 @@ use Illuminate\Http\Request;
 use Locale;
 
 /**
- * The languages Nuvabill speaks: the most used languages in the world, with Kurdish (Sorani). Arabic
+ * The languages Nuvabill speaks: the most used languages in the world, with Kurdish (Sorani) and Thai. Arabic
  * and Kurdish are written right to left; right-to-left languages show prices in Latin digits so
  * invoices and payments read the same everywhere.
  */
@@ -30,6 +30,7 @@ class Locales
         'ru' => ['name' => 'Russian', 'native' => 'Русский', 'short' => 'RU', 'rtl' => false],
         'ar' => ['name' => 'Arabic', 'native' => 'العربية', 'short' => 'AR', 'rtl' => true],
         'ckb' => ['name' => 'Kurdish (Sorani)', 'native' => 'کوردی', 'short' => 'KU', 'rtl' => true],
+        'th' => ['name' => 'Thai', 'native' => 'ไทย', 'short' => 'TH', 'rtl' => false],
         'zh_CN' => ['name' => 'Chinese (Simplified)', 'native' => '简体中文', 'short' => 'ZH', 'rtl' => false],
     ];
 
@@ -38,7 +39,7 @@ class Locales
      *
      * @var list<string>
      */
-    public const PDF_IN_ENGLISH = ['ar', 'ckb', 'zh_CN'];
+    public const PDF_IN_ENGLISH = ['ar', 'ckb', 'th', 'zh_CN'];
 
     public const SESSION_CLIENT = 'locale';
 
@@ -212,8 +213,8 @@ class Locales
     }
 
     /**
-     * The language of a PDF. The PDF engine cannot join Arabic letters or draw Chinese ones, so
-     * those PDFs stay in English.
+     * The language of a PDF. The PDF engine cannot join Arabic letters or draw Thai or Chinese ones,
+     * so those PDFs stay in English.
      */
     public static function forPdf(string $locale): string
     {

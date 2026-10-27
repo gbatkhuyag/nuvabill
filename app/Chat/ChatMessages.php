@@ -81,7 +81,7 @@ final class ChatMessages
      */
     public const META_LANGUAGES = [
         'en' => 'en', 'ar' => 'ar', 'de' => 'de', 'es' => 'es', 'fr' => 'fr', 'pt_BR' => 'pt_BR', 'ru' => 'ru',
-        'tr' => 'tr', 'zh_CN' => 'zh_CN',
+        'th' => 'th', 'tr' => 'tr', 'zh_CN' => 'zh_CN',
     ];
 
     private const EXAMPLES = [

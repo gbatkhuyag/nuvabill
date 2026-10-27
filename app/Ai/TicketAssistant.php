@@ -154,6 +154,7 @@ class TicketAssistant
             return match ($language) {
                 'ar', 'ckb' => 'arabic',
                 'ru' => 'cyrillic',
+                'th' => 'thai',
                 'zh_CN' => 'han',
                 default => 'latin',
             };
@@ -163,6 +164,7 @@ class TicketAssistant
             'arabic' => preg_match_all('/\p{Arabic}/u', (string) $text),
             'hebrew' => preg_match_all('/\p{Hebrew}/u', (string) $text),
             'cyrillic' => preg_match_all('/\p{Cyrillic}/u', (string) $text),
+            'thai' => preg_match_all('/\p{Thai}/u', (string) $text),
             'han' => preg_match_all('/\p{Han}/u', (string) $text),
             'latin' => preg_match_all('/\p{Latin}/u', (string) $text),
         ];
