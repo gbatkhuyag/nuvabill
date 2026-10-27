@@ -39,6 +39,7 @@ class PackageInstaller
         private ExtensionManager $extensions,
         private Themes $themes,
         private Settings $settings,
+        private MarketplaceClient $client,
     ) {}
 
     /**
@@ -65,7 +66,8 @@ class PackageInstaller
         $archive = null;
 
         try {
-            $response = Http::timeout(180)->withOptions(['sink' => $zipPath])->get($download['url']);
+            // A site connected to the marketplace sends its key, so Cloudflare lets the download through.
+            $response = $this->client->authorize(Http::timeout(180)->withOptions(['sink' => $zipPath]), $download['url'])->get($download['url']);
 
             if ($response->failed() || ! is_file($zipPath)) {
                 throw new RuntimeException(__('The package could not be downloaded. Try again later.'));

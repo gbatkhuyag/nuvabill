@@ -61,6 +61,8 @@ class Captcha
         'tickets' => 'New support ticket',
         'contact' => 'Contact forms on your website',
         'admin_login' => 'Staff sign-in',
+        // The marketplace store only.
+        'marketplace_connect' => 'Connect a site to the marketplace',
     ];
 
     /**

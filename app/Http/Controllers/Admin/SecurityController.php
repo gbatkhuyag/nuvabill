@@ -24,7 +24,7 @@ class SecurityController extends Controller
 
         return view('admin.settings.security', [
             'captchaProviders' => Captcha::PROVIDERS,
-            'captchaForms' => Captcha::FORMS,
+            'captchaForms' => config('nuvabill.marketplace.store') ? Captcha::FORMS : array_diff_key(Captcha::FORMS, ['marketplace_connect' => true]),
             'captchaState' => match (true) {
                 ! array_key_exists($provider, Captcha::PROVIDERS) => 'off',
                 $captcha->provider() !== null => 'on',

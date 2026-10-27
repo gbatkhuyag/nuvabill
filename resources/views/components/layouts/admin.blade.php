@@ -30,6 +30,7 @@
         ['route' => 'admin.store.items.index', 'match' => 'admin.store.items.*', 'icon' => 'package', 'label' => __('Items')],
         ['route' => 'admin.store.developers.index', 'match' => 'admin.store.developers.*', 'icon' => 'code', 'label' => __('Developers')],
         ['route' => 'admin.store.licenses.index', 'match' => 'admin.store.licenses.*', 'icon' => 'key', 'label' => __('Licenses')],
+        ['route' => 'admin.store.sites.index', 'match' => 'admin.store.sites.*', 'icon' => 'server', 'label' => __('Connected sites'), 'count' => \App\Models\MarketplaceSite::query()->where('status', \App\Models\MarketplaceSite::STATUS_PENDING)->count() ?: null],
         ['route' => 'admin.store.payouts.index', 'match' => 'admin.store.payouts.*', 'icon' => 'card', 'label' => __('Payouts')],
     ] : [];
 @endphp

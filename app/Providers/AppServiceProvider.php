@@ -26,6 +26,7 @@ use App\Models\Invoice;
 use App\Models\KbArticle;
 use App\Models\KbCategory;
 use App\Models\Machine;
+use App\Models\MarketplaceSite;
 use App\Models\Order;
 use App\Models\PaymentMethod;
 use App\Models\Product;
@@ -110,6 +111,7 @@ class AppServiceProvider extends ServiceProvider
             'kb_article' => KbArticle::class,
             'announcement' => Announcement::class,
             'machine' => Machine::class,
+            'marketplace_site' => MarketplaceSite::class,
         ]);
 
         Paginator::defaultView('components.pagination');

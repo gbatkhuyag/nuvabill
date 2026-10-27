@@ -34,6 +34,7 @@ use App\Http\Controllers\Admin\KnowledgebaseController;
 use App\Http\Controllers\Admin\MachineBmcController;
 use App\Http\Controllers\Admin\MachineController;
 use App\Http\Controllers\Admin\MachinePowerController;
+use App\Http\Controllers\Admin\MarketplaceConnectController;
 use App\Http\Controllers\Admin\MarketplaceController;
 use App\Http\Controllers\Admin\NetworkStatusController;
 use App\Http\Controllers\Admin\OrderController;
@@ -422,6 +423,7 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
 
     Route::middleware('admin.can:marketplace.manage')->prefix('marketplace')->name('marketplace.')->group(function (): void {
         Route::get('/', [MarketplaceController::class, 'index'])->name('index');
+        Route::post('connect', [MarketplaceConnectController::class, 'store'])->middleware('throttle:5,1')->name('connect');
         Route::get('{slug}', [MarketplaceController::class, 'show'])->name('show');
         Route::post('{slug}/install', [MarketplaceController::class, 'install'])->middleware('throttle:10,1')->name('install');
         Route::delete('{slug}', [MarketplaceController::class, 'destroy'])->name('destroy');

@@ -45,6 +45,16 @@ if (Installation::isInstalled()) {
 
         Schedule::command('nuvabill:marketplace-licenses')->dailyAt('04:20')->withoutOverlapping();
 
+        // Connect to marketplace: keep the connection alive, renew the key every 90 days, and notice
+        // when this server goes out from a new address. Only for connected sites, each at its own minute
+        // between 05:00 and 05:59, so not every site calls the store at once.
+        Schedule::command('nuvabill:marketplace-heartbeat')->dailyAt(sprintf('05:%02d', crc32((string) config('app.url')) % 60))->withoutOverlapping()
+            ->when(fn (): bool => filled(setting('marketplace.site_key')));
+
+        // The store only: connected sites not seen for 60 days, and requests never approved, end.
+        Schedule::command('nuvabill:marketplace-sites-prune')->dailyAt('06:10')->withoutOverlapping()
+            ->when(fn (): bool => (bool) config('nuvabill.marketplace.store'));
+
         // Network status: can each server be reached? Staff get an email when one goes down.
         Schedule::command('nuvabill:server-status')->everyFiveMinutes()->withoutOverlapping(10)
             ->when(fn (): bool => (bool) setting('status.checks'));

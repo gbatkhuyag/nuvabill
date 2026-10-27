@@ -1,7 +1,9 @@
 <?php
 
 use App\Http\Controllers\Marketplace\MediaController;
+use App\Http\Controllers\Marketplace\SiteApiController;
 use App\Http\Controllers\Marketplace\StoreApiController;
+use App\Http\Middleware\AuthenticateMarketplaceSite;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Support\Facades\Route;
 
@@ -12,10 +14,11 @@ use Illuminate\Support\Facades\Route;
 |
 | Only on the marketplace store. Every copy of Nuvabill calls these to list
 | the catalog, download packages and check license keys. No sessions.
+| A site connected to the marketplace sends its key as a Bearer token.
 |
 */
 
-Route::prefix('api/marketplace/v1')->name('marketplace.api.')->middleware(SubstituteBindings::class)->group(function (): void {
+Route::prefix('api/marketplace/v1')->name('marketplace.api.')->middleware([AuthenticateMarketplaceSite::class, SubstituteBindings::class])->group(function (): void {
     Route::get('catalog', [StoreApiController::class, 'catalog'])->middleware('throttle:120,1')->name('catalog');
     Route::post('download', [StoreApiController::class, 'download'])->middleware('throttle:30,1')->name('download');
     Route::post('licenses/check', [StoreApiController::class, 'check'])->middleware('throttle:60,1')->name('licenses.check');
@@ -23,6 +26,10 @@ Route::prefix('api/marketplace/v1')->name('marketplace.api.')->middleware(Substi
         ->whereNumber(['version', 'license'])
         ->middleware(['signed:relative', 'throttle:30,1'])
         ->name('file');
+
+    // Connected sites only (their key is required).
+    Route::post('sites/heartbeat', [SiteApiController::class, 'heartbeat'])->middleware('throttle:10,1')->name('sites.heartbeat');
+    Route::post('sites/rotate', [SiteApiController::class, 'rotate'])->middleware('throttle:5,1')->name('sites.rotate');
 });
 
 Route::get('marketplace-media/{item}/{file}', MediaController::class)

@@ -4,13 +4,16 @@ namespace App\Marketplace;
 
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Throwable;
 
 /**
- * Talks to the marketplace store's API: the catalog, downloads and license checks.
+ * Talks to the marketplace store's API: the catalog, downloads and license checks. A site that is
+ * connected to the marketplace (SiteConnection) sends its key with every call and goes out over
+ * the address family the store allowed, so Cloudflare lets it through.
  */
 class MarketplaceClient
 {
@@ -19,6 +22,8 @@ class MarketplaceClient
     private const LAST_CATALOG = 'nuvabill.marketplace.catalog.last';
 
     private ?string $lastError = null;
+
+    public function __construct(private SiteConnection $connection) {}
 
     public function baseUrl(): string
     {
@@ -40,7 +45,7 @@ class MarketplaceClient
         }
 
         try {
-            $response = $this->http()->get($this->baseUrl().'/api/marketplace/v1/catalog', ['nuvabill' => config('nuvabill.version')]);
+            $response = $this->send('get', '/api/marketplace/v1/catalog', ['nuvabill' => config('nuvabill.version')]);
         } catch (Throwable $exception) {
             $this->lastError = __('The marketplace cannot be reached right now. Try again in a few minutes.');
             report($exception);
@@ -49,7 +54,7 @@ class MarketplaceClient
         }
 
         if (! $response->successful() || ! is_array($response->json('items'))) {
-            $this->lastError = __('The marketplace cannot be reached right now. Try again in a few minutes.');
+            $this->lastError = self::isChallenge($response) ? self::blockedMessage() : __('The marketplace cannot be reached right now. Try again in a few minutes.');
 
             return $this->cachedCatalog() ?? [];
         }
@@ -106,7 +111,7 @@ class MarketplaceClient
     public function download(string $slug, ?string $licenseKey): array
     {
         try {
-            $response = $this->http()->post($this->baseUrl().'/api/marketplace/v1/download', [
+            $response = $this->send('post', '/api/marketplace/v1/download', [
                 'slug' => $slug,
                 'license_key' => $licenseKey ?: null,
                 'site' => $this->site(),
@@ -114,6 +119,10 @@ class MarketplaceClient
             ]);
         } catch (ConnectionException) {
             throw new RuntimeException(__('The marketplace cannot be reached right now. Try again in a few minutes.'));
+        }
+
+        if (self::isChallenge($response)) {
+            throw new RuntimeException(self::blockedMessage());
         }
 
         if (! $response->successful()) {
@@ -139,7 +148,7 @@ class MarketplaceClient
     public function checkLicense(string $slug, string $licenseKey, ?string $version = null): ?array
     {
         try {
-            $response = $this->http()->post($this->baseUrl().'/api/marketplace/v1/licenses/check', [
+            $response = $this->send('post', '/api/marketplace/v1/licenses/check', [
                 'slug' => $slug,
                 'license_key' => $licenseKey,
                 'site' => $this->site(),
@@ -149,7 +158,7 @@ class MarketplaceClient
             return null;
         }
 
-        if ($response->serverError() || ! is_bool($response->json('valid'))) {
+        if ($response->serverError() || self::isChallenge($response) || ! is_bool($response->json('valid'))) {
             return null;
         }
 
@@ -172,6 +181,131 @@ class MarketplaceClient
         }
 
         return strtolower($host);
+    }
+
+    /**
+     * Tell the store this site is still here, from this address. Null when the store cannot be
+     * reached; status "reconnect" when the store no longer knows the key.
+     *
+     * @return array{status: string, rotate: bool, ip: ?string}|null
+     */
+    public function heartbeat(string $ip): ?array
+    {
+        if ($this->siteKey() === null) {
+            return null;
+        }
+
+        try {
+            $response = $this->send('post', '/api/marketplace/v1/sites/heartbeat', ['ip' => $ip], retryWithoutKey: false);
+        } catch (Throwable) {
+            return null;
+        }
+
+        if ($response->status() === 401 && $response->json('code') === 'reconnect') {
+            return ['status' => SiteConnection::RECONNECT, 'rotate' => false, 'ip' => null];
+        }
+
+        if (! $response->successful() || ! is_string($response->json('status'))) {
+            return null;
+        }
+
+        return [
+            'status' => (string) $response->json('status'),
+            'rotate' => $response->json('rotate') === true,
+            'ip' => is_string($response->json('ip')) ? $response->json('ip') : null,
+        ];
+    }
+
+    /**
+     * Ask the store for a new key. The old one stops working at once.
+     */
+    public function rotateKey(): ?string
+    {
+        try {
+            $response = $this->send('post', '/api/marketplace/v1/sites/rotate', [], retryWithoutKey: false);
+        } catch (Throwable) {
+            return null;
+        }
+
+        $key = $response->successful() ? $response->json('key') : null;
+
+        return is_string($key) && preg_match('/^nvb_site_[A-Za-z0-9_-]{43}$/', $key) ? $key : null;
+    }
+
+    /**
+     * Add this site's key and address family to a call to the store, for example the package
+     * download. Calls to any other host are left as they are, so the key never goes to them.
+     */
+    public function authorize(PendingRequest $request, string $url): PendingRequest
+    {
+        $key = $this->siteKey();
+
+        if ($key === null || ! str_starts_with(strtolower($url), 'https://') || strcasecmp((string) parse_url($url, PHP_URL_HOST), (string) parse_url($this->baseUrl(), PHP_URL_HOST)) !== 0) {
+            return $request;
+        }
+
+        return $request->withToken($key)->withOptions(['force_ip_resolve' => $this->connection->family() === 'ipv6' ? 'v6' : 'v4']);
+    }
+
+    /**
+     * Cloudflare answered with a "Just a moment..." check instead of the store.
+     */
+    public static function isChallenge(Response $response): bool
+    {
+        if (strtolower($response->header('cf-mitigated')) === 'challenge') {
+            return true;
+        }
+
+        if (! in_array($response->status(), [403, 429, 503], true) || ! str_contains(strtolower($response->header('Content-Type')), 'text/html')) {
+            return false;
+        }
+
+        $body = substr($response->body(), 0, 20000);
+
+        return str_contains($body, 'Just a moment') || str_contains($body, 'challenge-platform') || str_contains($body, '_cf_chl');
+    }
+
+    public static function blockedMessage(): string
+    {
+        return __('Cloudflare stopped this server from reaching the marketplace. Use "Connect to marketplace" on the Marketplace page to let it through.');
+    }
+
+    /**
+     * One call to the store's API. When the store no longer knows this site's key, the connection
+     * is marked for reconnecting and the call is made once more without the key.
+     *
+     * @param  'get'|'post'  $method
+     * @param  array<string, mixed>  $data
+     */
+    private function send(string $method, string $path, array $data, bool $retryWithoutKey = true): Response
+    {
+        $url = $this->baseUrl().$path;
+        $hasKey = $this->siteKey() !== null;
+        $response = $this->authorize($this->http(), $url)->{$method}($url, $data);
+
+        if ($hasKey && $response->status() === 401 && $response->json('code') === 'reconnect') {
+            $this->connection->markReconnect();
+
+            if ($retryWithoutKey) {
+                $response = $this->http()->{$method}($url, $data);
+            }
+        }
+
+        if (self::isChallenge($response)) {
+            Cache::put(SiteConnection::BLOCKED_CACHE, true, now()->addDay());
+        } elseif ($response->successful()) {
+            Cache::forget(SiteConnection::BLOCKED_CACHE);
+        }
+
+        return $response;
+    }
+
+    /**
+     * The key to send, unless the store said it no longer knows it.
+     */
+    private function siteKey(): ?string
+    {
+        return $this->connection->status() === SiteConnection::RECONNECT ? null : $this->connection->key();
     }
 
     private function http(): PendingRequest

@@ -82,6 +82,19 @@ class Settings
         'marketplace.renamed_items' => [],
         // Store only: slugs developers cannot take, kept for official items that are not listed yet.
         'marketplace.reserved_slugs' => [],
+        // Connect to marketplace (SiteConnection): this site's key from the store, and how it connected.
+        'marketplace.site_key' => '',
+        'marketplace.site_id' => null,
+        'marketplace.site_ip' => null,
+        'marketplace.site_family' => null,
+        'marketplace.site_status' => null,
+        'marketplace.site_connected_at' => null,
+        'marketplace.site_checked_at' => null,
+        // Store only: Cloudflare access rules for connected sites, and limits on connecting.
+        'marketplace.cloudflare_zone_id' => '',
+        'marketplace.cloudflare_token' => '',
+        'marketplace.connect_daily_limit' => 200,
+        'marketplace.connect_sites_per_ip' => 5,
 
         'automation.enabled' => true,
         'automation.reminder_days' => [1, 3, 7],
@@ -249,7 +262,7 @@ class Settings
      *
      * @var list<string>
      */
-    public const SECRET_KEYS = ['license.white_label_key', 'mail.password', 'import.whmcs', 'import.connection', 'import.password_keys', 'social.google', 'social.github', 'social.facebook', 'security.captcha_secret', 'ai.key', 'chat.telegram_token', 'chat.telegram_secret', 'chat.whatsapp_token', 'chat.whatsapp_app_secret', 'chat.whatsapp_webhook_key', 'push.vapid_private'];
+    public const SECRET_KEYS = ['license.white_label_key', 'mail.password', 'import.whmcs', 'import.connection', 'import.password_keys', 'social.google', 'social.github', 'social.facebook', 'security.captcha_secret', 'ai.key', 'chat.telegram_token', 'chat.telegram_secret', 'chat.whatsapp_token', 'chat.whatsapp_app_secret', 'chat.whatsapp_webhook_key', 'push.vapid_private', 'marketplace.site_key', 'marketplace.cloudflare_token'];
 
     /**
      * @var array<string, mixed>|null

@@ -24,6 +24,10 @@
         <div class="flash" data-tone="warn"><span>{{ $error }}</span></div>
     @endif
 
+    @if (! $isStore && ($connection['connected'] || $connection['blocked'] || in_array($tab, ['discover', 'installed'], true)))
+        @include('admin.marketplace.partials.connect')
+    @endif
+
     @if ($featured)
         <section class="market-hero">
             <div class="market-hero-text">

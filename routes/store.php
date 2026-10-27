@@ -5,10 +5,12 @@ use App\Http\Controllers\Marketplace\Admin\ItemController as AdminItemController
 use App\Http\Controllers\Marketplace\Admin\LicenseController as AdminLicenseController;
 use App\Http\Controllers\Marketplace\Admin\PayoutController;
 use App\Http\Controllers\Marketplace\Admin\ReviewController;
+use App\Http\Controllers\Marketplace\Admin\SiteController as AdminSiteController;
 use App\Http\Controllers\Marketplace\DeveloperController;
 use App\Http\Controllers\Marketplace\DeveloperItemController;
 use App\Http\Controllers\Marketplace\LicenseController;
 use App\Http\Controllers\Marketplace\MarketplacePageController;
+use App\Http\Controllers\Marketplace\SiteConnectController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -23,6 +25,9 @@ use Illuminate\Support\Facades\Route;
 
 Route::middleware('web')->group(function (): void {
     Route::get('marketplace', [MarketplacePageController::class, 'index'])->name('marketplace.index');
+    // Connect to marketplace: a Nuvabill site confirms it may connect. Before marketplace/{item}.
+    Route::get('marketplace/connect', [SiteConnectController::class, 'show'])->middleware('throttle:30,1')->name('marketplace.connect');
+    Route::post('marketplace/connect', [SiteConnectController::class, 'store'])->middleware(['throttle:5,10', 'captcha:marketplace_connect'])->name('marketplace.connect.store');
     Route::get('marketplace/{item}', [MarketplacePageController::class, 'show'])->name('marketplace.show');
     Route::get('developers', [MarketplacePageController::class, 'developers'])->name('marketplace.developers');
     Route::get('white-label', [MarketplacePageController::class, 'whiteLabel'])->name('marketplace.white-label');
@@ -72,6 +77,11 @@ Route::middleware('web')->group(function (): void {
             Route::post('licenses/{license}/revoke', [AdminLicenseController::class, 'revoke'])->name('licenses.revoke');
             Route::post('licenses/{license}/restore', [AdminLicenseController::class, 'restore'])->name('licenses.restore');
             Route::post('licenses/{license}/release', [AdminLicenseController::class, 'release'])->name('licenses.release');
+
+            Route::get('sites', [AdminSiteController::class, 'index'])->name('sites.index');
+            Route::post('sites/{site}/approve', [AdminSiteController::class, 'approve'])->name('sites.approve');
+            Route::post('sites/{site}/revoke', [AdminSiteController::class, 'revoke'])->name('sites.revoke');
+            Route::put('sites/cloudflare', [AdminSiteController::class, 'cloudflare'])->name('sites.cloudflare');
 
             Route::get('payouts', [PayoutController::class, 'index'])->name('payouts.index');
             Route::post('payouts', [PayoutController::class, 'store'])->name('payouts.store');

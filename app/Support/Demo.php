@@ -62,6 +62,7 @@ class Demo
         'admin.profile.api-keys.store',
         'admin.settings.license.update',
         'admin.settings.license.check',
+        'admin.marketplace.connect',
         'admin.settings.seo.update',
         'admin.settings.ai.update',
         'admin.settings.ai.test',

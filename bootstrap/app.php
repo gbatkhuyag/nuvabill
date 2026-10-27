@@ -3,6 +3,7 @@
 use App\Extensions\ExtensionManager;
 use App\Http\Controllers\BrandIconController;
 use App\Http\Controllers\ChatWebhookController;
+use App\Http\Controllers\MarketplaceConnectCallbackController;
 use App\Http\Controllers\PackageAssetController;
 use App\Http\Controllers\SeoController;
 use App\Http\Controllers\WebhookController;
@@ -70,6 +71,12 @@ return Application::configure(basePath: dirname(__DIR__))
                 // The Nuvabill store's Meta app (WhatsApp by QR code for every site).
                 Route::match(['get', 'post'], 'webhooks/meta/whatsapp', [WhatsAppConnectController::class, 'webhook'])->name('webhooks.meta');
             });
+
+            // Connect to marketplace: the store calls back with this site's key. No session, cookies or
+            // form token: only the one-time code staff got when they clicked Connect is accepted.
+            Route::post('nuvabill-marketplace/connect', MarketplaceConnectCallbackController::class)
+                ->middleware('throttle:10,1')
+                ->name('marketplace.connect.callback');
 
             // Add-ons that receive data from other services. No session, cookies or form token: each
             // add-on checks its own requests.

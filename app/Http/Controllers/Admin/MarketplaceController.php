@@ -10,6 +10,7 @@ use App\Marketplace\Listing;
 use App\Marketplace\MarketplaceClient;
 use App\Marketplace\PackageInstaller;
 use App\Marketplace\PackageType;
+use App\Marketplace\SiteConnection;
 use App\Models\MarketplaceInstall;
 use App\Support\Activity;
 use App\Support\Settings;
@@ -34,8 +35,13 @@ class MarketplaceController extends Controller
         private ExtensionManager $extensions,
     ) {}
 
-    public function index(Request $request): View
+    public function index(Request $request, SiteConnection $connection): View
     {
+        // Back from connecting on the store: ask the store at once whether this server is let through.
+        if ($request->query('connected') === '1' && $connection->status() === SiteConnection::WAITING) {
+            $connection->heartbeat($this->client);
+        }
+
         $tab = in_array($request->query('tab'), self::TABS, true) ? (string) $request->query('tab') : 'discover';
         // Ask the store for new versions whenever staff look at what they have installed.
         $catalog = $this->catalog(fresh: in_array($tab, ['installed', 'updates'], true));
@@ -71,6 +77,8 @@ class MarketplaceController extends Controller
             'price' => $price,
             'search' => $search,
             'error' => $this->client->lastError(),
+            'connection' => $connection->summary(),
+            'isStore' => (bool) config('nuvabill.marketplace.store'),
             'activeTheme' => $this->themes->saved(),
             'activeOrderForm' => $this->themes->savedOrderForm(),
         ]);
