@@ -65,6 +65,7 @@ use App\Http\Controllers\Admin\TaxController;
 use App\Http\Controllers\Admin\TicketAiController;
 use App\Http\Controllers\Admin\TicketController;
 use App\Http\Controllers\Admin\TldPriceController;
+use App\Http\Controllers\Admin\TwoFactorStepUpController;
 use App\Http\Controllers\Admin\UpdateController;
 use App\Http\Controllers\Admin\WhiteLabelController;
 use App\Http\Controllers\LanguageController;
@@ -103,11 +104,15 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
     Route::get('/', DashboardController::class)->name('dashboard');
     Route::get('today', [PhoneAppController::class, 'today'])->name('today');
 
+    // A code again before server module tools, for a session that did not pass two-factor login (RequireStaffTwoFactor).
+    Route::get('two-factor/confirm', [TwoFactorStepUpController::class, 'create'])->name('two-factor.step-up');
+    Route::post('two-factor/confirm', [TwoFactorStepUpController::class, 'store'])->middleware('throttle:6,1');
+
     Route::get('profile', [ProfileController::class, 'edit'])->name('profile.edit');
     // Routes that check the current password share one limit per staff member, so a stolen session cannot guess it.
     Route::put('profile/password', [ProfileController::class, 'password'])->middleware('throttle:staff-reauth')->name('profile.password');
-    Route::post('profile/two-factor', [ProfileController::class, 'startTwoFactor'])->name('profile.two-factor.start');
-    Route::post('profile/two-factor/confirm', [ProfileController::class, 'confirmTwoFactor'])->name('profile.two-factor.confirm');
+    Route::post('profile/two-factor', [ProfileController::class, 'startTwoFactor'])->middleware('throttle:staff-reauth')->name('profile.two-factor.start');
+    Route::post('profile/two-factor/confirm', [ProfileController::class, 'confirmTwoFactor'])->middleware('throttle:staff-reauth')->name('profile.two-factor.confirm');
     Route::delete('profile/two-factor', [ProfileController::class, 'disableTwoFactor'])->middleware('throttle:staff-reauth')->name('profile.two-factor.disable');
     Route::post('profile/api-keys', [ApiKeyController::class, 'store'])->middleware('throttle:10,1')->name('profile.api-keys.store');
     Route::delete('profile/api-keys/{apiToken}', [ApiKeyController::class, 'destroy'])->name('profile.api-keys.destroy');

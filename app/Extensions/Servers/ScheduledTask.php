@@ -28,6 +28,22 @@ final readonly class ScheduledTask
     ];
 
     /**
+     * Minutes between two runs at each frequency.
+     *
+     * @var array<string, int>
+     */
+    public const INTERVALS = [
+        'every-five-minutes' => 5,
+        'every-ten-minutes' => 10,
+        'every-fifteen-minutes' => 15,
+        'every-thirty-minutes' => 30,
+        'hourly' => 60,
+        'every-six-hours' => 360,
+        'daily' => 1440,
+        'weekly' => 10080,
+    ];
+
+    /**
      * A name: 1 to 40 lowercase letters, digits or dashes.
      */
     public const NAME_PATTERN = '/^[a-z0-9][a-z0-9-]{0,39}\z/';
@@ -36,7 +52,7 @@ final readonly class ScheduledTask
      * @param  string  $name  Unique within the module, for example "traffic".
      * @param  Closure(): mixed  $callback  The work. Keep a run shorter than the frequency.
      * @param  string  $frequency  One of FREQUENCIES' keys.
-     * @param  int  $lockMinutes  How long the overlap lock lasts if a run dies without freeing it (1 to 1440).
+     * @param  int  $lockMinutes  How long the overlap lock lasts if a run dies without freeing it (1 to 1440). Core makes it at least one interval (lockFor()).
      */
     public function __construct(
         public string $name,
@@ -44,6 +60,15 @@ final readonly class ScheduledTask
         public string $frequency = 'hourly',
         public int $lockMinutes = 30,
     ) {}
+
+    /**
+     * How long core holds the overlap lock: the module's lockMinutes, but at least one interval,
+     * so a slow run is never joined by the next one while the lock is still meant to hold.
+     */
+    public function lockFor(): int
+    {
+        return max($this->lockMinutes, self::INTERVALS[$this->frequency] ?? 1440);
+    }
 
     /**
      * What is wrong with this task, or null when core can schedule it.

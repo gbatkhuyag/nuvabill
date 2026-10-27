@@ -20,12 +20,16 @@ use App\Models\Role;
 use App\Models\Server;
 use App\Models\Service;
 use App\Provisioning\Provisioner;
+use App\Security\SignInLimiter;
+use App\Security\StaffSecondFactor;
+use App\Security\Totp;
 use App\Support\AttentionItems;
 use Illuminate\Console\Scheduling\CallbackEvent;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Exceptions;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use RuntimeException;
 use Tests\Fixtures\HookFake\HookFakeModule;
@@ -73,7 +77,7 @@ class ModuleHooksTest extends TestCase
         $this->get($index)->assertRedirect(route('admin.profile.edit'))
             ->assertSessionHas('error', 'Turn on two-factor login in your profile to use server module tools.');
 
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->create(['name' => 'Raz'])));
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
         $this->get($index)->assertOk()->assertSee('Node status for staff');
         $this->post(route(ModuleAdmin::routeName('hookfake', 'maintenance')))->assertRedirect();
         $this->assertCount(1, HookFakeModule::callsTo('maintenance'));
@@ -82,19 +86,19 @@ class ModuleHooksTest extends TestCase
         $this->get(route('admin.dashboard'))->assertOk()->assertSee('href="'.$index.'"', false);
 
         // Staff with services but not the module's permission get neither the page nor the link.
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->withPermissions(['services.manage'])->create(['name' => 'Las'])));
+        $this->signInWithTwoFactor(Admin::factory()->withPermissions(['services.manage'])->create(['name' => 'Las']));
         $this->get($index)->assertForbidden();
         $this->get(route('admin.dashboard'))->assertOk()->assertDontSee('href="'.$index.'"', false);
 
         // A role with only the module's permission is enough.
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->withPermissions(['hookfake.manage'])->create(['name' => 'Mer'])));
+        $this->signInWithTwoFactor(Admin::factory()->withPermissions(['hookfake.manage'])->create(['name' => 'Mer']));
         $this->get($index)->assertOk();
         $this->assertCount(1, HookFakeModule::callsTo('maintenance'));
     }
 
     public function test_the_modules_permission_shows_in_the_role_editor_and_can_be_given(): void
     {
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->create(['name' => 'Raz'])));
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
 
         $this->assertSame(['Hook fake' => ['hookfake.manage' => 'Manage Hook fake nodes']], app(ModuleHooks::class)->permissionGroups());
         $this->assertContains('hookfake.manage', Role::allPermissionKeys());
@@ -138,9 +142,14 @@ class ModuleHooksTest extends TestCase
     {
         $owner = $this->withTwoFactor(Admin::factory()->create(['name' => 'Raz']));
 
+        // Like the module's pages: only once this session passed two-factor login.
+        $this->assertSame([], app(AttentionItems::class)->for($owner));
+        $this->signInAdmin($owner);
+        $this->get(route('admin.dashboard'))->assertOk()->assertDontSee('Node pve2 is in maintenance');
+
+        $this->signInWithTwoFactor($owner);
         $items = app(AttentionItems::class)->for($owner);
         $this->assertSame(['ext.hookfake.nodes'], array_column($items, 'key'), 'Bad keys and links that leave the site are left out.');
-        $this->signInAdmin($owner);
         $this->get(route('admin.dashboard'))->assertOk()->assertSee('Node pve2 is in maintenance');
 
         $this->assertSame([], app(AttentionItems::class)->for(Admin::factory()->withPermissions(['services.manage'])->create()));
@@ -168,6 +177,7 @@ class ModuleHooksTest extends TestCase
         $this->assertSame(10, $traffic->expiresAt);
         $this->assertTrue($traffic->onOneServer);
         $this->assertSame('0 0 * * *', $events['server-module:hookfake:cleanup']->expression);
+        $this->assertSame(1440, $events['server-module:hookfake:cleanup']->expiresAt, 'The lock lasts at least one interval.');
 
         $traffic->run($this->app);
         $this->assertCount(1, HookFakeModule::callsTo('traffic'));
@@ -230,7 +240,8 @@ class ModuleHooksTest extends TestCase
         $this->post(route('checkout.store'))->assertRedirect();
 
         $service = Service::query()->where('client_id', $client->id)->sole();
-        $this->assertSame(['hostname' => 'web1.example.test', 'ssh_keys' => $key, 'region' => 'fra1', 'root_token' => 'tok-'.HookFakeModule::SECRET], $service->order_fields);
+        // The service was set up on the order, so the secret is gone (see the next test).
+        $this->assertSame(['hostname' => 'web1.example.test', 'ssh_keys' => $key, 'region' => 'fra1'], $service->order_fields);
         $raw = (string) DB::table('services')->where('id', $service->id)->value('order_fields');
         $this->assertStringNotContainsString('web1', $raw);
         $this->assertStringNotContainsString(HookFakeModule::SECRET, $raw);
@@ -239,10 +250,10 @@ class ModuleHooksTest extends TestCase
         // The module reads them in create().
         $this->assertSame([['service' => $service->id, 'hostname' => 'web1.example.test', 'ssh_keys' => $key, 'root_token' => 'tok-'.HookFakeModule::SECRET, 'user_data' => null, 'api_token' => null]], HookFakeModule::callsTo('create'));
 
-        // Staff see what was entered, except the secret.
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->create(['name' => 'Raz'])));
+        // Staff see what was entered.
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
         $this->get(route('admin.services.show', $service))->assertOk()
-            ->assertSee('Order details')->assertSee('web1.example.test')->assertSee('Saved, hidden')
+            ->assertSee('Order details')->assertSee('web1.example.test')
             ->assertDontSee(HookFakeModule::SECRET);
         $this->assertStringNotContainsString(HookFakeModule::SECRET, (string) json_encode(ActivityLog::query()->pluck('description')));
     }
@@ -263,8 +274,10 @@ class ModuleHooksTest extends TestCase
         $this->post(route('order.store'), $guest + ['fields' => ['hostname' => 'web2.example.test'], 'secret_fields' => ['root_token' => 'tok-'.HookFakeModule::SECRET]])
             ->assertSessionHasNoErrors()->assertRedirect();
 
+        // The module got both in create(); the secret is not kept once the service is set up.
         $service = Service::query()->sole();
-        $this->assertSame(['hostname' => 'web2.example.test', 'root_token' => 'tok-'.HookFakeModule::SECRET], $service->order_fields);
+        $this->assertSame('tok-'.HookFakeModule::SECRET, HookFakeModule::callsTo('create')[0]['root_token']);
+        $this->assertSame(['hostname' => 'web2.example.test'], $service->order_fields);
     }
 
     public function test_a_module_without_the_order_fields_permission_adds_no_fields(): void
@@ -279,7 +292,7 @@ class ModuleHooksTest extends TestCase
 
     public function test_long_and_secret_product_settings(): void
     {
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->create(['name' => 'Raz'])));
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
         // Forms trim the ends of values, so the script ends without a line break here.
         $script = rtrim("#cloud-config\n".str_repeat('runcmd: [echo ok]'."\n", 700));
         $this->assertGreaterThan(10000, mb_strlen($script));
@@ -299,6 +312,16 @@ class ModuleHooksTest extends TestCase
             ->assertSessionHasErrors(['module_config.notes', 'module_config.plan']);
         $this->post(route('admin.products.store'), $form + ['module_config' => ['user_data' => str_repeat('u', ModuleConfig::MAX_LONG + 1)]])
             ->assertSessionHasErrors(['module_config.user_data']);
+
+        // After an error the form keeps what was typed, but never a secret setting: not in the
+        // session and not in the page, also not a long secret textarea.
+        $this->from(route('admin.products.create'))->post(route('admin.products.store'), $form + ['module_config' => [
+            'plan' => str_repeat('p', 191), 'private_key' => "-----BEGIN KEY-----\nkey-".HookFakeModule::SECRET, 'api_token' => 'tok-'.HookFakeModule::SECRET,
+        ]])->assertSessionHasErrors(['module_config.plan']);
+        $this->assertSame(str_repeat('p', 191), session()->getOldInput('module_config.plan'));
+        $this->assertNull(session()->getOldInput('module_config.private_key'));
+        $this->assertStringNotContainsString(HookFakeModule::SECRET, (string) json_encode(session()->all()));
+        $this->get(route('admin.products.create'))->assertOk()->assertDontSee(HookFakeModule::SECRET);
 
         $this->post(route('admin.products.store'), $form + ['module_config' => ['plan' => 's-1vcpu', 'user_data' => $script, 'api_token' => 'tok-'.HookFakeModule::SECRET]])
             ->assertSessionHasNoErrors()->assertRedirect();
@@ -326,7 +349,7 @@ class ModuleHooksTest extends TestCase
     public function test_the_staff_card_shows_facts_and_runs_only_declared_checked_actions(): void
     {
         $service = Service::factory()->create(['product_id' => $this->hookProduct()->id, 'server_id' => $this->server->id, 'status' => ServiceStatus::Active]);
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->create(['name' => 'Raz'])));
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
 
         $this->get(route('admin.services.show', $service))->assertOk()
             ->assertSee('Hook fake guest')->assertSee('Node pve1 is healthy.')->assertSee('pve1')
@@ -372,26 +395,190 @@ class ModuleHooksTest extends TestCase
         $service = Service::factory()->create(['product_id' => $this->hookProduct()->id, 'server_id' => $this->server->id, 'status' => ServiceStatus::Active]);
         $action = route('admin.services.staff-action', [$service, 'migrate']);
 
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->withPermissions(['services.manage'])->create(['name' => 'Las'])));
+        $this->signInWithTwoFactor(Admin::factory()->withPermissions(['services.manage'])->create(['name' => 'Las']));
         $this->get(route('admin.services.show', $service))->assertOk()->assertDontSee('Hook fake guest');
         $this->post($action, ['node' => 'pve2'])->assertForbidden();
 
-        // Without two-factor login: the facts, but no buttons, and the action is refused.
-        $this->signInAdmin(Admin::factory()->withPermissions(['services.manage', 'hookfake.manage'])->create(['name' => 'Mer']));
+        // Without two-factor login: neither the facts nor the buttons (the module is not even
+        // asked), and the action is refused.
+        $mer = Admin::factory()->withPermissions(['services.manage', 'hookfake.manage'])->create(['name' => 'Mer']);
+        $this->signInAdmin($mer);
         $this->get(route('admin.services.show', $service))->assertOk()
-            ->assertSee('Hook fake guest')->assertDontSee('Move to another node')
+            ->assertSee('Hook fake')->assertDontSee('Hook fake guest')->assertDontSee('Node pve1 is healthy.')->assertDontSee('Move to another node')
             ->assertSee('Turn on two-factor login in your profile to use server module tools.');
         $this->post($action, ['node' => 'pve2'])->assertRedirect(route('admin.profile.edit'));
 
+        // With two-factor login on the account but not passed in this session (a remember-me
+        // sign-in, say): the same, with the way to enter a code.
+        $this->withTwoFactor($mer);
+        $this->get(route('admin.services.show', $service))->assertOk()
+            ->assertDontSee('Hook fake guest')->assertDontSee('Move to another node')
+            ->assertSee('Enter a code from your authenticator app to use server module tools.')
+            ->assertSee(route('admin.two-factor.step-up'));
+        $this->post($action, ['node' => 'pve2'])->assertRedirect(route('admin.two-factor.step-up'));
+
         $this->assertSame([], HookFakeModule::callsTo('runStaffAction'));
+        $this->assertSame([], HookFakeModule::callsTo('staffPanel'));
 
         // A card that fails to load says so, without the module's message.
         Exceptions::fake();
         HookFakeModule::$behaviour = ['throw' => ['staffPanel']];
-        $this->signInAdmin($this->withTwoFactor(Admin::factory()->create(['name' => 'Raz'])));
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
         $this->get(route('admin.services.show', $service))->assertOk()
             ->assertSee('The server module could not load its staff tools. Try again in a minute.')
             ->assertDontSee(HookFakeModule::SECRET);
+    }
+
+    public function test_a_session_that_did_not_pass_two_factor_login_is_asked_for_a_code_first(): void
+    {
+        $index = route(ModuleAdmin::routeName('hookfake', 'index'));
+        $secret = Totp::generateSecret();
+        $admin = Admin::factory()->create(['name' => 'Raz']);
+        $admin->forceFill(['two_factor_secret' => $secret, 'two_factor_confirmed_at' => now()])->save();
+
+        // Signed in without the code (a remember-me cookie, say): asked for one first.
+        $this->signInAdmin($admin);
+        $this->get($index)->assertRedirect(route('admin.two-factor.step-up'));
+        $this->getJson($index)->assertForbidden()->assertJsonPath('message', 'Enter a code from your authenticator app to use server module tools.');
+        $this->get(route('admin.two-factor.step-up'))->assertOk()->assertSee('Two-factor check');
+
+        $this->post(route('admin.two-factor.step-up'), ['code' => $this->wrongCode($secret)])->assertSessionHasErrors('code');
+        $this->get($index)->assertRedirect(route('admin.two-factor.step-up'));
+        $this->assertSame([], HookFakeModule::callsTo('maintenance'));
+
+        // The right code opens the page asked for.
+        $this->post(route('admin.two-factor.step-up'), ['code' => Totp::codeAt($secret, intdiv(time(), 30))])->assertRedirect($index);
+        $this->get($index)->assertOk()->assertSee('Node status for staff');
+        $this->assertTrue(ActivityLog::query()->where('action', 'admin.two_factor_step_up')->exists());
+
+        // The marker belongs to this staff member only.
+        $las = $this->withTwoFactor(Admin::factory()->create(['name' => 'Las']));
+        $this->signInAdmin($las);
+        $this->get($index)->assertRedirect(route('admin.two-factor.step-up'));
+    }
+
+    public function test_too_many_wrong_step_up_codes_sign_the_session_out(): void
+    {
+        $secret = Totp::generateSecret();
+        $admin = Admin::factory()->create(['name' => 'Raz']);
+        $admin->forceFill(['two_factor_secret' => $secret, 'two_factor_confirmed_at' => now()])->save();
+        $this->signInAdmin($admin);
+
+        for ($try = 1; $try < SignInLimiter::CODES; $try++) {
+            $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.'.$try])
+                ->post(route('admin.two-factor.step-up'), ['code' => $this->wrongCode($secret)])->assertSessionHasErrors('code');
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.50'])
+            ->post(route('admin.two-factor.step-up'), ['code' => $this->wrongCode($secret)])->assertRedirect(route('admin.login'));
+        $this->assertGuest('admin');
+        $this->assertTrue(ActivityLog::query()->where('action', 'admin.two_factor_locked')->exists());
+    }
+
+    public function test_staff_without_two_factor_login_cannot_add_an_authenticator_without_their_password(): void
+    {
+        $index = route(ModuleAdmin::routeName('hookfake', 'index'));
+        $admin = $this->signInAdmin(Admin::factory()->create(['name' => 'Mer']));
+
+        $this->get($index)->assertRedirect(route('admin.profile.edit'));
+        $this->post(route('admin.profile.two-factor.start'))->assertSessionHasErrors('current_password');
+        $this->assertNull($admin->fresh()->two_factor_secret);
+
+        // With the password, a fresh code from the new app counts as this session's second factor.
+        $this->post(route('admin.profile.two-factor.start'), ['current_password' => 'password'])->assertRedirect();
+        $code = Totp::codeAt((string) $admin->fresh()->two_factor_secret, intdiv(time(), 30));
+        $this->post(route('admin.profile.two-factor.confirm'), ['code' => $code])->assertSessionHasErrors('current_password');
+        $this->get($index)->assertRedirect(route('admin.profile.edit'));
+
+        $this->post(route('admin.profile.two-factor.confirm'), ['code' => $code, 'current_password' => 'password'])->assertSessionHas('recovery_codes');
+        $this->get($index)->assertOk();
+    }
+
+    public function test_a_password_field_of_a_staff_action_is_never_written_back(): void
+    {
+        $service = Service::factory()->create(['product_id' => $this->hookProduct()->id, 'server_id' => $this->server->id, 'status' => ServiceStatus::Active]);
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
+        $show = route('admin.services.show', $service);
+        $set = route('admin.services.staff-action', [$service, 'set-password']);
+
+        $this->get($show)->assertOk()->assertSee('Set root password')
+            ->assertSee('name="new_secret" type="password"', false);
+
+        // A field error keeps the reason, never the password.
+        $this->from($show)->post($set, ['new_secret' => 'pw-'.HookFakeModule::SECRET, 'reason' => ''])
+            ->assertSessionHasErrors(['reason'], null, 'staff_set-password');
+        $this->assertNull(session()->getOldInput('new_secret'));
+        $this->assertStringNotContainsString(HookFakeModule::SECRET, (string) json_encode(session()->all()));
+        $this->get($show)->assertOk()->assertDontSee(HookFakeModule::SECRET);
+
+        $this->post($set, ['new_secret' => 'pw-'.HookFakeModule::SECRET, 'reason' => 'Lost it'])->assertSessionHas('status');
+        $this->assertSame(['new_secret' => 'pw-'.HookFakeModule::SECRET, 'reason' => 'Lost it'], HookFakeModule::callsTo('runStaffAction')[0]['input']);
+        $this->assertStringNotContainsString(HookFakeModule::SECRET, (string) json_encode(ActivityLog::query()->pluck('description')));
+    }
+
+    public function test_scheduled_work_runs_only_for_modules_in_use_and_at_most_ten_tasks(): void
+    {
+        HookFakeModule::$behaviour = ['tasks' => array_map(fn (int $n): ScheduledTask => new ScheduledTask('task-'.$n, fn () => null, 'hourly', 5), range(1, 12))];
+
+        Log::spy();
+        $schedule = new Schedule;
+        app(ModuleHooks::class)->schedule($schedule);
+        $events = collect($schedule->events());
+        $this->assertCount(ModuleHooks::MAX_TASKS, $events);
+        $this->assertSame('server-module:hookfake:task-10', $events->last()->description);
+        // A lock shorter than the interval lasts one interval.
+        $this->assertSame(60, $events->first()->expiresAt);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'at most 10 scheduled tasks'));
+
+        // A module without a server or product runs nothing.
+        $this->server->delete();
+        $schedule = new Schedule;
+        app(ModuleHooks::class)->schedule($schedule);
+        $this->assertSame([], $schedule->events());
+
+        Product::factory()->priced(1000)->withoutDomain()->create(['server_module' => 'hookfake']);
+        $schedule = new Schedule;
+        app(ModuleHooks::class)->schedule($schedule);
+        $this->assertCount(ModuleHooks::MAX_TASKS, $schedule->events());
+    }
+
+    public function test_secret_order_fields_are_removed_once_the_service_is_set_up_and_all_on_termination(): void
+    {
+        $service = Service::factory()->create([
+            'product_id' => $this->hookProduct()->id,
+            'server_id' => $this->server->id,
+            'status' => ServiceStatus::Pending,
+            'order_fields' => ['hostname' => 'web1.example.test', 'root_token' => 'tok-'.HookFakeModule::SECRET, 'gone' => 'from an older module version'],
+        ]);
+
+        // While it waits, staff see that a secret was saved, never its value.
+        $this->signInWithTwoFactor(Admin::factory()->create(['name' => 'Raz']));
+        $this->get(route('admin.services.show', $service))->assertOk()->assertSee('Saved, hidden')->assertDontSee(HookFakeModule::SECRET);
+
+        $this->assertTrue(app(Provisioner::class)->create($service)->success);
+
+        // The module had the secret in create(); afterwards only the plain, declared values stay.
+        $this->assertSame('tok-'.HookFakeModule::SECRET, HookFakeModule::callsTo('create')[0]['root_token']);
+        $this->assertSame(ServiceStatus::Active, $service->fresh()->status);
+        $this->assertSame(['hostname' => 'web1.example.test'], $service->fresh()->order_fields);
+
+        $this->assertTrue(app(Provisioner::class)->terminate($service->fresh())->success);
+        $this->assertNull($service->fresh()->order_fields);
+        $this->assertNull(DB::table('services')->where('id', $service->id)->value('order_fields'));
+    }
+
+    private function wrongCode(string $secret): string
+    {
+        $step = intdiv(time(), 30);
+        $valid = [Totp::codeAt($secret, $step - 1), Totp::codeAt($secret, $step), Totp::codeAt($secret, $step + 1)];
+
+        foreach (['111111', '222222', '333333', '444444'] as $code) {
+            if (! in_array($code, $valid, true)) {
+                return $code;
+            }
+        }
+
+        return '555555';
     }
 
     private function hookProduct(): Product
@@ -401,6 +588,17 @@ class ModuleHooksTest extends TestCase
             'server_id' => $this->server->id,
             'auto_setup' => AutoSetup::OnOrder,
         ]);
+    }
+
+    /**
+     * Sign in as staff with two-factor login on, in a session that passed it.
+     */
+    private function signInWithTwoFactor(Admin $admin): Admin
+    {
+        $this->signInAdmin($this->withTwoFactor($admin));
+        $this->withSession([StaffSecondFactor::SESSION_KEY => (int) $admin->id]);
+
+        return $admin;
     }
 
     private function withTwoFactor(Admin $admin): Admin

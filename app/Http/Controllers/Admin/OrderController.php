@@ -112,7 +112,7 @@ class OrderController extends Controller
 
                     $order->services()
                         ->where('status', ServiceStatus::Pending)
-                        ->update(['status' => ServiceStatus::Cancelled, 'cancelled_at' => now(), 'next_due_date' => null]);
+                        ->update(['status' => ServiceStatus::Cancelled, 'cancelled_at' => now(), 'next_due_date' => null, 'order_fields' => null]);
 
                     $order->update(['status' => OrderStatus::Cancelled]);
                 });

@@ -6,6 +6,7 @@ use App\Models\ActivityLog;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Security\SignInLimiter;
+use App\Security\StaffSecondFactor;
 use App\Security\Totp;
 use App\Support\Demo;
 use Carbon\CarbonInterval;
@@ -71,6 +72,17 @@ class StaffLoginTest extends TestCase
         $this->post(route('admin.two-factor.challenge'), ['code' => Totp::codeAt($secret, intdiv(time(), 30))])
             ->assertRedirect(route('admin.dashboard'));
         $this->assertAuthenticatedAs($admin, 'admin');
+        // This session passed a second factor (server module tools need it).
+        $this->assertSame($admin->id, session(StaffSecondFactor::SESSION_KEY));
+    }
+
+    public function test_a_password_only_sign_in_does_not_count_as_a_second_factor(): void
+    {
+        $admin = Admin::factory()->create(['email' => 'owner@example.test']);
+
+        $this->post(route('admin.login'), ['email' => 'owner@example.test', 'password' => 'password'])->assertRedirect(route('admin.dashboard'));
+        $this->assertAuthenticatedAs($admin, 'admin');
+        $this->assertNull(session(StaffSecondFactor::SESSION_KEY));
     }
 
     public function test_a_recovery_code_works_once(): void
@@ -320,16 +332,27 @@ class StaffLoginTest extends TestCase
     {
         $admin = $this->signInAdmin();
 
-        $this->post(route('admin.profile.two-factor.start'))->assertRedirect();
+        // Both steps ask for the password, so a stolen session cannot add its own app.
+        $this->post(route('admin.profile.two-factor.start'))->assertSessionHasErrors('current_password');
+        $this->post(route('admin.profile.two-factor.start'), ['current_password' => 'wrong-password'])->assertSessionHasErrors('current_password');
+        $this->assertNull($admin->fresh()->two_factor_secret);
+
+        $this->post(route('admin.profile.two-factor.start'), ['current_password' => 'password'])->assertRedirect();
         $secret = $admin->fresh()->two_factor_secret;
         $this->assertNotNull($secret);
         $this->get(route('admin.profile.edit'))->assertOk()->assertSee('<svg', false);
 
-        $this->post(route('admin.profile.two-factor.confirm'), ['code' => Totp::codeAt($secret, intdiv(time(), 30))])
+        $code = Totp::codeAt($secret, intdiv(time(), 30));
+        $this->post(route('admin.profile.two-factor.confirm'), ['code' => $code])->assertSessionHasErrors('current_password');
+        $this->assertFalse($admin->fresh()->hasTwoFactorEnabled());
+
+        $this->post(route('admin.profile.two-factor.confirm'), ['code' => $code, 'current_password' => 'password'])
             ->assertSessionHas('recovery_codes');
 
         $this->assertTrue($admin->fresh()->hasTwoFactorEnabled());
         $this->assertCount(8, $admin->fresh()->two_factor_recovery_codes);
+        // The fresh code counts as this session's second factor.
+        $this->assertSame($admin->id, session(StaffSecondFactor::SESSION_KEY));
     }
 
     /**

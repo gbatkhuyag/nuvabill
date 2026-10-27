@@ -12,8 +12,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Admin;
 use App\Models\Service;
 use App\Provisioning\Provisioner;
+use App\Security\StaffSecondFactor;
 use App\Support\Activity;
-use App\Support\Demo;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -22,8 +22,9 @@ use Throwable;
 
 /**
  * Admin → a service → the server module's own card (HasStaffPanel): read-only facts and the
- * module's staff actions. Only staff with the module's admin permission and two-factor login get
- * here (the route adds two-factor and a limit of 10 a minute). An action runs only when the card
+ * module's staff actions. Only staff with the module's admin permission and a session that passed
+ * two-factor login (StaffSecondFactor) see either; the route adds the same check and a limit of 10
+ * a minute. An action runs only when the card
  * offers it for this service now, with its own checked fields, under the service lock, and is
  * logged with the staff member's name.
  */
@@ -48,23 +49,25 @@ class ServiceStaffController extends Controller
             return null;
         }
 
+        // Without two-factor login in this session the module is not asked at all: no facts, no
+        // buttons, only a note on how to get them (the route refuses the actions too).
+        if (! StaffSecondFactor::passed($admin)) {
+            return ['title' => $module->name(), 'rows' => [], 'actions' => [], 'notice' => null, 'failed' => false, 'needs_two_factor' => true];
+        }
+
         $panel = self::panel($module, $service);
 
         if ($panel === null) {
             return ['title' => $module->name(), 'rows' => [], 'actions' => [], 'notice' => __('The server module could not load its staff tools. Try again in a minute.'), 'failed' => true, 'needs_two_factor' => false];
         }
 
-        $actions = $panel->checkedActions();
-        // Without two-factor login staff see the facts, not the buttons (the route refuses them too).
-        $mayAct = $admin->hasTwoFactorEnabled() || Demo::isEnabled();
-
         return [
             'title' => $panel->title !== '' ? mb_substr($panel->title, 0, 120) : $module->name(),
             'rows' => $panel->checkedRows(),
-            'actions' => $mayAct ? $actions : [],
+            'actions' => $panel->checkedActions(),
             'notice' => $panel->notice !== null ? mb_substr($panel->notice, 0, 300) : null,
             'failed' => false,
-            'needs_two_factor' => ! $mayAct && $actions !== [],
+            'needs_two_factor' => false,
         ];
     }
 
@@ -87,16 +90,23 @@ class ServiceStaffController extends Controller
         $validator = Validator::make($request->only(array_keys($fields)), $declared->rules(), [], array_map(fn (array $field): string => $field['label'], $fields));
 
         if ($validator->fails()) {
-            return $back->withErrors($validator, 'staff_'.$action)->withInput($request->only(array_keys($fields)));
+            // A password field is never kept in the session to fill the form again.
+            $refill = array_keys(array_filter($fields, fn (array $field): bool => $field['type'] !== 'password'));
+
+            return $back->withErrors($validator, 'staff_'.$action)->withInput($request->only($refill));
         }
 
         $validated = $validator->validated();
         $input = [];
 
         foreach ($fields as $name => $field) {
-            $input[$name] = $field['type'] === 'checkbox'
-                ? ($request->boolean($name) ? '1' : '')
-                : (isset($validated[$name]) ? trim((string) $validated[$name]) : '');
+            $input[$name] = match (true) {
+                $field['type'] === 'checkbox' => $request->boolean($name) ? '1' : '',
+                ! isset($validated[$name]) => '',
+                // Spaces may be part of a password.
+                $field['type'] === 'password' => (string) $validated[$name],
+                default => trim((string) $validated[$name]),
+            };
         }
 
         $lock = $provisioner->lockFor($service, 300);

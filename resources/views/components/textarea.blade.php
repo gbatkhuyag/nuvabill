@@ -4,6 +4,8 @@
     'value' => null,
     'help' => null,
     'required' => false,
+    // False for a secret: what was typed is never written back after an error.
+    'refill' => true,
 ])
 @php
     $id = $attributes->get('id', 'f-'.str_replace(['.', '[', ']'], '-', $name));
@@ -19,7 +21,7 @@
         @if ($required) required @endif
         @if ($hasError) aria-invalid="true" aria-describedby="{{ $id }}-error" @endif
         {{ $attributes->except(['class', 'id']) }}
-    >{{ old($errorKey, $value) }}</textarea>
+    >{{ $refill ? old($errorKey, $value) : $value }}</textarea>
     @if ($hasError)
         <p class="error" id="{{ $id }}-error">{{ $errors->first($errorKey) }}</p>
     @elseif ($help)

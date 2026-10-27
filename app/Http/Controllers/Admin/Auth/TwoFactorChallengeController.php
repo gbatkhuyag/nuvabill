@@ -53,7 +53,7 @@ class TwoFactorChallengeController extends Controller
             return $this->stop($request);
         }
 
-        if (! $this->passes($admin, (string) $request->input('code'), (string) $request->input('recovery_code'))) {
+        if (! self::passes($admin, (string) $request->input('code'), (string) $request->input('recovery_code'))) {
             Activity::log('admin.two_factor_failed', "Wrong two-factor code for {$admin->name}", $admin);
 
             if (SignInLimiter::codeFailed('admin', $admin->id)) {
@@ -69,7 +69,7 @@ class TwoFactorChallengeController extends Controller
         $remember = (bool) $request->session()->pull('admin.two_factor.remember', false);
         $request->session()->forget('admin.two_factor');
 
-        return LoginController::completeLogin($request, $admin, $remember);
+        return LoginController::completeLogin($request, $admin, $remember, secondFactor: true);
     }
 
     /**
@@ -82,7 +82,11 @@ class TwoFactorChallengeController extends Controller
         return redirect()->route('admin.login')->withErrors(['email' => __('Too many wrong codes. Wait 15 minutes, then sign in again.')]);
     }
 
-    private function passes(Admin $admin, string $code, string $recoveryCode): bool
+    /**
+     * Whether the code from the app (each code works once) or a recovery code (then removed) is
+     * right. The step-up check (TwoFactorStepUpController) uses it too. Call inside oneCodeAtATime().
+     */
+    public static function passes(Admin $admin, string $code, string $recoveryCode): bool
     {
         // The same digits with spaces or tabs inside are the same code.
         $code = preg_replace('/\s+/', '', $code) ?? '';

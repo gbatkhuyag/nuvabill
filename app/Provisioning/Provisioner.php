@@ -231,6 +231,9 @@ class Provisioner
         $service->status = ServiceStatus::Active;
         $service->syncOriginalAttribute('status');
 
+        // The module had its secret order fields (a first root password, say): they are not kept.
+        app(OrderFields::class)->forgetSecrets($service);
+
         Activity::log('service.created', "Service #{$service->id} ({$service->label()}) set up: {$result->message}", $service);
 
         return [$result, true];
@@ -669,10 +672,12 @@ class Provisioner
             return [$this->failed($service, 'terminate', $result), false];
         }
 
+        // A removed service keeps no order form values (App\Provisioning\OrderFields).
         $service->update([
             'status' => ServiceStatus::Terminated,
             'terminated_at' => now(),
             'next_due_date' => null,
+            'order_fields' => null,
         ] + $this->withoutRecheck($service));
 
         Activity::log('service.terminated', "Service #{$service->id} ({$service->label()}) terminated", $service);

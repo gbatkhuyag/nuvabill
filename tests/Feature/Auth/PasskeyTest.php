@@ -7,6 +7,7 @@ use App\Mail\TemplatedMessage;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Passkey;
+use App\Security\StaffSecondFactor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\Auth;
@@ -42,6 +43,8 @@ class PasskeyTest extends TestCase
         $this->post(route('admin.passkey.login'), ['credential' => $this->assertion($options, 'cred-staff', $key, 1), 'remember' => '1'])
             ->assertRedirect(route('admin.dashboard'));
         $this->assertAuthenticatedAs($admin, 'admin');
+        // A passkey checks the person, so it counts as this session's second factor.
+        $this->assertSame($admin->id, session(StaffSecondFactor::SESSION_KEY));
         $this->assertSame(1, $passkey->fresh()->sign_count);
         $this->assertNotNull($passkey->fresh()->last_used_at);
     }

@@ -8,8 +8,9 @@ use App\Models\Admin;
 /**
  * A server module with pages in the admin area, under /admin/server-modules/{slug}/. Core puts them
  * behind the staff sign-in, the module's admin permission, two-factor login (staff must have it
- * on), the form token, a limit of 30 requests a minute and the demo lock, and lists the "index"
- * page in the menu. The manifest must list "admin-page" in its permissions. Since Nuvabill 0.7.0.
+ * on, and passed in this session), the form token, a limit of 30 requests a minute and the demo
+ * lock, and lists the "index" page in the menu. The manifest must list "admin-page" in its
+ * permissions. Since Nuvabill 0.7.0.
  */
 interface HasAdminPages extends HasAdminPermission
 {
@@ -24,9 +25,9 @@ interface HasAdminPages extends HasAdminPermission
 
     /**
      * Items for the dashboard's "Needs attention" list, shown only to staff with the module's admin
-     * permission. Same shape as App\Support\AttentionItems: key (starts with "ext."), tone (warn or
-     * crit), text, url (on this site) and action. At most 5 are shown. Keep it fast: it runs on
-     * every dashboard view, so read saved state, never the server.
+     * permission whose session passed two-factor login. Same shape as App\Support\AttentionItems:
+     * key (starts with "ext."), tone (warn or crit), text, url (on this site) and action. At most 5
+     * are shown. Keep it fast: it runs on every dashboard view, so read saved state, never the server.
      *
      * @return list<array{key: string, tone: string, text: string, url?: string|null, action?: string|null}>
      */

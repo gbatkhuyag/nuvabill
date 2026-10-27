@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin\Auth;
 use App\Http\Controllers\Controller;
 use App\Models\Admin;
 use App\Security\SignInLimiter;
+use App\Security\StaffSecondFactor;
 use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -96,12 +97,17 @@ class LoginController extends Controller
     }
 
     /**
-     * Sign the staff member in after every check has passed.
+     * Sign the staff member in after every check has passed. $secondFactor: the sign-in used a
+     * two-factor code or a passkey, which server module tools need (StaffSecondFactor).
      */
-    public static function completeLogin(Request $request, Admin $admin, bool $remember): RedirectResponse
+    public static function completeLogin(Request $request, Admin $admin, bool $remember, bool $secondFactor = false): RedirectResponse
     {
         Auth::guard('admin')->login($admin, $remember);
         $request->session()->regenerate();
+
+        if ($secondFactor) {
+            StaffSecondFactor::mark($admin);
+        }
 
         $admin->forceFill(['last_login_at' => now(), 'last_login_ip' => $request->ip()])->save();
         Activity::log('admin.login', "{$admin->name} signed in", actor: $admin);

@@ -43,13 +43,15 @@
                 <form method="POST" action="{{ route('admin.profile.two-factor.confirm') }}" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
                     @csrf
                     <x-input name="code" :label="__('Code from the app')" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required />
+                    <x-input name="current_password" type="password" :label="__('Your password')" id="two-factor-confirm-password" required autocomplete="current-password" />
                     <button class="btn btn-primary" type="submit">{{ __('Turn on') }}</button>
                 </form>
             @else
                 <p class="muted" style="margin:0">{{ __('Protect your account with a code from your phone. Anyone with access to billing should turn this on.') }}</p>
-                <form method="POST" action="{{ route('admin.profile.two-factor.start') }}">
+                <form method="POST" action="{{ route('admin.profile.two-factor.start') }}" style="display:grid;gap:.8rem">
                     @csrf
-                    <button class="btn btn-primary" type="submit"><x-icon name="shield" />{{ __('Set up two-factor login') }}</button>
+                    <x-input name="current_password" type="password" :label="__('Your password')" id="two-factor-start-password" required autocomplete="current-password" />
+                    <span><button class="btn btn-primary" type="submit"><x-icon name="shield" />{{ __('Set up two-factor login') }}</button></span>
                 </form>
             @endif
         </section>

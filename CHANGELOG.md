@@ -139,6 +139,8 @@ free Hetzner modules.
   the full renewal price.
 - **Security:** API tokens and power card logins are no longer kept after a form error. Suspending and unsuspending
   wait for other work on the service, and a payment during the nightly run is no longer suspended or cancelled.
+- **Security:** setting up two-factor login on your staff profile now asks for your password. Server module tools
+  need a session that passed two-factor login: after a remember-me sign-in you are asked for a code first.
 - **For developers:** new optional contracts for server modules: `HasPanelSections`, `HasConsole`,
   `SignsInWithContext`, `HasResourceOptions`, `UsesMachineInventory` and more. See docs/integrations/servers.md.
 - **For developers:** server modules can now have admin pages and dashboard items (`HasAdminPages`), a card with

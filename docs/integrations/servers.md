@@ -575,9 +575,11 @@ fixture `tests/Fixtures/extensions/servers/hookfake` uses all of them.
 | `adminPermission(): string` | The permission key: your slug, a dot and a short name of lowercase letters, digits or dashes, for example `proxmox-ve-servers.manage`. Any other key, or a slug that is one of core's permission groups (`billing`, `services`, `hardware` and so on), is refused and the module gets no staff pages. |
 | `adminPermissionLabel(): string` | What it allows, already translated. **Settings → Roles** lists it under the module's name. The owner role always has it. |
 
-Staff need this permission **and two-factor login on their own account** for the module's pages and actions, also
-when your company does not require two-factor login for everyone. Without it they are sent to their profile to turn
-it on; the staff card then shows its facts but no buttons.
+Staff need this permission **and two-factor login on their own account** for the module's pages, dashboard items,
+staff card and actions, also when your company does not require two-factor login for everyone, and this session must
+have passed it: a code or a passkey at sign-in, or a code asked again (after a remember-me sign-in, say). Without it
+they are sent to their profile to turn it on, or asked for a code; the staff card then shows only how, and your module
+is not asked for it. The menu link to your `index` page shows for everyone with the permission.
 
 ### Admin pages: `HasAdminPages`
 
@@ -602,9 +604,11 @@ reported (only the class of the error) and left out.
 
 `new StaffAction(key: 'migrate', label: __('Move to another node'), fields: [...], confirm: __('Move this guest?'),
 danger: false)`: the key is 1 to 40 lowercase letters, digits or dashes, and at most 10 actions show. Fields have
-`label`, `type` (`text`, `number`, `select` or `checkbox`), and optionally `help`, `required`, `options` (for a select,
-`value => label`) and `max` (for text, at most 190). Core checks the input with these rules; a select only takes one
-of its options, so offer only what is allowed for this service.
+`label`, `type` (`text`, `number`, `select`, `checkbox` or `password`), and optionally `help`, `required`, `options`
+(for a select, `value => label`) and `max` (for text and password, at most 190). A `password` field (a new root
+password, say) is shown empty and is never written back into the form or kept in the session after an error. Core
+checks the input with these rules; a select only takes one of its options, so offer only what is allowed for this
+service.
 
 Only staff with **Manage services** and your admin permission see the card. Before an action runs, core checks
 two-factor login, asks `staffPanel()` again and runs the action only when the card offers it for this service now,
@@ -626,12 +630,13 @@ new ScheduledTask(name: 'traffic', callback: fn () => $this->checkTraffic(), fre
 - `frequency`: `every-five-minutes`, `every-ten-minutes`, `every-fifteen-minutes`, `every-thirty-minutes`, `hourly`,
   `every-six-hours`, `daily` or `weekly`. Every five minutes is the most often a module may run.
 - `lockMinutes` (1 to 1440): a run never starts while the last one still runs (`withoutOverlapping`); the lock ends
-  after this long if a run dies. With a cache that can hold locks (files, the database, Redis), it also runs on only
-  one server (`onOneServer`).
+  after this long if a run dies, and core makes it at least one interval of the frequency. With a cache that can hold
+  locks (files, the database, Redis), it also runs on only one server (`onOneServer`).
 
-Core's own cron line (`* * * * * php artisan schedule:run`) runs them: no extra cron lines. A bad task is left out and
-logged once a day. A failure is reported as `Scheduled task {slug}:{name}: {class}`, never with its message. Keep a run
-shorter than its frequency, do work per service under `Provisioner::lockFor($service)`, and work out again inside the
+Core's own cron line (`* * * * * php artisan schedule:run`) runs them: no extra cron lines. Only a module in use (with a
+server or a product) runs, with at most 10 tasks; the rest, and a bad task, are left out and logged once a day. A
+failure is reported as `Scheduled task {slug}:{name}: {class}`, never with its message. Keep a run shorter than its
+frequency, do work per service under `Provisioner::lockFor($service)`, and work out again inside the
 lock what is due. Scheduled work does not run on the public demo.
 
 ### Fields on the order form: `HasOrderFields`
@@ -646,7 +651,7 @@ every visit.
 | `type` | `text` (one line, at most 190 characters), `textarea` (up to `max`, default 4000, at most 16384), `select` (one of `options`, `value => label`) or `ssh-key` (OpenSSH public keys, one per line, at most 10: `ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256/384/521` and the security key types; core checks that each key's body names its type). |
 | `required`, `help`, `max` | As on other forms. |
 | `rules` | More Laravel rules, for example `['regex:/^[a-z0-9.-]+$/']`. Core's rules always run first, so yours can only make the check stricter. |
-| `secret` | The value is never shown again: not to the client, not to staff, and never in a log or a form after an error. |
+| `secret` | The value is never shown again: not to the client, not to staff, and never in a log or a form after an error. Core removes it once `create()` has set the service up, so read it in `create()` only. |
 
 Core shows the fields on the product's order page (theme view `store/partials/order-fields`) and checks them when the
 product is added to the cart, and on one-page orders before a new account is made. Plain fields post as
@@ -655,7 +660,8 @@ in `order_fields`, encrypted with the app key and never in JSON. Read them in `c
 `$this->orderField($service, 'hostname')` from `App\Extensions\Servers\Module` (SSH keys come one per line). Staff see
 the plain values under **Order details** on the service page; secret ones show as hidden. A theme or order form that
 replaces the product page shows the fields with `@include('theme::store.partials.order-fields')` and the
-`orderFields` the store gives the page; a one-page order form posts the same names to `order.store`.
+`orderFields` the store gives the page; a one-page order form posts the same names to `order.store`. A cancelled
+or terminated service keeps no order fields.
 
 ### Long and secret product settings
 

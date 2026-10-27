@@ -1,6 +1,7 @@
 {{--
     Service page → the server module's own card (HasStaffPanel), from ServiceStaffController::card():
-    staffCard is null, or {title, rows, actions, notice, failed, needs_two_factor}. Rows are plain
+    staffCard is null, or {title, rows, actions, notice, failed, needs_two_factor}; with
+    needs_two_factor the module was not asked and only the way to two-factor login shows. Rows are plain
     text, shown escaped. Each action posts to admin.services.staff-action with its own fields; a
     field error comes back in the "staff_{action}" error bag.
 
@@ -42,7 +43,11 @@
         @endif
 
         @if ($staffCard['needs_two_factor'])
-            <p class="muted" style="margin:0">{{ __('Turn on two-factor login in your profile to use server module tools.') }}</p>
+            @if (auth('admin')->user()?->hasTwoFactorEnabled())
+                <p class="muted" style="margin:0">{{ __('Enter a code from your authenticator app to use server module tools.') }} <a href="{{ route('admin.two-factor.step-up') }}">{{ __('Continue') }}</a></p>
+            @else
+                <p class="muted" style="margin:0">{{ __('Turn on two-factor login in your profile to use server module tools.') }} <a href="{{ route('admin.profile.edit') }}">{{ __('Your profile') }}</a></p>
+            @endif
         @endif
 
         @foreach ($staffCard['actions'] as $action)
@@ -66,6 +71,9 @@
                                         <option value="{{ $optionValue }}" @selected((string) old($name) === (string) $optionValue)>{{ $optionLabel }}</option>
                                     @endforeach
                                 </select>
+                            @elseif ($field['type'] === 'password')
+                                {{-- Never filled in, also not after an error. --}}
+                                <input id="{{ $id }}" name="{{ $name }}" type="password" class="input" maxlength="{{ $field['max'] }}" autocomplete="new-password" @required($field['required'])>
                             @else
                                 <input id="{{ $id }}" name="{{ $name }}" type="{{ $field['type'] === 'number' ? 'number' : 'text' }}" class="input" @if ($field['type'] !== 'number') maxlength="{{ $field['max'] }}" @endif value="{{ old($name) }}" autocomplete="off" @required($field['required'])>
                             @endif

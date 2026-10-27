@@ -10,6 +10,7 @@ use App\Extensions\Servers\ModuleConfig;
 use App\Models\Machine;
 use App\Models\Product;
 use App\Models\Service;
+use Illuminate\Contracts\Validation\Validator as ValidatorContract;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -99,6 +100,56 @@ class ProductRequest extends FormRequest
                 $this->checkModuleConfigLengths($validator);
             },
         ];
+    }
+
+    /**
+     * After an error the form comes back with what was typed, but never with a secret product
+     * setting (ModuleConfig::isSecret, such as a private key in a long textarea): it is taken out
+     * of the request the error page is made from, so it never reaches the session or the page.
+     * When the module cannot list its fields, no product setting comes back at all.
+     */
+    protected function failedValidation(ValidatorContract $validator): void
+    {
+        $config = $this->input('module_config');
+
+        if (is_array($config)) {
+            $fields = $this->moduleFields();
+            $kept = $fields === null ? [] : array_filter(
+                $config,
+                fn (mixed $value, mixed $key): bool => ! ModuleConfig::isSecret(is_array($fields[$key] ?? null) ? $fields[$key] : []),
+                ARRAY_FILTER_USE_BOTH,
+            );
+
+            // The app's own request: the error handler flashes its input, not this copy's.
+            foreach ([$this, app('request')] as $request) {
+                $request->merge(['module_config' => $kept]);
+            }
+        }
+
+        parent::failedValidation($validator);
+    }
+
+    /**
+     * The product fields of the chosen server module, [] without a module, or null when the module
+     * fails to give them.
+     *
+     * @return array<mixed>|null
+     */
+    private function moduleFields(): ?array
+    {
+        $slug = (string) $this->input('server_module');
+
+        if ($slug === '') {
+            return [];
+        }
+
+        try {
+            $fields = app(ExtensionManager::class)->serverModule($slug)->productFields();
+        } catch (Throwable) {
+            return null;
+        }
+
+        return is_array($fields) ? $fields : null;
     }
 
     /**

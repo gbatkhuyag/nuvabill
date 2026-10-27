@@ -93,7 +93,7 @@ class OrderCanceller
             app(MachineInventory::class)->releaseForOrder($order);
             $order->services()
                 ->where('status', ServiceStatus::Pending)
-                ->update(['status' => ServiceStatus::Cancelled, 'cancelled_at' => now(), 'next_due_date' => null]);
+                ->update(['status' => ServiceStatus::Cancelled, 'cancelled_at' => now(), 'next_due_date' => null, 'order_fields' => null]);
 
             if ($order->invoice !== null) {
                 $this->invoices->cancel($order->invoice);

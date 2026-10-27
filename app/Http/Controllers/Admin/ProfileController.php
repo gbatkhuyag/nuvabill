@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Push\WebPush;
+use App\Security\StaffSecondFactor;
 use App\Security\Totp;
 use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\View\View;
@@ -55,8 +57,13 @@ class ProfileController extends Controller
         return back()->with('status', __('Password changed.'));
     }
 
+    /**
+     * Setting up and turning on two-factor login both ask for the password, so a stolen session
+     * cannot add its own authenticator app and pass the two-factor check of server module tools.
+     */
     public function startTwoFactor(Request $request): RedirectResponse
     {
+        $request->validate(['current_password' => ['required', 'current_password:admin']]);
         $admin = $request->user('admin');
 
         if ($admin->hasTwoFactorEnabled()) {
@@ -70,10 +77,20 @@ class ProfileController extends Controller
 
     public function confirmTwoFactor(Request $request): RedirectResponse
     {
-        $request->validate(['code' => ['required', 'string']]);
+        $request->validate([
+            'current_password' => ['required', 'current_password:admin'],
+            'code' => ['required', 'string', 'max:20'],
+        ]);
         $admin = $request->user('admin');
+        $code = preg_replace('/\s+/', '', (string) $request->input('code')) ?? '';
 
-        if ($admin->two_factor_secret === null || ! Totp::verify($admin->two_factor_secret, $request->input('code'))) {
+        if ($admin->hasTwoFactorEnabled()) {
+            return back();
+        }
+
+        // Each code works once, like at sign-in.
+        if ($admin->two_factor_secret === null || ! Totp::verify($admin->two_factor_secret, $code)
+            || ! Cache::add("admin.2fa.used.{$admin->id}.{$code}", true, now()->addMinutes(2))) {
             return back()->withErrors(['code' => __('That code is not right. Scan the QR code again and enter the newest code.')]);
         }
 
@@ -82,6 +99,10 @@ class ProfileController extends Controller
             'two_factor_confirmed_at' => now(),
             'two_factor_recovery_codes' => $codes,
         ])->save();
+
+        // This session just passed a fresh code: it may use server module tools (StaffSecondFactor).
+        $request->session()->regenerate();
+        StaffSecondFactor::mark($admin);
 
         Activity::log('admin.two_factor_on', 'Turned on two-factor login');
 

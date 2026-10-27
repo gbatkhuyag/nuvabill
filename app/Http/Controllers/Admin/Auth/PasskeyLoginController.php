@@ -38,6 +38,6 @@ class PasskeyLoginController extends Controller
             return back()->withErrors(['email' => __('Your staff account is turned off.')]);
         }
 
-        return LoginController::completeLogin($request, $admin, $request->boolean('remember'));
+        return LoginController::completeLogin($request, $admin, $request->boolean('remember'), secondFactor: true);
     }
 }

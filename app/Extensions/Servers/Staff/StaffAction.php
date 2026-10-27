@@ -11,11 +11,12 @@ use Illuminate\Validation\Rule;
 final readonly class StaffAction
 {
     /**
-     * Field types core can show.
+     * Field types core can show. A "password" field (a new root password, say) is shown empty, is never
+     * written back into the form and is never kept in the session after an error.
      *
      * @var list<string>
      */
-    public const FIELD_TYPES = ['text', 'number', 'select', 'checkbox'];
+    public const FIELD_TYPES = ['text', 'number', 'select', 'checkbox', 'password'];
 
     /**
      * An action key: 1 to 40 lowercase letters, digits or dashes.
@@ -30,7 +31,7 @@ final readonly class StaffAction
     /**
      * @param  string  $key  For example "migrate".
      * @param  string  $label  The button text, already translated.
-     * @param  array<string, array{label: string, type: string, help?: string, required?: bool, options?: array<string, string>, max?: int}>  $fields  At most 10. Text values are at most "max" (default and most 190) characters, numbers are whole numbers, and a select only takes one of its options.
+     * @param  array<string, array{label: string, type: string, help?: string, required?: bool, options?: array<string, string>, max?: int}>  $fields  At most 10. Text and password values are at most "max" (default and most 190) characters, numbers are whole numbers, and a select only takes one of its options.
      * @param  string|null  $confirm  A question staff confirm first, already translated.
      * @param  bool  $danger  Shown as a red button.
      */

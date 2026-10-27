@@ -90,6 +90,9 @@ class RoutesAndLocksTest extends TestCase
             'admin.services.machine.ready' => ['POST', 'services/{service}/machine/ready', ['admin.can:services.manage', 'throttle:10,1'], true],
             'admin.services.machine.replace' => ['POST', 'services/{service}/machine/replace', ['admin.can:services.manage', 'admin.can:hardware.manage', 'throttle:10,1'], true],
             'admin.services.staff-action' => ['POST', 'services/{service}/staff/{action}', ['admin.can:services.manage', 'admin.two-factor-on', 'throttle:10,1'], true],
+            'admin.two-factor.step-up' => ['GET', 'two-factor/confirm', [], false],
+            'admin.profile.two-factor.start' => ['POST', 'profile/two-factor', ['throttle:staff-reauth'], true],
+            'admin.profile.two-factor.confirm' => ['POST', 'profile/two-factor/confirm', ['throttle:staff-reauth'], true],
         ];
     }
 

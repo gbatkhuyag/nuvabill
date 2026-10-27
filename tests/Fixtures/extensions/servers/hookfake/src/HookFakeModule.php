@@ -67,6 +67,7 @@ class HookFakeModule extends Module implements HasAdminPages, HasOrderFields, Ha
             'user_data' => ['label' => 'User data', 'type' => 'textarea', 'max' => 16384],
             'notes' => ['label' => 'Notes', 'type' => 'textarea'],
             'api_token' => ['label' => 'Provisioning token', 'type' => 'text', 'secret' => true],
+            'private_key' => ['label' => 'Private key', 'type' => 'textarea', 'max' => 16384, 'secret' => true],
         ];
     }
 
@@ -179,6 +180,7 @@ class HookFakeModule extends Module implements HasAdminPages, HasOrderFields, Ha
 
     public function staffPanel(Service $service): StaffPanel
     {
+        self::$calls[] = ['staffPanel', ['service' => $service->id]];
         $this->throwIfAsked(__FUNCTION__);
 
         return new StaffPanel(
@@ -194,6 +196,10 @@ class HookFakeModule extends Module implements HasAdminPages, HasOrderFields, Ha
                     'live' => ['label' => 'Live', 'type' => 'checkbox'],
                     'note' => ['label' => 'Note', 'type' => 'text', 'max' => 20],
                 ], confirm: 'Move this guest?'),
+                new StaffAction('set-password', 'Set root password', [
+                    'new_secret' => ['label' => 'New root password', 'type' => 'password', 'required' => true, 'max' => 64],
+                    'reason' => ['label' => 'Reason', 'type' => 'text', 'required' => true],
+                ]),
                 new StaffAction('Bad Key', 'Left out'),
             ],
             notice: 'Node pve1 is healthy.',

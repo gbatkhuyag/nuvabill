@@ -11,8 +11,11 @@ use App\Extensions\ExtensionManager;
 use App\Extensions\ExtensionManifest;
 use App\Extensions\Servers\Staff\ModuleAdmin;
 use App\Models\Admin;
+use App\Models\Product;
 use App\Models\Role;
+use App\Models\Server;
 use App\Models\Service;
+use App\Security\StaffSecondFactor;
 use App\Support\AttentionItems;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Cache\LockProvider;
@@ -36,6 +39,11 @@ use Throwable;
  */
 final class ModuleHooks
 {
+    /**
+     * The most scheduled tasks one module gets. They share the site's one cron run.
+     */
+    public const MAX_TASKS = 10;
+
     public function __construct(private ExtensionManager $extensions) {}
 
     /**
@@ -142,7 +150,9 @@ final class ModuleHooks
     }
 
     /**
-     * The module pages for the admin menu this staff member may open: name => address.
+     * The module pages for the admin menu this staff member may open: name => address. Only the
+     * module's name and link show; staff whose session did not pass two-factor login see the link
+     * too, and the page asks them for it (RequireStaffTwoFactor).
      *
      * @return array<string, string>
      */
@@ -176,8 +186,9 @@ final class ModuleHooks
     }
 
     /**
-     * The dashboard items of one module, when it has admin pages and the staff member has its
-     * permission. AttentionItems checks each item.
+     * The dashboard items of one module, when it has admin pages, the staff member has its
+     * permission and this session passed two-factor login, like its pages. AttentionItems checks
+     * each item.
      *
      * @return list<mixed>
      */
@@ -185,7 +196,7 @@ final class ModuleHooks
     {
         $module = $this->modulesWith(HasAdminPages::class, 'admin-page')[$slug] ?? null;
 
-        if ($module === null || ! $this->allows($admin, $module)) {
+        if ($module === null || ! $this->allows($admin, $module) || ! StaffSecondFactor::passed($admin)) {
             return [];
         }
 
@@ -195,20 +206,27 @@ final class ModuleHooks
     }
 
     /**
-     * The scheduled work of every module that may run on a schedule. Each task runs at its
-     * frequency, never twice at the same time, on one server when the cache can hold locks.
+     * The scheduled work of every module that may run on a schedule and is in use (it has a server
+     * or a product), at most MAX_TASKS each. Each task runs at its frequency, not again while a run
+     * is still going (the lock lasts at least one interval), on one server when the cache can hold
+     * locks.
      */
     public function schedule(Schedule $schedule): void
     {
         $oneServer = Cache::getStore() instanceof LockProvider;
 
         foreach ($this->modulesWith(RunsOnSchedule::class, 'schedule') as $slug => $module) {
+            if ($this->attempt(fn (): bool => self::inUse($slug), "Use of {$slug}") !== true) {
+                continue;
+            }
+
             $tasks = $this->attempt(fn (): mixed => $module->scheduledTasks(), "Scheduled tasks of {$slug}");
             $names = [];
 
             foreach (is_array($tasks) ? $tasks : [] as $task) {
                 $problem = $task instanceof ScheduledTask ? $task->problem() : 'It is not a '.ScheduledTask::class.'.';
                 $problem ??= isset($names[$task->name]) ? 'Its name is used twice.' : null;
+                $problem ??= count($names) >= self::MAX_TASKS ? 'A module may have at most '.self::MAX_TASKS.' scheduled tasks.' : null;
 
                 if ($problem !== null) {
                     if (Cache::add('nuvabill:server-module:bad-task:'.$slug.':'.sha1($problem), true, 86400)) {
@@ -222,7 +240,7 @@ final class ModuleHooks
                 $event = $schedule->call(fn () => $this->attempt($task->callback, "Scheduled task {$slug}:{$task->name}"))
                     ->{ScheduledTask::FREQUENCIES[$task->frequency]}()
                     ->name("server-module:{$slug}:{$task->name}")
-                    ->withoutOverlapping($task->lockMinutes);
+                    ->withoutOverlapping($task->lockFor());
 
                 if ($oneServer) {
                     $event->onOneServer();
@@ -241,6 +259,15 @@ final class ModuleHooks
         $module = $slug !== '' ? ($this->modulesWith(HasStaffPanel::class, 'admin-page')[$slug] ?? null) : null;
 
         return $module !== null && $this->allows($admin, $module) ? $module : null;
+    }
+
+    /**
+     * Whether a server or a product uses the module. An installed module nobody uses runs nothing.
+     */
+    private static function inUse(string $slug): bool
+    {
+        return Server::query()->where('module', $slug)->exists()
+            || Product::query()->where('server_module', $slug)->exists();
     }
 
     /**

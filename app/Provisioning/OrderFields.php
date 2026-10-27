@@ -23,6 +23,10 @@ use Throwable;
  * encrypted with the app key. In the cart they are encrypted too. A field marked "secret" is
  * posted as secret_fields[key], is never written back into a form after an error, and is never
  * shown again: not to the client, not to staff, and never in a log.
+ *
+ * Secret values are kept only until the service is set up: once create() has activated it, they
+ * are removed (forgetSecrets()), and a terminated service keeps no order fields at all. A module
+ * reads a secret field in create() only.
  */
 final class OrderFields
 {
@@ -261,6 +265,33 @@ final class OrderFields
         }
 
         return $rows;
+    }
+
+    /**
+     * Remove the secret values from a service that is set up, keeping the plain ones staff see.
+     * A value of a field the module no longer declares goes too (nobody knows whether it was
+     * secret), and when the module cannot list its fields every value goes.
+     */
+    public function forgetSecrets(Service $service): void
+    {
+        $values = (array) $service->order_fields;
+
+        if ($values === []) {
+            return;
+        }
+
+        try {
+            $fields = $this->for($service->loadMissing('product')->product);
+        } catch (Throwable $exception) {
+            report(new RuntimeException("Order fields of service #{$service->id}: ".class_basename($exception)));
+            $fields = [];
+        }
+
+        $kept = array_filter($values, fn (mixed $value, mixed $key): bool => isset($fields[$key]) && ! $fields[$key]['secret'], ARRAY_FILTER_USE_BOTH);
+
+        if ($kept !== $values) {
+            $service->forceFill(['order_fields' => $kept !== [] ? $kept : null])->save();
+        }
     }
 
     /**

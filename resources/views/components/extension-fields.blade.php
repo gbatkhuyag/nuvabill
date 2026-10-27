@@ -19,7 +19,7 @@
     @endphp
     @switch($field['type'])
         @case('textarea')
-            <x-textarea :name="$name" :label="$field['label']" :value="$value" :help="$help" :required="$required" class="span-2" :maxlength="$limit" :rows="$limit !== null && $limit > 190 ? 8 : null" :autocomplete="$secret ? 'off' : null" />
+            <x-textarea :name="$name" :label="$field['label']" :value="$value" :help="$help" :required="$required" class="span-2" :maxlength="$limit" :rows="$limit !== null && $limit > 190 ? 8 : null" :autocomplete="$secret ? 'off' : null" :refill="! $secret" />
             @break
         @case('select')
             <x-select :name="$name" :label="$field['label']" :options="$field['options'] ?? []" :value="$value" :help="$field['help'] ?? null" :required="$field['required'] ?? false" />
