@@ -286,8 +286,8 @@ class DemoResetTest extends TestCase
         File::ensureDirectoryExists(dirname($database));
         File::put($database, '');
 
-        config(['nuvabill.demo' => false, 'nuvabill.demo_addons' => 'demo-power', 'database.default' => 'sqlite', 'database.connections.sqlite.database' => $database]);
-        DB::purge('sqlite');
+        config(['nuvabill.demo' => false, 'nuvabill.demo_addons' => 'demo-power']);
+        $this->useTemporaryDatabase($database);
 
         try {
             $this->artisan('nuvabill:demo-reset', ['--force' => true])->assertSuccessful();
@@ -296,7 +296,7 @@ class DemoResetTest extends TestCase
             $this->assertFalse(app(ExtensionManager::class)->isEnabled('demo-power'));
             $this->assertFalse(Schema::hasTable('demo_power_readings'));
         } finally {
-            DB::purge('sqlite');
+            $this->backToTestDatabase();
             File::delete([$database, $database.'-journal', $database.'.next']);
         }
     }
@@ -304,23 +304,33 @@ class DemoResetTest extends TestCase
     public function test_demo_addons_are_only_read_in_demo_mode(): void
     {
         $this->useDemoExtensions();
+        $database = storage_path('framework/testing/demo-reset-not-demo.sqlite');
+        File::ensureDirectoryExists(dirname($database));
+        File::put($database, '');
         config(['nuvabill.demo' => false, 'nuvabill.demo_addons' => 'demo-power']);
-        $this->artisan('migrate')->assertSuccessful();
+        $this->useTemporaryDatabase($database);
 
-        $this->assertSame([], Demo::addons());
+        try {
+            $this->artisan('migrate')->assertSuccessful();
 
-        // A real site still sees a paid add-on copied in by hand as unlicensed.
-        $this->assertContains('demo-power', app(LicenseChecker::class)->unlicensedCopies()->pluck('slug')->all());
+            $this->assertSame([], Demo::addons());
 
-        // A seed outside demo mode switches nothing on.
-        $this->seed(DatabaseSeeder::class);
-        $this->assertFalse(app(ExtensionManager::class)->isEnabled('demo-power'));
-        $this->assertFalse(Schema::hasTable('demo_power_readings'));
+            // A real site still sees a paid add-on copied in by hand as unlicensed.
+            $this->assertContains('demo-power', app(LicenseChecker::class)->unlicensedCopies()->pluck('slug')->all());
 
-        config(['nuvabill.demo' => true]);
-        $this->assertSame(['demo-power'], Demo::addons());
-        config(['nuvabill.demo_addons' => '']);
-        $this->assertSame([], Demo::addons());
+            // A seed outside demo mode switches nothing on.
+            $this->seed(DatabaseSeeder::class);
+            $this->assertFalse(app(ExtensionManager::class)->isEnabled('demo-power'));
+            $this->assertFalse(Schema::hasTable('demo_power_readings'));
+
+            config(['nuvabill.demo' => true]);
+            $this->assertSame(['demo-power'], Demo::addons());
+            config(['nuvabill.demo_addons' => '']);
+            $this->assertSame([], Demo::addons());
+        } finally {
+            $this->backToTestDatabase();
+            File::delete([$database, $database.'-journal']);
+        }
     }
 
     public function test_the_fake_bmcs_report_health_and_power_use(): void
@@ -366,8 +376,8 @@ class DemoResetTest extends TestCase
         $visitor->exec('insert into visits default values');
         $this->assertFileExists($database.'-journal');
 
-        config(['nuvabill.demo' => true, 'database.default' => 'sqlite', 'database.connections.sqlite.database' => $database]);
-        DB::purge('sqlite');
+        config(['nuvabill.demo' => true]);
+        $this->useTemporaryDatabase($database);
 
         try {
             $this->artisan('nuvabill:demo-reset', ['--wait' => 1])
@@ -388,7 +398,7 @@ class DemoResetTest extends TestCase
             $this->assertTrue(Admin::query()->where('email', Demo::ADMIN_EMAIL)->exists());
         } finally {
             $visitor = null;
-            DB::purge('sqlite');
+            $this->backToTestDatabase();
             File::delete([$database, $database.'-journal', $database.'.next']);
         }
     }
@@ -412,21 +422,46 @@ class DemoResetTest extends TestCase
      *
      * @param  Closure(string): void  $checks  Given the database file.
      */
+    /**
+     * The connection the test started with, so a test that works on a temporary SQLite file leaves
+     * the shared MySQL or MariaDB test database as it found it.
+     *
+     * @var array{0: string, 1: mixed}|null
+     */
+    private ?array $testDatabase = null;
+
+    private function useTemporaryDatabase(string $database): void
+    {
+        $this->testDatabase ??= [(string) config('database.default'), config('database.connections.sqlite.database')];
+        config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => $database]);
+        DB::purge('sqlite');
+    }
+
+    private function backToTestDatabase(): void
+    {
+        DB::purge('sqlite');
+
+        if ($this->testDatabase !== null) {
+            config(['database.default' => $this->testDatabase[0], 'database.connections.sqlite.database' => $this->testDatabase[1]]);
+            $this->testDatabase = null;
+        }
+    }
+
     private function inFreshDemo(string $file, Closure $checks): void
     {
         $database = storage_path('framework/testing/'.$file);
         File::ensureDirectoryExists(dirname($database));
         File::put($database, 'old demo data');
 
-        config(['nuvabill.demo' => true, 'database.default' => 'sqlite', 'database.connections.sqlite.database' => $database]);
-        DB::purge('sqlite');
+        config(['nuvabill.demo' => true]);
+        $this->useTemporaryDatabase($database);
 
         try {
             $this->artisan('nuvabill:demo-reset')->assertSuccessful();
 
             $checks($database);
         } finally {
-            DB::purge('sqlite');
+            $this->backToTestDatabase();
             File::delete([$database, $database.'-journal', $database.'.next']);
         }
     }
