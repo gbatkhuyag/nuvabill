@@ -2,10 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Mail\TemplatedMessage;
 use App\Models\Admin;
 use App\Models\Client;
+use App\Models\Invoice;
 use App\Support\Locales;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\View;
 use Tests\TestCase;
 
 class LocaleTest extends TestCase
@@ -159,7 +163,10 @@ class LocaleTest extends TestCase
         $this->setSettings(['locale.default' => 'fr']);
 
         // The language saved on the staff account is used in the admin area only.
-        $this->actingAs(Admin::factory()->create(['language' => 'ar']), 'admin');
+        Admin::factory()->create(['email' => 'owner@example.test', 'language' => 'ar']);
+        $this->post(route('admin.login'), ['email' => 'owner@example.test', 'password' => 'password'])
+            ->assertRedirect(route('admin.dashboard'))
+            ->assertSessionMissing(Locales::SESSION_ADMIN);
         $this->get(route('admin.dashboard'))->assertSee('lang="ar"', false)->assertSessionMissing(Locales::SESSION_ADMIN);
         $this->get(route('client.login'))->assertSee('lang="fr"', false);
     }
@@ -177,12 +184,24 @@ class LocaleTest extends TestCase
 
     public function test_emails_and_pdfs_keep_the_client_account_language(): void
     {
+        Mail::fake();
+        $pdfLanguages = [];
+        View::composer('pdf.invoice', function () use (&$pdfLanguages): void {
+            $pdfLanguages[] = app()->getLocale();
+        });
         $client = Client::factory()->create(['language' => 'de']);
+        $invoice = Invoice::factory()->create(['client_id' => $client->id]);
 
+        // Staff work in Arabic, so the requests below run in Arabic.
         $this->actingAs(Admin::factory()->create(), 'admin')->post(route('admin.language'), ['locale' => 'ar']);
         $this->get(route('client.login'))->assertSee('lang="ar"', false);
 
-        $this->assertSame('de', Locales::forClient($client->fresh()));
+        $this->post(route('admin.invoices.email', $invoice))->assertRedirect();
+        Mail::assertSent(TemplatedMessage::class, fn (TemplatedMessage $mail): bool => $mail->locale === 'de'
+            && str_contains($mail->render(), 'lang="de"'));
+
+        $this->get(route('admin.invoices.pdf', $invoice))->assertOk();
+        $this->assertSame(['de'], $pdfLanguages);
     }
 
     public function test_pages_in_a_picked_language_are_never_kept_by_shared_caches(): void

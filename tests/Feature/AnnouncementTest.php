@@ -77,6 +77,17 @@ class AnnouncementTest extends TestCase
 
         $this->get(route('announcements.feed', ['lang' => 'de']))
             ->assertSee('<language>de</language>', false)
-            ->assertSee('Ankündigungen');
+            ->assertSee('Ankündigungen')
+            ->assertSee('<atom:link href="'.e(route('announcements.feed', ['lang' => 'de'])).'"', false)
+            ->assertSee('<link>'.e(route('announcements.index', ['lang' => 'de'])).'</link>', false);
+    }
+
+    public function test_the_feed_sets_no_cookies_so_shared_caches_can_keep_it(): void
+    {
+        $feed = $this->get(route('announcements.feed', ['lang' => 'de', 'ref' => 'abc']))->assertOk();
+
+        $this->assertSame([], $feed->headers->getCookies());
+        $this->assertStringContainsString('public', (string) $feed->headers->get('Cache-Control'));
+        $this->assertFalse($feed->baseRequest->hasSession());
     }
 }

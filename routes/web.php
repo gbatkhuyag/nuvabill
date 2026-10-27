@@ -37,7 +37,15 @@ use App\Http\Controllers\Store\DomainSearchController;
 use App\Http\Controllers\Store\QuickOrderController;
 use App\Http\Controllers\Store\StoreController;
 use App\Http\Controllers\WhatsAppConnectController;
+use App\Http\Middleware\ApplyCouponFromLink;
+use App\Http\Middleware\SetLocale;
+use App\Http\Middleware\TrackAffiliateLink;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
+use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
 
 /*
 |--------------------------------------------------------------------------
@@ -90,7 +98,10 @@ Route::where(['category' => '[a-z0-9-]+', 'article' => '[a-z0-9-]+', 'announceme
     Route::post('knowledgebase/{category}/{article}/vote', [KnowledgebaseController::class, 'vote'])->middleware('throttle:10,1')->name('kb.vote');
 
     Route::get('announcements', [AnnouncementController::class, 'index'])->name('announcements.index');
-    Route::get('announcements/feed', [AnnouncementController::class, 'feed'])->name('announcements.feed');
+    // Shared caches may keep the feed, so it has no session or cookies; its language comes from ?lang only.
+    Route::get('announcements/feed', [AnnouncementController::class, 'feed'])
+        ->withoutMiddleware([EncryptCookies::class, AddQueuedCookiesToResponse::class, StartSession::class, ShareErrorsFromSession::class, PreventRequestForgery::class, SetLocale::class, ApplyCouponFromLink::class, TrackAffiliateLink::class])
+        ->name('announcements.feed');
     Route::get('announcements/{announcement}', [AnnouncementController::class, 'show'])->name('announcements.show');
 });
 

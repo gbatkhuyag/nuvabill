@@ -48,12 +48,16 @@ class AnnouncementController extends Controller
     {
         $this->ensureEnabled();
         $linked = $request->query('lang');
-        $locale = is_string($linked) && isset(Locales::enabled()[$linked]) ? $linked : Locales::default();
+        $linked = is_string($linked) && isset(Locales::enabled()[$linked]) ? $linked : null;
 
-        return Locales::in($locale, fn (): Response => $this->buildFeed());
+        // A feed in a linked language links to that language version, its own address included.
+        return Locales::in($linked ?? Locales::default(), fn (): Response => $this->buildFeed($linked === null ? [] : ['lang' => $linked]));
     }
 
-    private function buildFeed(): Response
+    /**
+     * @param  array<string, string>  $query
+     */
+    private function buildFeed(array $query): Response
     {
         $items = Announcement::query()->public()->withTranslation()->newestFirst()->limit(20)->get();
         $lines = [
@@ -61,8 +65,8 @@ class AnnouncementController extends Controller
             '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">',
             '<channel>',
             '  <title>'.e(__('Announcements').' · '.setting('company.name')).'</title>',
-            '  <link>'.e(route('announcements.index')).'</link>',
-            '  <atom:link href="'.e(route('announcements.feed')).'" rel="self" type="application/rss+xml"/>',
+            '  <link>'.e(route('announcements.index', $query)).'</link>',
+            '  <atom:link href="'.e(route('announcements.feed', $query)).'" rel="self" type="application/rss+xml"/>',
             '  <description>'.e(__('News from :company: new services, changes and planned work.', ['company' => setting('company.name')])).'</description>',
             '  <language>'.e(strtolower(str_replace('_', '-', app()->getLocale()))).'</language>',
         ];
@@ -71,7 +75,7 @@ class AnnouncementController extends Controller
             $url = route('announcements.show', $item->slug);
             $lines[] = '  <item>';
             $lines[] = '    <title>'.e($item->localized('title')).'</title>';
-            $lines[] = '    <link>'.e($url).'</link>';
+            $lines[] = '    <link>'.e(route('announcements.show', ['announcement' => $item->slug] + $query)).'</link>';
             $lines[] = '    <guid isPermaLink="true">'.e($url).'</guid>';
             $lines[] = '    <pubDate>'.$item->published_at->toRfc2822String().'</pubDate>';
             $lines[] = '    <description>'.e($item->html()).'</description>';

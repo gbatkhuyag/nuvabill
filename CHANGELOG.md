@@ -63,12 +63,14 @@ A small fix release for demo sites, the marketplace store and languages.
 **Languages**
 
 - When staff pick a language in the admin area and nobody picked a language on the client side in that browser,
-  the client side uses it too, if clients can choose that language. A language picked on the client side still
-  wins, and the admin area never follows the client side. Signing in to the admin area does not count as a pick.
+  the client side uses it too, if clients can choose that language. A language picked on the client side in this
+  browser still wins, and the admin area never follows the client side. Signing in to the admin area does not count
+  as a pick.
 - Emails and PDF invoices still use the language saved on each client's account.
 - The announcements RSS feed is now in your default language, or in the language of its link (`?lang=de`), and no
   longer in the language picked in the browser that fetched it, so a shared cache cannot hand one reader's language
-  to another.
+  to another. A feed in another language links to the pages in that language, its own address included, and the
+  feed no longer starts a session or sets cookies.
 
 **Demo sites**
 
