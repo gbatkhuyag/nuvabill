@@ -9,6 +9,7 @@ These pages cover running your own copy. The same guides, and the developer and 
 | [Installation](installation.md) | Server requirements, the one-line installer, installing on shared hosting, the cron job |
 | [Configuration](configuration.md) | Company details, currencies, taxes, email, automation, security, proxies and the client IP address, languages, look and feel |
 | [Control panels and VPS](integrations/servers.md) | cPanel & WHM, DirectAdmin, Plesk, Proxmox VE, Virtualizor, dedicated servers, and CyberPanel, HestiaCP, VirtFusion, SolusVM, Hetzner Cloud and Hetzner Dedicated from the Marketplace; the client server panel and console; notes for module authors |
+| [Marketplace](marketplace.md) | Connect to marketplace when Cloudflare stops your server, and the Cloudflare token for the store operator |
 | [Resource options](resource-options.md) | Sliders for extra CPU, RAM, disk, IP addresses and more: prices per step, changes on live services, and how they reach the server |
 | [Dedicated servers](hardware.md) | Selling your own machines: stock, BMC power control with Redfish or IPMI, certificate checks and the disk wipe before resale |
 | [Payment gateways](integrations/payment-gateways.md) | Stripe, PayPal, FIB, FastPay, Wayl, bank transfer |

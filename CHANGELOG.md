@@ -102,6 +102,15 @@ free Hetzner modules.
   backups. Sliders move between server sizes and add volumes and extra IPs.
 - Hetzner Robot: hand out dedicated servers you bought at Hetzner, with install, power, rescue and reverse DNS.
 
+**Connect to marketplace**
+
+- When Cloudflare stops your server from reaching the marketplace, the Marketplace page now says so. Click
+  **Connect to marketplace** once: the store checks that you own your web address and lets your server through.
+  Free, and automatic for normal setups. Sites that never connect work as before. See docs/marketplace.md.
+- Connected sites check in once a day, get a new key every 90 days, and are told when their server address changes.
+- **Security:** the site key is stored encrypted and only sent to the marketplace store; the store keeps only a hash.
+  The store only calls sites on public internet addresses over HTTPS, and never follows redirects.
+
 **Also**
 
 - Proxmox 1.1.0 supports resource sliders. Swift 1.3.0 shows sliders on the one-page order form and Aurora 1.6.0 shows
