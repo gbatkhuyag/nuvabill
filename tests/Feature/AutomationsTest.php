@@ -18,6 +18,7 @@ use App\Models\Client;
 use App\Models\Domain;
 use App\Models\Invoice;
 use App\Models\TicketDepartment;
+use App\Security\PublicAddress;
 use App\Support\TicketDesk;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -342,18 +343,18 @@ class AutomationsTest extends TestCase
         $this->assertTrue(CallWebhook::isAllowed('https://1.1.1.1/x'));
 
         // A name that points to the internet and to this server is refused.
-        CallWebhook::$resolveUsing = fn (string $host): array => ['1.1.1.1', '127.0.0.1'];
+        PublicAddress::$resolveUsing = fn (string $host): array => ['1.1.1.1', '127.0.0.1'];
 
         try {
             $this->assertFalse(CallWebhook::isAllowed('https://hooks.example.test/x'));
         } finally {
-            CallWebhook::$resolveUsing = null;
+            PublicAddress::$resolveUsing = null;
         }
     }
 
     public function test_a_web_address_step_connects_to_the_address_it_checked(): void
     {
-        CallWebhook::$resolveUsing = fn (string $host): array => $host === 'hooks.example.test' ? ['1.1.1.1'] : [];
+        PublicAddress::$resolveUsing = fn (string $host): array => $host === 'hooks.example.test' ? ['1.1.1.1'] : [];
         $seen = null;
         Http::fake(function (Request $request, array $options) use (&$seen) {
             $seen = $options;
@@ -365,7 +366,7 @@ class AutomationsTest extends TestCase
         try {
             ClientRegistered::dispatch(Client::factory()->create(['first_name' => 'Raz']));
         } finally {
-            CallWebhook::$resolveUsing = null;
+            PublicAddress::$resolveUsing = null;
         }
 
         $this->assertSame(AutomationRun::DONE, AutomationRun::query()->sole()->status);

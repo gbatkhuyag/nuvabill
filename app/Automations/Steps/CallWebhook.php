@@ -4,7 +4,7 @@ namespace App\Automations\Steps;
 
 use App\Automations\Context;
 use App\Automations\StepFailed;
-use Closure;
+use App\Security\PublicAddress;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -16,13 +16,6 @@ use Throwable;
  */
 class CallWebhook extends Step
 {
-    /**
-     * Looks up the IPv4 addresses of a host name. Tests replace it, since made-up names do not resolve.
-     *
-     * @var (Closure(string): list<string>)|null
-     */
-    public static ?Closure $resolveUsing = null;
-
     public function key(): string
     {
         return 'webhook';
@@ -105,7 +98,7 @@ class CallWebhook extends Step
             return null;
         }
 
-        $addresses = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : self::resolve($host);
+        $addresses = PublicAddress::resolve($host);
 
         if (app()->runningUnitTests() && $addresses === []) {
             return '';
@@ -113,12 +106,15 @@ class CallWebhook extends Step
 
         foreach ($addresses as $address) {
             // Also refuses shared and special ranges such as 100.64.0.0/10 (carrier networks, cloud metadata).
-            if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE | FILTER_FLAG_GLOBAL_RANGE) === false) {
+            if (! PublicAddress::isPublic($address)) {
                 return null;
             }
         }
 
-        return $addresses[0] ?? null;
+        // The call goes over IPv4.
+        $ipv4 = array_values(array_filter($addresses, fn (string $address): bool => PublicAddress::family($address) === 'ipv4'));
+
+        return $ipv4[0] ?? null;
     }
 
     /**
@@ -134,13 +130,5 @@ class CallWebhook extends Step
         );
 
         return Str::limit($message, 300);
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function resolve(string $host): array
-    {
-        return array_values(self::$resolveUsing !== null ? (self::$resolveUsing)($host) : (gethostbynamel($host) ?: []));
     }
 }
