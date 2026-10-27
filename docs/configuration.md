@@ -6,7 +6,9 @@ has all of them.
 ## Company details
 
 **Settings → General → Your company**: company name, email address, postal address, phone and tax number (shown on
-invoices and in emails), the default language, and which of the 11 languages clients can choose.
+invoices and in emails), the default language, and which of the 11 languages clients can choose. When staff pick
+a language in the admin area and no client language was picked in that browser, the client area uses it too, if
+clients can choose it. See [Which languages does it speak?](faq.md#which-languages-does-it-speak) for the full order.
 
 **Settings → General → Your icon**: every page shows the Nuvabill icon in the browser tab. With a White-label License
 you can upload your own square PNG (at least 512 × 512 pixels). It becomes the browser tab icon, the icon next to your

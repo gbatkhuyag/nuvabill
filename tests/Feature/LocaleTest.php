@@ -100,7 +100,97 @@ class LocaleTest extends TestCase
         $this->assertSame('ar', $admin->fresh()->language);
 
         $this->get(route('admin.dashboard'))->assertSee('dir="rtl"', false)->assertSee('لوحة التحكم');
-        $this->get(route('client.login'))->assertSee('dir="ltr"', false);
+
+        // A client choice in this browser is kept apart: the admin area does not follow it.
+        $this->post(route('language.update'), ['locale' => 'de']);
+        $this->get(route('client.login'))->assertSee('lang="de" dir="ltr"', false);
+        $this->get(route('admin.dashboard'))->assertSee('lang="ar" dir="rtl"', false);
+    }
+
+    public function test_a_link_to_a_language_version_wins_over_every_choice(): void
+    {
+        $this->withSession([Locales::SESSION_CLIENT => 'de', Locales::SESSION_ADMIN => 'ar'])
+            ->get(route('client.login', ['lang' => 'fr']))
+            ->assertSee('lang="fr"', false)
+            ->assertSessionHas(Locales::SESSION_CLIENT, 'fr');
+    }
+
+    public function test_the_client_area_follows_the_language_staff_picked_in_the_admin_area(): void
+    {
+        $this->actingAs(Admin::factory()->create(), 'admin')->post(route('admin.language'), ['locale' => 'ar']);
+
+        $this->get(route('client.login'))->assertSee('lang="ar" dir="rtl"', false)->assertSee('سجّل الدخول إلى حسابك');
+    }
+
+    public function test_a_client_choice_wins_over_the_admin_choice(): void
+    {
+        $this->actingAs(Admin::factory()->create(), 'admin')->post(route('admin.language'), ['locale' => 'ar']);
+        $this->get(route('client.login'))->assertSee('lang="ar"', false);
+
+        // Picking a language on the client side later wins, and the admin area keeps its own.
+        $this->post(route('language.update'), ['locale' => 'de'])->assertSessionHas(Locales::SESSION_CLIENT, 'de');
+        $this->get(route('client.login'))->assertSee('lang="de"', false);
+        $this->get(route('admin.dashboard'))->assertSee('lang="ar"', false);
+    }
+
+    public function test_the_admin_choice_wins_over_the_language_saved_on_the_client_account(): void
+    {
+        $client = Client::factory()->create(['language' => 'de']);
+
+        $this->actingAs($client, 'web')->get(route('client.dashboard'))->assertSee('lang="de"', false);
+
+        $this->withSession([Locales::SESSION_ADMIN => 'fr'])->get(route('client.dashboard'))->assertSee('lang="fr"', false);
+        $this->assertSame('de', $client->fresh()->language);
+    }
+
+    public function test_an_admin_language_clients_cannot_use_is_skipped(): void
+    {
+        $this->setSettings(['locale.enabled' => ['en', 'de']]);
+        $client = Client::factory()->create(['language' => 'de']);
+
+        $this->withSession([Locales::SESSION_ADMIN => 'ar'])->get(route('client.login'))->assertSee('lang="en"', false);
+        $this->actingAs($client, 'web')->withSession([Locales::SESSION_ADMIN => 'ar'])
+            ->get(route('client.dashboard'))
+            ->assertSee('lang="de"', false);
+    }
+
+    public function test_signing_in_to_the_admin_area_does_not_pick_a_language_for_the_client_area(): void
+    {
+        $this->setSettings(['locale.default' => 'fr']);
+
+        // The language saved on the staff account is used in the admin area only.
+        $this->actingAs(Admin::factory()->create(['language' => 'ar']), 'admin');
+        $this->get(route('admin.dashboard'))->assertSee('lang="ar"', false)->assertSessionMissing(Locales::SESSION_ADMIN);
+        $this->get(route('client.login'))->assertSee('lang="fr"', false);
+    }
+
+    public function test_the_admin_area_never_follows_the_client_choice(): void
+    {
+        $this->setSettings(['locale.default' => 'fr']);
+
+        $this->withSession([Locales::SESSION_CLIENT => 'ckb'])
+            ->actingAs(Admin::factory()->create(['language' => null]), 'admin')
+            ->get(route('admin.dashboard'))
+            ->assertSee('lang="fr"', false);
+        $this->get(route('admin.dashboard', ['lang' => 'de']))->assertSee('lang="fr"', false);
+    }
+
+    public function test_emails_and_pdfs_keep_the_client_account_language(): void
+    {
+        $client = Client::factory()->create(['language' => 'de']);
+
+        $this->actingAs(Admin::factory()->create(), 'admin')->post(route('admin.language'), ['locale' => 'ar']);
+        $this->get(route('client.login'))->assertSee('lang="ar"', false);
+
+        $this->assertSame('de', Locales::forClient($client->fresh()));
+    }
+
+    public function test_pages_in_a_picked_language_are_never_kept_by_shared_caches(): void
+    {
+        $page = $this->withSession([Locales::SESSION_ADMIN => 'ar'])->get(route('client.login'))->assertSee('lang="ar"', false);
+
+        $this->assertStringContainsString('private', (string) $page->headers->get('Cache-Control'));
+        $this->assertStringNotContainsString('public', (string) $page->headers->get('Cache-Control'));
     }
 
     public function test_prices_keep_latin_digits_and_pdfs_stay_in_english(): void

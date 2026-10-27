@@ -65,4 +65,18 @@ class AnnouncementTest extends TestCase
 
         $this->assertSame('feed-2', Announcement::query()->value('slug'));
     }
+
+    public function test_the_feed_language_comes_from_its_address_not_from_the_browser(): void
+    {
+        // Shared caches may keep the feed, so a language picked in one browser must not reach others.
+        $this->withSession(['locale' => 'de', 'admin_locale' => 'fr'])
+            ->get(route('announcements.feed'))
+            ->assertOk()
+            ->assertSee('<language>en</language>', false)
+            ->assertDontSee('Ankündigungen');
+
+        $this->get(route('announcements.feed', ['lang' => 'de']))
+            ->assertSee('<language>de</language>', false)
+            ->assertSee('Ankündigungen');
+    }
 }

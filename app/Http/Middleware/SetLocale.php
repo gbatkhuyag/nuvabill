@@ -9,7 +9,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Sets the language of the page. Staff and clients each keep their own choice, so a staff
- * member can work in English while previewing the client area in Kurdish.
+ * member can work in English while previewing the client area in Kurdish. Until a client
+ * language is picked, the client area follows the admin choice: see Locales::forRequest().
  */
 class SetLocale
 {

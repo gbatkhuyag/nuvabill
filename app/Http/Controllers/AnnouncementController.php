@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Announcement;
 use App\Seo\Seo;
+use App\Support\Locales;
+use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\View\View;
 
@@ -38,11 +40,21 @@ class AnnouncementController extends Controller
     }
 
     /**
-     * The newest 20 announcements as RSS, for feed readers.
+     * The newest 20 announcements as RSS, for feed readers. Shared caches may keep the feed, so its
+     * language comes from the address only (?lang=de, or the site default), never from the
+     * language picked in a browser.
      */
-    public function feed(): Response
+    public function feed(Request $request): Response
     {
         $this->ensureEnabled();
+        $linked = $request->query('lang');
+        $locale = is_string($linked) && isset(Locales::enabled()[$linked]) ? $linked : Locales::default();
+
+        return Locales::in($locale, fn (): Response => $this->buildFeed());
+    }
+
+    private function buildFeed(): Response
+    {
         $items = Announcement::query()->public()->withTranslation()->newestFirst()->limit(20)->get();
         $lines = [
             '<?xml version="1.0" encoding="UTF-8"?>',

@@ -9,7 +9,7 @@ the [roadmap](ROADMAP.md).
 
 | Version | Released | Highlights |
 |---|---|---|
-| [0.7.1](https://github.com/meroxis/nuvabill/releases/tag/v0.7.1) | Unreleased | The public demo can switch chosen add-ons on again after every reset; marketplace listings are checked for length before they are saved |
+| [0.7.1](https://github.com/meroxis/nuvabill/releases/tag/v0.7.1) | Unreleased | The public demo can switch chosen add-ons on again after every reset; marketplace listings are checked for length before they are saved; the client side follows the admin language when no client language was picked |
 | [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 27 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Connect to marketplace, Thai, more hooks for server modules and dedicated server add-ons |
 | [0.6.13](https://github.com/meroxis/nuvabill/releases/tag/v0.6.13) | 10 Oct 2026 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
 | [0.6.12](https://github.com/meroxis/nuvabill/releases/tag/v0.6.12) | 4 Oct 2026 | Fixes from a full line-by-line review: sign-in security, payments, wallet, renewals, imports and site health |
@@ -58,7 +58,17 @@ the [roadmap](ROADMAP.md).
 
 ## 0.7.1
 
-A small fix release for demo sites and the marketplace store.
+A small fix release for demo sites, the marketplace store and languages.
+
+**Languages**
+
+- When staff pick a language in the admin area and nobody picked a language on the client side in that browser,
+  the client side uses it too, if clients can choose that language. A language picked on the client side still
+  wins, and the admin area never follows the client side. Signing in to the admin area does not count as a pick.
+- Emails and PDF invoices still use the language saved on each client's account.
+- The announcements RSS feed is now in your default language, or in the language of its link (`?lang=de`), and no
+  longer in the language picked in the browser that fetched it, so a shared cache cannot hand one reader's language
+  to another.
 
 **Demo sites**
 

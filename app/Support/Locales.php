@@ -131,6 +131,10 @@ class Locales
     /**
      * Pick the language for this request: the choice made in this browser, then the one saved
      * on the account, then the site default.
+     *
+     * The client area also follows a language picked with the admin language switch in this
+     * browser, when no client language was picked here and clients may use that language. A
+     * client choice always wins, and the admin area never follows the client area.
      */
     public static function forRequest(Request $request, bool $adminArea): string
     {
@@ -148,8 +152,12 @@ class Locales
         }
 
         $person = $adminArea ? $request->user('admin') : $request->user('web');
+        $session = $request->hasSession() ? $request->session() : null;
         $choices = [
-            $request->hasSession() ? $request->session()->get($adminArea ? self::SESSION_ADMIN : self::SESSION_CLIENT) : null,
+            $session?->get($adminArea ? self::SESSION_ADMIN : self::SESSION_CLIENT),
+            // Only the admin language switch stores this, never the sign-in, so the client area
+            // follows a language staff picked, not the one saved on the staff account.
+            $adminArea ? null : $session?->get(self::SESSION_ADMIN),
             $person instanceof Admin || $person instanceof Client ? $person->language : null,
         ];
 

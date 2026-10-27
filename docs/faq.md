@@ -42,6 +42,12 @@ The client area and the admin area speak 11 languages: English, Chinese (Simplif
 Portuguese (Brazil), Russian, German, Turkish, Kurdish (Sorani) and Thai. Arabic and Kurdish read right to left. Emails and PDF invoices go out in each client's language (Arabic,
 Kurdish, Thai and Chinese PDFs stay in English, because the PDF engine cannot draw those scripts yet).
 
+Staff and clients each pick their own language. The client area shows, in this order: the language of a link such
+as `?lang=de`, the language picked on the client side in this browser, the language staff picked with the language
+switch in the admin area of this browser (if clients may use it), the language saved on the client's account, and
+then your default language. So a language picked on the client side always wins, and the admin area never follows
+the client side. Emails and PDF invoices always use the language saved on the client's account.
+
 ## How do updates work?
 
 **Updates** in the admin area shows new versions and what changed. Every release is signed; the updater checks the
