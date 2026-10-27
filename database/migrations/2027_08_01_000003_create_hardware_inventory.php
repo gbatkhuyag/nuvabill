@@ -135,6 +135,8 @@ return new class extends Migration
             }
         }
 
+        // A later update adds the power history, which points at machines.
+        Schema::dropIfExists('machine_power_events');
         Schema::dropIfExists('machine_product');
         Schema::dropIfExists('machine_ips');
         Schema::dropIfExists('machines');

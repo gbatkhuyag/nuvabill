@@ -75,6 +75,7 @@ class ScheduleTest extends TestCase
         Machine::factory()->create(['name' => 'DS-101']);
         $this->assertTrue($hardware->filtersPass($this->app));
 
+        Schema::drop('machine_power_events');
         Schema::drop('machine_ips');
         Schema::drop('machine_product');
         Schema::drop('machines');
