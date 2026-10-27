@@ -9,6 +9,7 @@ the [roadmap](ROADMAP.md).
 
 | Version | Released | Highlights |
 |---|---|---|
+| [0.7.1](https://github.com/meroxis/nuvabill/releases/tag/v0.7.1) | Unreleased | The public demo can switch chosen add-ons on again after every reset; marketplace listings are checked for length before they are saved |
 | [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 27 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Connect to marketplace, Thai, more hooks for server modules and dedicated server add-ons |
 | [0.6.13](https://github.com/meroxis/nuvabill/releases/tag/v0.6.13) | 10 Oct 2026 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
 | [0.6.12](https://github.com/meroxis/nuvabill/releases/tag/v0.6.12) | 4 Oct 2026 | Fixes from a full line-by-line review: sign-in security, payments, wallet, renewals, imports and site health |
@@ -54,6 +55,30 @@ the [roadmap](ROADMAP.md).
 | [0.1.2](https://github.com/meroxis/nuvabill/releases/tag/v0.1.2) | 26 Sep 2026 | Faster demo resets |
 | [0.1.1](https://github.com/meroxis/nuvabill/releases/tag/v0.1.1) | 26 Sep 2026 | Demo mode and security headers |
 | [0.1.0](https://github.com/meroxis/nuvabill/releases/tag/v0.1.0) | 26 Sep 2026 | First release |
+
+## 0.7.1
+
+A small fix release for demo sites and the marketplace store.
+
+**Demo sites**
+
+- A demo site can switch chosen add-ons on again after every hourly reset. List them in `NUVABILL_DEMO_ADDONS`
+  (for example `dedicated-server-power`), so the demo's dedicated servers show power buttons, health checks and
+  power use instead of "needs the add-on". It only works with `NUVABILL_DEMO=true`, only for add-ons already in
+  the extensions folder, and it never makes a license for them. See [Configuration](docs/configuration.md).
+- The demo's made-up server management boards (BMCs) now also report health, temperatures, fans, power supplies,
+  drives and power use.
+- **For developers:** add-ons can give the settings a demo should use with `Addon::demoSettings()`.
+
+**Marketplace store**
+
+- Publishing a listing from the command line checks every field against its limit first, such as the 200
+  characters of the summary. A listing that is too long is skipped with a message that names the field, its
+  length and the limit, nothing of it is saved, and the other listings are still published. Before, the publish
+  stopped with a database error.
+- Prices, icons and screenshots are checked too. Screenshots must be images in the listing's own folder.
+- The developer and staff forms use the same limits. A very long developer name no longer causes an error page,
+  and saving an official item in the staff form keeps its category.
 
 ## 0.7.0
 

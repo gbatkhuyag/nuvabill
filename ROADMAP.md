@@ -32,6 +32,7 @@ already shipped is in the [changelog](CHANGELOG.md).
 | 0.6.12 | Fixes from a full line-by-line review: sign-in security, payments, wallet, renewals, imports and site health |
 | 0.6.13 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
 | 0.7.0 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Connect to marketplace, Thai, hooks for server modules and dedicated server add-ons |
+| 0.7.1 | The public demo can switch chosen add-ons on after every reset; marketplace listings are checked for length before they are saved |
 
 ## Next
 
