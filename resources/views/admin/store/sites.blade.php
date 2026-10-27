@@ -60,6 +60,7 @@
         {{ $sites->links() }}
     </section>
 
+    @if ($canManageSettings)
     <section class="card" style="display:grid;gap:.8rem;max-width:720px">
         <h2 style="margin:0;font-size:1.05rem">{{ __('Cloudflare') }}</h2>
         <p class="muted" style="margin:0;font-size:.88rem">{{ __('The store adds an IP Access rule ("Allow") for the server of each active site, so Bot Fight Mode lets it through. Make an API token with only the permission Zone > Firewall Services > Edit, for this zone only.') }}</p>
@@ -88,4 +89,5 @@
             <div><button class="btn btn-primary" type="submit">{{ __('Save') }}</button></div>
         </form>
     </section>
+    @endif
 </x-layouts.admin>

@@ -19,6 +19,13 @@ use Symfony\Component\HttpFoundation\IpUtils;
 class PublicAddress
 {
     /**
+     * IPv6 ranges that carry an IPv4 address, with the byte where it starts (as in BmcAddress).
+     *
+     * @var array<string, int>
+     */
+    private const EMBEDDED_V4 = ['::ffff:0:0/96' => 12, '::/96' => 12, '64:ff9b::/96' => 12, '2002::/16' => 2];
+
+    /**
      * Looks up the IPv4 and IPv6 addresses of a host name. Tests replace it, since made-up names do not resolve.
      *
      * @var (Closure(string): list<string>)|null
@@ -27,11 +34,34 @@ class PublicAddress
 
     /**
      * A public internet address: no private, reserved, shared or special ranges, such as
-     * 100.64.0.0/10 (carrier networks, cloud metadata) or fc00::/7.
+     * 100.64.0.0/10 (carrier networks, cloud metadata) or fc00::/7. An IPv6 address that carries
+     * an IPv4 address inside it (NAT64, IPv4-mapped, 6to4) must carry a public one, since a
+     * gateway on the way passes the call on to that IPv4 address.
      */
     public static function isPublic(string $ip): bool
     {
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE | FILTER_FLAG_GLOBAL_RANGE) !== false;
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE | FILTER_FLAG_GLOBAL_RANGE) === false) {
+            return false;
+        }
+
+        if (self::family($ip) !== 'ipv6') {
+            return true;
+        }
+
+        // Local NAT64 prefixes (RFC 8215) may put the IPv4 address anywhere, so they are never public.
+        if (IpUtils::checkIp($ip, '64:ff9b:1::/48')) {
+            return false;
+        }
+
+        $binary = (string) inet_pton($ip);
+
+        foreach (self::EMBEDDED_V4 as $range => $offset) {
+            if (IpUtils::checkIp($ip, $range) && ! self::isPublic((string) inet_ntop(substr($binary, $offset, 4)))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public static function family(string $ip): ?string

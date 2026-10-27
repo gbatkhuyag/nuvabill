@@ -81,8 +81,9 @@ Route::middleware('web')->group(function (): void {
             Route::get('sites', [AdminSiteController::class, 'index'])->name('sites.index');
             Route::post('sites/{site}/approve', [AdminSiteController::class, 'approve'])->name('sites.approve');
             Route::post('sites/{site}/revoke', [AdminSiteController::class, 'revoke'])->name('sites.revoke');
-            Route::put('sites/cloudflare', [AdminSiteController::class, 'cloudflare'])->name('sites.cloudflare');
-            Route::put('sites/limits', [AdminSiteController::class, 'limits'])->name('sites.limits');
+            // Credentials and abuse limits are store-wide security settings, not review work.
+            Route::put('sites/cloudflare', [AdminSiteController::class, 'cloudflare'])->middleware('admin.can:settings.manage')->name('sites.cloudflare');
+            Route::put('sites/limits', [AdminSiteController::class, 'limits'])->middleware('admin.can:settings.manage')->name('sites.limits');
 
             Route::get('payouts', [PayoutController::class, 'index'])->name('payouts.index');
             Route::post('payouts', [PayoutController::class, 'store'])->name('payouts.store');

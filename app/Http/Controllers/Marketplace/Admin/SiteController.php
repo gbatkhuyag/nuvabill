@@ -43,6 +43,7 @@ class SiteController extends Controller
             'hasToken' => filled(setting('marketplace.cloudflare_token')),
             'pendingRemovals' => $this->sites->pendingRemovals(),
             'limits' => self::currentLimits(),
+            'canManageSettings' => $request->user('admin')?->hasPermission('settings.manage') === true,
         ]);
     }
 

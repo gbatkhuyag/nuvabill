@@ -201,16 +201,19 @@ class ConnectedSites
 
     /**
      * A new key for a site. The key the call came with keeps working for a day, in case the answer
-     * never reaches the site; it stops as soon as the site uses the new key.
+     * never reaches the site; it stops as soon as the site uses the new key. A call with that
+     * previous key gets a new key too, but the previous key keeps its first end time: otherwise
+     * someone with an old key could ask again every day and keep it for ever.
      */
     public function rotate(MarketplaceSite $site, string $usedKey = ''): string
     {
         $key = 'nvb_site_'.SiteConnection::base64url(random_bytes(32));
+        $keepPrevious = $usedKey !== '' && $site->usesPreviousKey($usedKey);
         $site->forceFill([
             'key_hash' => MarketplaceSite::hashKey($key),
             'key_created_at' => now(),
-            'previous_key_hash' => $usedKey !== '' ? MarketplaceSite::hashKey($usedKey) : null,
-            'previous_key_expires_at' => $usedKey !== '' ? now()->addDay() : null,
+            'previous_key_hash' => $keepPrevious ? $site->previous_key_hash : ($usedKey !== '' ? MarketplaceSite::hashKey($usedKey) : null),
+            'previous_key_expires_at' => $keepPrevious ? $site->previous_key_expires_at : ($usedKey !== '' ? now()->addDay() : null),
         ])->save();
 
         return $key;

@@ -727,6 +727,80 @@ class ConnectToMarketplaceTest extends TestCase
         ($options['progress'])(0, 1001);
     }
 
+    // ---- Checks added after the final security review ----
+
+    public function test_an_old_key_cannot_keep_itself_alive_by_asking_for_new_keys(): void
+    {
+        $this->enableStore();
+        $old = 'nvb_site_'.str_repeat('k', 43);
+        $site = $this->storeSite($old);
+
+        $this->withToken($old)->postJson(route('marketplace.api.sites.rotate'))->assertOk();
+        $expires = $site->refresh()->previous_key_expires_at;
+
+        // Asking again with the previous key gives a new key, but no more time for the old one.
+        $this->travel(12)->hours();
+        $this->withToken($old)->postJson(route('marketplace.api.sites.rotate'))->assertOk();
+        $this->travel(11)->hours();
+        $latest = $this->withToken($old)->postJson(route('marketplace.api.sites.rotate'))->assertOk()->json('key');
+        $this->assertSame(MarketplaceSite::hashKey($old), $site->refresh()->previous_key_hash);
+        $this->assertTrue($expires->equalTo($site->previous_key_expires_at));
+
+        $this->travel(2)->hours();
+        $this->withToken($old)->postJson(route('marketplace.api.sites.rotate'))->assertUnauthorized()->assertJson(['code' => 'reconnect']);
+        $this->withToken($old)->getJson(route('marketplace.api.catalog'))->assertUnauthorized();
+        $this->withToken($latest)->getJson(route('marketplace.api.catalog'))->assertOk();
+    }
+
+    public function test_reviewers_cannot_change_the_cloudflare_token_or_the_limits(): void
+    {
+        $this->enableStore();
+        $this->signInAdmin(Admin::factory()->withPermissions(['marketplace.review'])->create());
+        Http::fake();
+
+        $this->get(route('admin.store.sites.index'))->assertOk()->assertDontSee(route('admin.store.sites.cloudflare'))->assertDontSee(route('admin.store.sites.limits'));
+        $this->put(route('admin.store.sites.cloudflare'), ['zone_id' => str_repeat('b', 32), 'api_token' => 'other-token', 'action' => 'save'])->assertForbidden();
+        $this->put(route('admin.store.sites.cloudflare'), ['zone_id' => str_repeat('b', 32), 'action' => 'test'])->assertForbidden();
+        $this->put(route('admin.store.sites.limits'), ['daily_limit' => 100000, 'domain_daily_limit' => 100000, 'hosts_per_domain' => 100000, 'sites_per_ip' => 100000])->assertForbidden();
+
+        $this->assertSame('cf-token', setting('marketplace.cloudflare_token'));
+        $this->assertSame(str_repeat('f', 32), setting('marketplace.cloudflare_zone_id'));
+        Http::assertNothingSent();
+    }
+
+    public function test_ipv6_addresses_that_carry_an_internal_ipv4_address_are_not_public(): void
+    {
+        foreach (['64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '64:ff9b::a00:9', '64:ff9b:1::808:808', '::ffff:127.0.0.1', '::ffff:169.254.169.254'] as $address) {
+            $this->assertFalse(PublicAddress::isPublic($address), $address);
+        }
+
+        $this->assertTrue(PublicAddress::isPublic('64:ff9b::808:808'));
+        $this->assertTrue(PublicAddress::isPublic('2606:4700:4700::1111'));
+
+        // The connect form never calls such an address, whatever the visitor names.
+        $this->enableStore();
+        PublicAddress::$resolveUsing = fn (string $host): array => [self::SERVER_IP];
+        $pinned = [];
+        Http::fake(['https://'.self::SITE.'/nuvabill-marketplace/connect' => function (Request $request, array $options) use (&$pinned) {
+            $pinned[] = $options['curl'][CURLOPT_RESOLVE][0] ?? null;
+
+            return Http::response(['ok' => true, 'ip' => self::SERVER_IP, 'family' => 'ipv4', 'return_path' => '/admin/marketplace']);
+        }]);
+
+        foreach (['64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe'] as $hint) {
+            $this->post(route('marketplace.connect.store'), ['site' => self::SITE, 'state' => str_repeat('s', 43), 'ip' => $hint])->assertRedirect();
+        }
+
+        $this->assertSame(array_fill(0, 2, self::SITE.':443:'.self::SERVER_IP), $pinned);
+
+        // Nor a site whose DNS points there.
+        $pinned = [];
+        PublicAddress::$resolveUsing = fn (string $host): array => [self::SERVER_IP, '64:ff9b::a9fe:a9fe'];
+        MarketplaceSite::query()->delete();
+        $this->post(route('marketplace.connect.store'), ['site' => self::SITE, 'state' => str_repeat('s', 43)]);
+        $this->assertSame([], $pinned);
+    }
+
     private function connectLocally(): void
     {
         app(Settings::class)->setMany([
