@@ -49,6 +49,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Demo add-ons
+    |--------------------------------------------------------------------------
+    |
+    | Add-ons the demo switches on again after every reset, as a comma list of
+    | slugs, such as "dedicated-server-power". Each one must already be in the
+    | extensions folder: the demo never downloads anything. Only read while
+    | demo mode is on, so it never switches anything on for a real site.
+    |
+    */
+
+    'demo_addons' => env('NUVABILL_DEMO_ADDONS', ''),
+
+    /*
+    |--------------------------------------------------------------------------
     | Updates
     |--------------------------------------------------------------------------
     |

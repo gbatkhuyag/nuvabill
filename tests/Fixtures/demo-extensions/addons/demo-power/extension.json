@@ -1,0 +1,12 @@
+{
+    "slug": "demo-power",
+    "type": "addon",
+    "name": "Demo power",
+    "version": "1.0.0",
+    "namespace": "Tests\\Fixtures\\DemoPower\\",
+    "class": "Tests\\Fixtures\\DemoPower\\DemoPower",
+    "description": "An add-on that only exists in the test suite: a paid add-on with its own table that the demo switches on.",
+    "requires": ">=0.7.1",
+    "paid": true,
+    "permissions": ["hardware", "database"]
+}

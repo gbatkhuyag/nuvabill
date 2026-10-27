@@ -8,21 +8,27 @@ use App\Enums\MachineStatus;
 use App\Enums\ServiceStatus;
 use App\Extensions\ExtensionManager;
 use App\Extensions\Servers\Resources\ResourceKind;
+use App\Marketplace\LicenseChecker;
 use App\Models\Admin;
 use App\Models\Client;
 use App\Models\Machine;
+use App\Models\MarketplaceInstall;
 use App\Models\Product;
 use App\Models\Service;
 use App\Models\ServiceResourceOption;
 use App\Provisioning\Hardware\BmcException;
+use App\Provisioning\Hardware\Drivers\PowerDrivers;
 use App\Provisioning\Hardware\Tls\CertificateProbe;
 use App\Provisioning\Hardware\Tls\PinningSupport;
 use App\Support\Demo;
 use Closure;
+use Database\Seeders\DatabaseSeeder;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use LogicException;
 use PDO;
@@ -187,6 +193,91 @@ class DemoResetTest extends TestCase
         });
     }
 
+    public function test_the_demo_switches_on_the_chosen_addons_after_every_reset(): void
+    {
+        $this->useDemoExtensions();
+        config(['nuvabill.demo_addons' => ' Demo-Power, not-here ,demo-nodb,../etc,demo-power']);
+
+        $this->inFreshDemo('demo-reset-addons.sqlite', function (): void {
+            $extensions = app(ExtensionManager::class);
+
+            // Switched on with the settings the add-on asks for on a demo, and its own table made.
+            $this->assertTrue($extensions->isEnabled('demo-power'));
+            $this->assertSame(['allow_ipmi' => '0', 'health_alerts' => '0'], $extensions->settings('demo-power'));
+            $this->assertTrue(Schema::hasTable('demo_power_readings'));
+
+            // An add-on that changes the database without asking for the database permission stays off.
+            $this->assertFalse($extensions->isEnabled('demo-nodb'));
+            $this->assertFalse(Schema::hasTable('demo_nodb'));
+            $this->assertFalse($extensions->isEnabled('not-here'));
+
+            // The demo copy of a paid add-on gets no marketplace install and no license.
+            $this->assertSame(0, MarketplaceInstall::query()->count());
+
+            // With the add-on's power driver, staff read each demo machine's power from its fake BMC.
+            $this->app->instance(PinningSupport::class, new PinningSupport(fn (string $function): bool => true, ['version' => '8.5.0', 'ssl_version' => 'OpenSSL/3.0.13']));
+            $this->app->forgetInstance(PowerDrivers::class);
+            $extensions->bootAddons();
+            $this->assertNotNull(app(PowerDrivers::class)->get('redfish'));
+            Demo::fakeServers();
+
+            $this->actingAs(Admin::query()->where('email', Demo::ADMIN_EMAIL)->sole(), 'admin');
+            $this->getJson(route('admin.machines.power.show', Machine::query()->where('name', 'DS-101')->sole()))->assertOk()->assertJsonPath('state', 'on');
+            $this->getJson(route('admin.machines.power.show', Machine::query()->where('name', 'DS-104')->sole()))->assertOk()->assertJsonPath('state', 'off');
+        });
+    }
+
+    public function test_demo_addons_are_only_read_in_demo_mode(): void
+    {
+        $this->useDemoExtensions();
+        config(['nuvabill.demo' => false, 'nuvabill.demo_addons' => 'demo-power']);
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertSame([], Demo::addons());
+
+        // A real site still sees a paid add-on copied in by hand as unlicensed.
+        $this->assertContains('demo-power', app(LicenseChecker::class)->unlicensedCopies()->pluck('slug')->all());
+
+        // A seed outside demo mode switches nothing on.
+        $this->seed(DatabaseSeeder::class);
+        $this->assertFalse(app(ExtensionManager::class)->isEnabled('demo-power'));
+        $this->assertFalse(Schema::hasTable('demo_power_readings'));
+
+        config(['nuvabill.demo' => true]);
+        $this->assertSame(['demo-power'], Demo::addons());
+        config(['nuvabill.demo_addons' => '']);
+        $this->assertSame([], Demo::addons());
+    }
+
+    public function test_the_fake_bmcs_report_health_and_power_use(): void
+    {
+        Demo::fakeServers();
+        $bmc = fn (string $host, string $path): array => Http::get('https://'.$host.$path)->throw()->json();
+
+        $system = $bmc(Demo::BMC_HOSTS[0], Demo::BMC_SYSTEM);
+        $this->assertSame('OK', $system['Status']['HealthRollup']);
+        $chassis = $bmc(Demo::BMC_HOSTS[0], $system['Links']['Chassis'][0]['@odata.id']);
+        $thermal = $bmc(Demo::BMC_HOSTS[0], $chassis['Thermal']['@odata.id']);
+        $this->assertCount(2, $thermal['Temperatures']);
+        $this->assertCount(2, $thermal['Fans']);
+
+        // A server that is on uses far more power than one that is off.
+        $on = $bmc(Demo::BMC_HOSTS[0], $chassis['Power']['@odata.id']);
+        $off = $bmc(Demo::BMC_HOSTS[1], $chassis['Power']['@odata.id']);
+        $this->assertGreaterThan(80, $on['PowerControl'][0]['PowerConsumedWatts']);
+        $this->assertLessThan(20, $off['PowerControl'][0]['PowerConsumedWatts']);
+        $this->assertCount(2, $on['PowerSupplies']);
+
+        $storage = $bmc(Demo::BMC_HOSTS[0], $system['Storage']['@odata.id']);
+        $controller = $bmc(Demo::BMC_HOSTS[0], $storage['Members'][0]['@odata.id']);
+        $this->assertSame('OK', $bmc(Demo::BMC_HOSTS[0], $controller['Drives'][1]['@odata.id'])['Status']['Health']);
+
+        // The next boot device and the reset are accepted; anything else is not there.
+        $this->assertSame(204, Http::patch('https://'.Demo::BMC_HOSTS[0].Demo::BMC_SYSTEM, ['Boot' => []])->status());
+        $this->assertSame(404, Http::patch('https://'.Demo::BMC_HOSTS[0].'/redfish/v1/Managers/1', [])->status());
+        $this->assertSame(404, Http::get('https://'.Demo::BMC_HOSTS[0].'/redfish/v1/Chassis/2')->status());
+    }
+
     public function test_the_reset_waits_for_a_change_that_is_still_being_saved(): void
     {
         $database = storage_path('framework/testing/demo-reset-busy.sqlite');
@@ -226,6 +317,20 @@ class DemoResetTest extends TestCase
             DB::purge('sqlite');
             File::delete([$database, $database.'-journal', $database.'.next']);
         }
+    }
+
+    /**
+     * Use a copy of the extensions folder with the test add-ons demo-power and demo-nodb in it.
+     */
+    private function useDemoExtensions(): void
+    {
+        $path = storage_path('framework/testing/demo-extensions-'.Str::lower(Str::random(8)));
+        File::copyDirectory(base_path('extensions'), $path);
+        File::copyDirectory(base_path('tests/Fixtures/demo-extensions'), $path);
+        $this->beforeApplicationDestroyed(fn () => File::deleteDirectory($path));
+
+        config(['nuvabill.extensions_path' => $path]);
+        $this->app->forgetInstance(ExtensionManager::class);
     }
 
     /**

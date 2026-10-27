@@ -19,6 +19,7 @@ use App\Enums\QuoteStatus;
 use App\Enums\ServiceStatus;
 use App\Enums\TicketStatus;
 use App\Extensions\ExtensionManager;
+use App\Extensions\ExtensionManifest;
 use App\Models\Admin;
 use App\Models\Affiliate;
 use App\Models\AffiliateCommission;
@@ -54,6 +55,8 @@ use App\Support\Settings;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -186,6 +189,51 @@ class DatabaseSeeder extends Seeder
         $this->savedPaymentMethods($clients);
         $this->helpCenter($admin);
         $this->creditNote($demo, $admin);
+        $this->demoAddons();
+    }
+
+    /**
+     * On the public demo, switch on the add-ons in NUVABILL_DEMO_ADDONS again, such as Dedicated
+     * Server Power for the power buttons of the demo's dedicated servers. Only add-ons already in
+     * the extensions folder: nothing is downloaded, and no marketplace install or license is made,
+     * so a demo copy of a paid add-on never counts as licensed anywhere. An add-on's own tables
+     * are made again, as an install from the marketplace makes them, and only when it asks for
+     * the database permission.
+     */
+    private function demoAddons(): void
+    {
+        $extensions = app(ExtensionManager::class);
+
+        foreach (Demo::addons() as $slug) {
+            $manifest = $extensions->find($slug);
+
+            if ($manifest === null || $manifest->type !== ExtensionManifest::TYPE_ADDON) {
+                $this->warn("The demo add-on {$slug} is not in the extensions folder, so it was not switched on.");
+
+                continue;
+            }
+
+            $migrations = $manifest->path.DIRECTORY_SEPARATOR.'database'.DIRECTORY_SEPARATOR.'migrations';
+
+            if (is_dir($migrations) && (glob($migrations.DIRECTORY_SEPARATOR.'*.php') ?: []) !== []) {
+                if (! in_array('database', $manifest->permissions, true)) {
+                    $this->warn("The demo add-on {$slug} changes the database but does not ask for the database permission, so it was not switched on.");
+
+                    continue;
+                }
+
+                Artisan::call('migrate', ['--path' => $migrations, '--realpath' => true, '--force' => true]);
+            }
+
+            // A broken demo hook is reported and the add-on is switched on with its defaults.
+            $extensions->saveSettings($slug, rescue(fn (): array => $extensions->addon($slug)->demoSettings(), []), true);
+        }
+    }
+
+    private function warn(string $message): void
+    {
+        Log::warning($message);
+        $this->command?->warn($message);
     }
 
     /**

@@ -127,7 +127,13 @@ credit must stay visible (see the [license](../LICENSE) and [NOTICE](../NOTICE))
 | `APP_URL` | Your site address, with `https://` |
 | `APP_DEBUG` | Keep `false` on a live site |
 | `NUVABILL_TRUSTED_PROXIES` | `cloudflare`, a list of proxy IPs, or `*` (see [below](#behind-cloudflare-or-another-proxy)) |
+| `NUVABILL_DEMO` | `true` only on a public demo site: it locks settings, sends no email and puts fresh demo data in every hour |
+| `NUVABILL_DEMO_ADDONS` | Demo sites only: add-ons to switch on again after every reset, separated by commas, such as `dedicated-server-power` |
 | `DB_*` | Database connection, written by the installer |
+
+`NUVABILL_DEMO_ADDONS` is ignored unless `NUVABILL_DEMO=true`. Copy each add-on into `extensions/addons/` yourself: the
+demo never downloads one, and it makes no license or marketplace install for it. An add-on that adds database tables
+gets them again at every reset, and only when it asks for the database permission.
 
 ## Behind Cloudflare or another proxy
 

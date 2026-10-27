@@ -1,0 +1,11 @@
+{
+    "slug": "demo-nodb",
+    "type": "addon",
+    "name": "Demo without the database permission",
+    "version": "1.0.0",
+    "namespace": "Tests\\Fixtures\\DemoNoDb\\",
+    "class": "Tests\\Fixtures\\DemoNoDb\\DemoNoDb",
+    "description": "An add-on that only exists in the test suite: it has a migration but does not ask for the database permission.",
+    "requires": ">=0.7.1",
+    "permissions": ["events"]
+}

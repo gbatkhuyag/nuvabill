@@ -67,6 +67,19 @@ abstract class Addon
     public function boot(): void {}
 
     /**
+     * Settings for a public demo site that switches this add-on on after each reset
+     * (NUVABILL_DEMO_ADDONS), for example options its demo data needs. Visitors can read them,
+     * so never put a secret here. Without it the add-on is switched on with no settings, so each
+     * one has its default. Since Nuvabill 0.7.1.
+     *
+     * @return array<string, mixed>
+     */
+    public function demoSettings(): array
+    {
+        return [];
+    }
+
+    /**
      * HTML added to the end of the <head> of pages in an area: "client" (store and client area) or "admin".
      */
     public function headHtml(string $area): string

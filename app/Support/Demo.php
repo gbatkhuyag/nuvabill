@@ -158,6 +158,25 @@ class Demo
     }
 
     /**
+     * The add-ons the demo switches on after every reset (NUVABILL_DEMO_ADDONS), as slugs. Always
+     * empty while demo mode is off, so the setting can never switch anything on for a real site.
+     *
+     * @return list<string>
+     */
+    public static function addons(): array
+    {
+        if (! self::isEnabled()) {
+            return [];
+        }
+
+        $value = config('nuvabill.demo_addons');
+        $slugs = is_array($value) ? $value : explode(',', (string) $value);
+        $slugs = array_map(fn (mixed $slug): string => is_string($slug) ? strtolower(trim($slug)) : '', $slugs);
+
+        return array_values(array_unique(array_filter($slugs, fn (string $slug): bool => preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/D', $slug) === 1)));
+    }
+
+    /**
      * Made-up answers from the demo's servers, so visitors see the server panels working:
      *
      * - the Virtualizor node's Admin API (port 4085) and end-user panel (port 4083), with live
@@ -391,8 +410,12 @@ class Demo
     }
 
     /**
-     * A Redfish BMC with one system: the service root, the systems, the system with its power state
-     * and reset types, and the reset action (accepted, it changes nothing).
+     * A Redfish BMC with one system: the service root, the systems, the system with its power state,
+     * reset types and health, its chassis with temperatures, fans, power supplies and the watts it
+     * uses now, and its two drives. The reset action and the next boot device are accepted and
+     * change nothing. Temperatures and watts rise in the day and fall at night, the same for a BMC
+     * at the same time, so the Dedicated Server Power add-on has health checks and power use to
+     * show when the demo switches it on (NUVABILL_DEMO_ADDONS).
      */
     private static function redfish(Request $request): PromiseInterface
     {
@@ -404,6 +427,31 @@ class Demo
             return $path === self::BMC_SYSTEM.'/Actions/ComputerSystem.Reset' ? Http::response(null, 204) : Http::response($missing, 404);
         }
 
+        if ($request->method() === 'PATCH') {
+            return $path === self::BMC_SYSTEM ? Http::response(null, 204) : Http::response($missing, 404);
+        }
+
+        $on = $host === self::BMC_HOSTS[0];
+        $chassis = '/redfish/v1/Chassis/1';
+        $storage = self::BMC_SYSTEM.'/Storage';
+        $ok = ['State' => 'Enabled', 'Health' => 'OK'];
+        $rollup = $ok + ['HealthRollup' => 'OK'];
+
+        $now = Date::now();
+        $busy = $on ? max(0.0, sin(((int) $now->format('G') - 6) / 12 * M_PI)) : 0.0;
+        $noise = crc32($host.':'.intdiv($now->getTimestamp(), 300)) % 1000 / 1000;
+        $fan = $on ? 4200 + 2400 * $busy + 300 * $noise : 1800 + 100 * $noise;
+        $drive = fn (int $number): array => [
+            '@odata.id' => $storage.'/1/Drives/'.$number,
+            'Id' => (string) $number,
+            'Name' => '960 GB NVMe '.($number + 1),
+            'CapacityBytes' => 960_197_124_096,
+            'Protocol' => 'NVMe',
+            'MediaType' => 'SSD',
+            'FailurePredicted' => false,
+            'Status' => $ok,
+        ];
+
         return match ($path) {
             '/redfish/v1' => Http::response(['@odata.id' => '/redfish/v1/', 'Name' => 'Root Service', 'RedfishVersion' => '1.11.0', 'Systems' => ['@odata.id' => '/redfish/v1/Systems']]),
             '/redfish/v1/Systems' => Http::response(['@odata.id' => '/redfish/v1/Systems', 'Members' => [['@odata.id' => self::BMC_SYSTEM]], 'Members@odata.count' => 1]),
@@ -412,12 +460,35 @@ class Demo
                 'Id' => '1',
                 'Manufacturer' => 'Supermicro',
                 'Model' => 'SYS-510T-MR',
-                'PowerState' => $host === self::BMC_HOSTS[0] ? 'On' : 'Off',
+                'PowerState' => $on ? 'On' : 'Off',
+                'Status' => $rollup,
+                'ProcessorSummary' => ['Count' => 1, 'Model' => 'Intel Xeon E-2388G', 'Status' => $rollup],
+                'MemorySummary' => ['TotalSystemMemoryGiB' => 64, 'Status' => $rollup],
+                'Storage' => ['@odata.id' => $storage],
+                'Links' => ['Chassis' => [['@odata.id' => $chassis]]],
                 'Actions' => ['#ComputerSystem.Reset' => [
                     'target' => self::BMC_SYSTEM.'/Actions/ComputerSystem.Reset',
                     'ResetType@Redfish.AllowableValues' => ['On', 'ForceOff', 'GracefulShutdown', 'GracefulRestart', 'ForceRestart'],
                 ]],
             ]),
+            $chassis => Http::response(['@odata.id' => $chassis, 'Id' => '1', 'Name' => 'Chassis', 'Status' => $ok, 'Thermal' => ['@odata.id' => $chassis.'/Thermal'], 'Power' => ['@odata.id' => $chassis.'/Power']]),
+            $chassis.'/Thermal' => Http::response(['@odata.id' => $chassis.'/Thermal', 'Temperatures' => [
+                ['MemberId' => '0', 'Name' => 'CPU Temp', 'ReadingCelsius' => (int) round($on ? 41 + 14 * $busy + 3 * $noise : 24 + 2 * $noise), 'UpperThresholdNonCritical' => 85, 'UpperThresholdCritical' => 95, 'Status' => $ok],
+                ['MemberId' => '1', 'Name' => 'System Temp', 'ReadingCelsius' => (int) round(22 + 6 * $busy + $noise), 'UpperThresholdNonCritical' => 75, 'UpperThresholdCritical' => 85, 'Status' => $ok],
+            ], 'Fans' => [
+                ['MemberId' => '0', 'Name' => 'FAN1', 'Reading' => (int) round($fan, -2), 'ReadingUnits' => 'RPM', 'LowerThresholdCritical' => 420, 'Status' => $ok],
+                ['MemberId' => '1', 'Name' => 'FAN2', 'Reading' => (int) round($fan * 0.97, -2), 'ReadingUnits' => 'RPM', 'LowerThresholdCritical' => 420, 'Status' => $ok],
+            ]]),
+            $chassis.'/Power' => Http::response(['@odata.id' => $chassis.'/Power', 'PowerControl' => [
+                ['MemberId' => '0', 'Name' => 'System Power Control', 'PowerConsumedWatts' => (int) round($on ? 92 + 48 * $busy + 9 * $noise : 9 + $noise)],
+            ], 'PowerSupplies' => [
+                ['MemberId' => '0', 'Name' => 'PSU1', 'PowerCapacityWatts' => 500, 'Status' => $ok],
+                ['MemberId' => '1', 'Name' => 'PSU2', 'PowerCapacityWatts' => 500, 'Status' => $ok],
+            ]]),
+            $storage => Http::response(['@odata.id' => $storage, 'Members' => [['@odata.id' => $storage.'/1']], 'Members@odata.count' => 1]),
+            $storage.'/1' => Http::response(['@odata.id' => $storage.'/1', 'Id' => '1', 'Name' => 'NVMe', 'Drives' => [['@odata.id' => $storage.'/1/Drives/0'], ['@odata.id' => $storage.'/1/Drives/1']]]),
+            $storage.'/1/Drives/0' => Http::response($drive(0)),
+            $storage.'/1/Drives/1' => Http::response($drive(1)),
             default => Http::response($missing, 404),
         };
     }
