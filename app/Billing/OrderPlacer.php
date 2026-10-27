@@ -123,6 +123,8 @@ class OrderPlacer
                     'next_due_date' => $today,
                     'coupon_id' => $keepsDiscount ? $coupon->id : null,
                     'coupon_payments_left' => $keepsDiscount && $coupon->recurring === Coupon::RECURRING_COUNT ? $coupon->recurring_count - 1 : null,
+                    // The module's order form fields, encrypted; the module reads them in create().
+                    'order_fields' => $line->orderFields !== [] ? $line->orderFields : null,
                 ]);
 
                 $service->setRelation('product', $line->product);

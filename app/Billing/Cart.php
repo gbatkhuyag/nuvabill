@@ -11,8 +11,10 @@ use App\Models\Domain;
 use App\Models\Product;
 use App\Models\ProductAddon;
 use App\Models\TldPrice;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Contracts\Session\Session;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Crypt;
 
 /**
  * The visitor's shopping cart, kept in the session until checkout.
@@ -39,8 +41,9 @@ class Cart
      *
      * @param  list<int>  $addonIds  Product add-ons the client ticked.
      * @param  array<string, int>  $resources  kind => steps, as checked by ResourceOptions::validateForOrder().
+     * @param  array<string, string>  $orderFields  The module's order form fields, as checked by OrderFields::validate(). Kept encrypted in the session.
      */
-    public function addProduct(Product $product, BillingCycle $cycle, ?string $domain, array $addonIds = [], array $resources = []): int
+    public function addProduct(Product $product, BillingCycle $cycle, ?string $domain, array $addonIds = [], array $resources = [], array $orderFields = []): int
     {
         $steps = [];
 
@@ -58,6 +61,8 @@ class Cart
             'domain' => $domain,
             'addons' => array_values(array_unique(array_map('intval', $addonIds))),
             'resources' => $steps,
+            // Encrypted: a field may hold a secret, and sessions can be stored as plain files.
+            'fields' => $orderFields !== [] ? Crypt::encryptString((string) json_encode($orderFields)) : null,
         ];
 
         $this->session->put(self::SESSION_KEY, $items);
@@ -198,6 +203,7 @@ class Cart
                     $index, $product, $cycle, $item['domain'] ?? null, $price->price, $price->setup_fee,
                     addons: $this->addonLines($item, $product, $cycle, $currency, $addons),
                     resources: $this->resourceLines($item, $product, $cycle, $currency),
+                    orderFields: self::orderFields($item),
                 );
             })
             ->filter()
@@ -213,6 +219,27 @@ class Cart
     public function discount(string $currency, ?Client $client = null): int
     {
         return $this->lines($currency, $client)->sum(fn (CartLine $line): int => $line->discount);
+    }
+
+    /**
+     * The order form fields of a cart item, or none when there are none or they cannot be read.
+     *
+     * @param  array<string, mixed>  $item
+     * @return array<string, string>
+     */
+    private static function orderFields(array $item): array
+    {
+        if (! is_string($item['fields'] ?? null)) {
+            return [];
+        }
+
+        try {
+            $fields = json_decode(Crypt::decryptString($item['fields']), true);
+        } catch (DecryptException) {
+            return [];
+        }
+
+        return is_array($fields) ? array_filter($fields, fn (mixed $value, mixed $key): bool => is_string($key) && is_string($value), ARRAY_FILTER_USE_BOTH) : [];
     }
 
     /**

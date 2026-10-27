@@ -20,12 +20,14 @@ use App\Http\Middleware\EnsureStaffTwoFactor;
 use App\Http\Middleware\PreventRequestsDuringMaintenance;
 use App\Http\Middleware\ProtectDemo;
 use App\Http\Middleware\RedirectToInstaller;
+use App\Http\Middleware\RequireStaffTwoFactor;
 use App\Http\Middleware\SecurityHeaders;
 use App\Http\Middleware\SetLocale;
 use App\Http\Middleware\ThrottleRequests;
 use App\Http\Middleware\TrackAffiliateLink;
 use App\Http\Middleware\VerifyCaptcha;
 use App\Models\SeoRedirect;
+use App\Provisioning\OrderFields;
 use App\Security\OwnerCheck;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -127,6 +129,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'admin.can' => EnsureAdminPermission::class,
             'admin.two-factor' => EnsureStaffTwoFactor::class,
+            // Two-factor login on the staff member's own account, for server module tools.
+            'admin.two-factor-on' => RequireStaffTwoFactor::class,
             'client.active' => EnsureClientIsActive::class,
             'client.two-factor' => EnsureClientTwoFactor::class,
             'captcha' => VerifyCaptcha::class,
@@ -152,6 +156,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // Nor are server API tokens, BMC logins of dedicated servers, or root passwords staff type,
         // so a form shown again after an error never writes them back into the page.
         $exceptions->dontFlash(['api_token', 'bmc_username', 'bmc_password', 'root_password']);
+        // Nor are the secret order form fields of server modules (App\Provisioning\OrderFields).
+        $exceptions->dontFlash([OrderFields::SECRET]);
 
         // A store page that got a new web address: send visitors and search engines to it.
         $exceptions->render(function (NotFoundHttpException $exception, Request $request) {

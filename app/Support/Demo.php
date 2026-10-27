@@ -106,6 +106,9 @@ class Demo
         'admin.marketplace.license',
         'admin.marketplace.settings.update',
         'admin.addons.*',
+        // Server module admin pages and staff actions (pages only read in the demo).
+        'admin.server-modules.*',
+        'admin.services.staff-action',
         'admin.servers.*',
         'admin.services.module',
         'admin.services.change-plan',

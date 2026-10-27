@@ -2,6 +2,7 @@
 
 use App\Chat\WhatsAppSetup;
 use App\Extensions\ExtensionManager;
+use App\Extensions\Servers\ModuleHooks;
 use App\Jobs\TranslateTicketReply;
 use App\Models\Machine;
 use App\Support\Demo;
@@ -79,5 +80,8 @@ if (Installation::isInstalled()) {
 
         // Scheduled work of switched-on add-ons, for example off-site backups.
         app(ExtensionManager::class)->scheduleAddons(Schedule::getFacadeRoot());
+
+        // Scheduled work of server modules, for example traffic checks. A broken module is left out.
+        rescue(fn () => app(ModuleHooks::class)->schedule(Schedule::getFacadeRoot()));
     }
 }

@@ -89,6 +89,7 @@ class RoutesAndLocksTest extends TestCase
             'admin.services.machine.assign' => ['POST', 'services/{service}/machine', ['admin.can:services.manage', 'throttle:20,1'], true],
             'admin.services.machine.ready' => ['POST', 'services/{service}/machine/ready', ['admin.can:services.manage', 'throttle:10,1'], true],
             'admin.services.machine.replace' => ['POST', 'services/{service}/machine/replace', ['admin.can:services.manage', 'admin.can:hardware.manage', 'throttle:10,1'], true],
+            'admin.services.staff-action' => ['POST', 'services/{service}/staff/{action}', ['admin.can:services.manage', 'admin.two-factor-on', 'throttle:10,1'], true],
         ];
     }
 
@@ -174,6 +175,7 @@ class RoutesAndLocksTest extends TestCase
         $parameters = match (true) {
             $name === 'client.services.sections.action' => [$service, 'power', 'start'],
             $name === 'admin.machines.power' => [$machine, 'off'],
+            $name === 'admin.services.staff-action' => [$service, 'migrate'],
             $name === 'admin.machines.store', $name === 'admin.machines.settings' => [],
             str_starts_with($name, 'admin.machines.') => [$machine],
             str_starts_with($name, 'admin.products.resources.') => in_array($name, ['admin.products.resources.update', 'admin.products.resources.destroy'], true) ? [$product, $option] : [$product],

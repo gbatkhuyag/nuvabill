@@ -11,6 +11,7 @@ use App\Contracts\UsesMachineInventory;
 use App\Enums\ServiceStatus;
 use App\Extensions\Servers\Module;
 use App\Extensions\Servers\Panel\ClientContext;
+use App\Extensions\Servers\Panel\ConsoleSession;
 use App\Extensions\Servers\Panel\PanelAction;
 use App\Extensions\Servers\Panel\PanelException;
 use App\Extensions\Servers\Panel\PanelResult;
@@ -424,9 +425,9 @@ final class PanelGate
         try {
             $session = $module->consoleSession($service, $context);
 
-            // The console page speaks VNC (noVNC) only in this release.
-            if ($session->protocol !== 'vnc') {
-                throw new PanelException(__('The console is not available for this server right now.'), 'The module gave a console that is not VNC.', 503);
+            // The console page speaks VNC (noVNC) and, since 0.7.0, a text terminal (xterm.js).
+            if (! in_array($session->protocol, ConsoleSession::PROTOCOLS, true)) {
+                throw new PanelException(__('The console is not available for this server right now.'), 'The module gave a console that is neither VNC nor a terminal.', 503);
             }
 
             $source = $session->connectSource();

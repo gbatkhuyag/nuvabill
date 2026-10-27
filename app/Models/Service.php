@@ -42,9 +42,14 @@ class Service extends Model
         'module_data',
         'coupon_id',
         'coupon_payments_left',
+        'order_fields',
     ];
 
-    protected $hidden = ['password'];
+    /**
+     * order_fields: what the client entered in a server module's order form fields, encrypted.
+     * Some may be secret, so it never goes into JSON (see App\Provisioning\OrderFields).
+     */
+    protected $hidden = ['password', 'order_fields'];
 
     protected function casts(): array
     {
@@ -53,6 +58,7 @@ class Service extends Model
             'billing_cycle' => BillingCycle::class,
             'password' => 'encrypted',
             'module_data' => 'array',
+            'order_fields' => 'encrypted:array',
             'first_payment_amount' => 'integer',
             'recurring_amount' => 'integer',
             'registration_date' => 'immutable_date',

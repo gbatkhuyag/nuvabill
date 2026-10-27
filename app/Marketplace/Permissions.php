@@ -11,6 +11,8 @@ namespace App\Marketplace;
  * from another service at /webhooks/addons/{slug}), "admin-settings", "admin-page", "events" (reacts to
  * orders, payments and tickets), "head-script" (adds a script to pages), "payments" (takes
  * payments), "servers" (manages accounts on servers), "domains" (registers domains),
+ * "order-fields" (a server module asks for details on the order form, since 0.7.0; "admin-page" and
+ * "schedule" also give server modules admin pages, a staff card and scheduled work),
  * "database" (adds its own tables), "schedule" (runs on a schedule), "hardware" (controls dedicated
  * server machines under Hardware and adds pages there), "backups" (reads the whole site
  * to copy it) and "http:host.example.com" (connects to that host).
@@ -33,6 +35,7 @@ class Permissions
             'public-page' => ['title' => __('Shows pages to visitors'), 'text' => __('Adds pages to your site, and may show your home page. The store then moves to /store.')],
             'admin-settings' => ['title' => __('Adds settings for staff'), 'text' => __('Staff set it up in the admin area.')],
             'admin-page' => ['title' => __('Adds an admin page'), 'text' => __('Staff see a new page in the admin area.')],
+            'order-fields' => ['title' => __('Asks for details when clients order'), 'text' => __('Adds fields such as an SSH key to the order form. The answers are kept encrypted with the service.')],
             'webhook' => ['title' => __('Receives data from another service'), 'text' => __('Another service can send data to a secret address on your site, for example new chat messages.')],
             'events' => ['title' => __('Reacts to orders, payments and tickets'), 'text' => __('Runs when these things happen.')],
             'head-script' => ['title' => __('Adds a script to your pages'), 'text' => __('For example a chat window.')],

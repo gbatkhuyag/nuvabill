@@ -12,6 +12,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Domain;
 use App\Models\Product;
 use App\Models\TldPrice;
+use App\Provisioning\OrderFields;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -39,7 +40,7 @@ class CartController extends Controller
         ]);
     }
 
-    public function store(Request $request, Cart $cart, AvailabilityChecker $checker, ResourceOptions $catalog): RedirectResponse
+    public function store(Request $request, Cart $cart, AvailabilityChecker $checker, ResourceOptions $catalog, OrderFields $orderFields): RedirectResponse
     {
         $request->merge(['domain' => DomainName::normalize((string) $request->input('domain')) ?? (filled($request->input('domain')) ? '!' : null)]);
 
@@ -52,6 +53,9 @@ class CartController extends Controller
             'addons.*' => ['integer'],
             // kind => steps; ResourceOptions::validateForOrder() checks the kinds and ranges.
             'resources' => ['sometimes', 'array'],
+            // The server module's order form fields; OrderFields::validate() checks each one.
+            OrderFields::PLAIN => ['sometimes', 'array', 'max:'.OrderFields::MAX_FIELDS],
+            OrderFields::SECRET => ['sometimes', 'array', 'max:'.OrderFields::MAX_FIELDS],
         ], ['domain.not_in' => __('Enter a domain like example.com.')]);
 
         $product = Product::query()->with('prices')->findOrFail($data['product_id']);
@@ -76,13 +80,14 @@ class CartController extends Controller
         }
 
         $resources = $catalog->validateForOrder($product, $cycle, $this->currency(), (array) ($data['resources'] ?? []));
+        $fields = $orderFields->validate($product, $data);
         $domain = $product->requires_domain ? $data['domain'] : null;
 
         if ($domain !== null && $request->boolean('register_domain')) {
             $this->addRegistration($cart, $checker, $domain, 1);
         }
 
-        $cart->addProduct($product, $cycle, $domain, array_map('intval', $data['addons'] ?? []), $resources);
+        $cart->addProduct($product, $cycle, $domain, array_map('intval', $data['addons'] ?? []), $resources, $fields);
 
         return redirect()->route('cart.show')->with('status', __(':product added to your cart.', ['product' => $product->name]));
     }

@@ -9,6 +9,7 @@ use App\Enums\AutoSetup;
 use App\Enums\BillingCycle;
 use App\Enums\ProductType;
 use App\Extensions\ExtensionManager;
+use App\Extensions\Servers\ModuleConfig;
 use App\Extensions\Servers\Panel\PanelSection;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ProductRequest;
@@ -142,6 +143,10 @@ class ProductController extends Controller
             $data['module_config'] += Arr::only($saved->module_config ?? [], self::KEPT_MODULE_CONFIG);
         }
 
+        if ($data['server_module'] !== null) {
+            $data['module_config'] = $this->protectSecrets($data['server_module'], $data['module_config'], $saved instanceof Product && $saved->server_module === $data['server_module'] ? ($saved->module_config ?? []) : []);
+        }
+
         $data['server_id'] = $data['server_module'] ? ($data['server_id'] ?? null) : null;
         $data['sort_order'] = $data['sort_order'] ?? 0;
         // Plan changes only work between products on the same kind of server.
@@ -164,6 +169,40 @@ class ProductController extends Controller
         $data['panel_sections'] = $this->panelSections($request, $data);
 
         return $data;
+    }
+
+    /**
+     * Settings the module marks secret (and passwords) are stored encrypted. The form never shows
+     * them, so one left empty keeps the saved value.
+     *
+     * @param  array<string, mixed>  $config  The posted settings.
+     * @param  array<string, mixed>  $saved  The product's saved settings for the same module.
+     * @return array<string, mixed>
+     */
+    private function protectSecrets(string $slug, array $config, array $saved): array
+    {
+        try {
+            $fields = app(ExtensionManager::class)->serverModule($slug)->productFields();
+        } catch (Throwable) {
+            return $config;
+        }
+
+        foreach ($fields as $key => $field) {
+            if (! is_array($field) || ! ModuleConfig::isSecret($field)) {
+                continue;
+            }
+
+            $value = $config[$key] ?? null;
+
+            if (is_string($value) && $value !== '') {
+                $config[$key] = ModuleConfig::encrypt($value);
+            } elseif (isset($saved[$key]) && $saved[$key] !== '') {
+                // Saved before 0.7.0 in plain text: encrypted now.
+                $config[$key] = ModuleConfig::isEncrypted($saved[$key]) ? $saved[$key] : ModuleConfig::encrypt((string) $saved[$key]);
+            }
+        }
+
+        return $config;
     }
 
     /**

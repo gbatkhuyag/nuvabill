@@ -90,6 +90,8 @@
 
             @include('admin.services.partials.client-access')
 
+            @include('admin.services.partials.module-staff')
+
             @include('admin.services.partials.resources')
 
             <section class="card" style="display:grid;gap:.8rem">

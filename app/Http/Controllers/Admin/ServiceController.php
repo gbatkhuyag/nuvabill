@@ -11,6 +11,7 @@ use App\Models\Product;
 use App\Models\Server;
 use App\Models\Service;
 use App\Models\ServiceResourceOption;
+use App\Provisioning\OrderFields;
 use App\Provisioning\Provisioner;
 use App\Support\Activity;
 use App\Support\Money;
@@ -59,6 +60,10 @@ class ServiceController extends Controller
                 })->all() : [],
             ],
             'servers' => Server::query()->where('module', $service->product->server_module)->orderBy('name')->pluck('name', 'id')->all(),
+            // The server module's own card (HasStaffPanel), for staff with its admin permission.
+            'staffCard' => ServiceStaffController::card($service, auth('admin')->user()),
+            // What the client entered in the module's order form fields; secret ones stay hidden.
+            'orderDetails' => app(OrderFields::class)->forStaff($service),
         ]);
     }
 

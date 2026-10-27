@@ -5,8 +5,10 @@ namespace App\View\Composers;
 use App\Enums\OrderStatus;
 use App\Enums\TicketStatus;
 use App\Extensions\ExtensionOverview;
+use App\Extensions\Servers\ModuleHooks;
 use App\Marketplace\LicenseChecker;
 use App\Marketplace\MarketplaceClient;
+use App\Models\Admin;
 use App\Models\HealthRun;
 use App\Models\MarketplaceInstall;
 use App\Models\Order;
@@ -42,6 +44,8 @@ class AdminLayoutComposer
             // after an update the table may not exist for a minute, until its database change runs.
             'extensionsNeedSettings' => (int) rescue(fn () => $this->extensions->needsSettingsCount(), 0),
             'addonPages' => (array) rescue(fn () => $this->extensions->addonPages(), []),
+            // Admin pages of server modules this staff member may open.
+            'serverModulePages' => (array) rescue(fn () => ($admin = auth('admin')->user()) instanceof Admin ? app(ModuleHooks::class)->menuPages($admin) : [], []),
             'healthUrgent' => (int) rescue(fn () => HealthRun::query()->latest('id')->value('urgent_count'), 0, report: false),
             'licenseWarnings' => $installs->toBase()->filter(fn (MarketplaceInstall $install): bool => $install->hasInvalidLicense())
                 ->map(fn (MarketplaceInstall $install): array => ['slug' => $install->slug, 'name' => $install->name, 'message' => (string) $install->license_message])

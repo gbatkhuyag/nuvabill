@@ -2,6 +2,7 @@
 
 use App\Enums\PowerAction;
 use App\Extensions\ExtensionManager;
+use App\Extensions\Servers\ModuleHooks;
 use App\Http\Controllers\Admin\ActivityController;
 use App\Http\Controllers\Admin\AffiliateController;
 use App\Http\Controllers\Admin\AiSettingsController;
@@ -56,6 +57,7 @@ use App\Http\Controllers\Admin\ServiceAccessController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\ServiceMachineController;
 use App\Http\Controllers\Admin\ServiceResourceController;
+use App\Http\Controllers\Admin\ServiceStaffController;
 use App\Http\Controllers\Admin\SettingsController;
 use App\Http\Controllers\Admin\SocialLoginController;
 use App\Http\Controllers\Admin\StaffController;
@@ -176,7 +178,19 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
         Route::post('services/{service}/machine', [ServiceMachineController::class, 'assign'])->middleware('throttle:20,1')->name('services.machine.assign');
         Route::post('services/{service}/machine/ready', [ServiceMachineController::class, 'ready'])->middleware('throttle:10,1')->name('services.machine.ready');
         Route::post('services/{service}/machine/replace', [ServiceMachineController::class, 'replace'])->middleware(['admin.can:hardware.manage', 'throttle:10,1'])->name('services.machine.replace');
+
+        // A server module's own staff actions on the service page. The controller checks the
+        // module's admin permission and that the module offers the action for this service.
+        Route::post('services/{service}/staff/{action}', [ServiceStaffController::class, 'run'])
+            ->where('action', '[a-z0-9][a-z0-9-]{0,39}')
+            ->middleware(['admin.two-factor-on', 'throttle:10,1'])
+            ->name('services.staff-action');
     });
+
+    // Admin pages of server modules, each behind the module's own admin permission and two-factor
+    // login on the staff member's account.
+    Route::middleware(['admin.two-factor-on', 'throttle:30,1'])->prefix('server-modules')->name('server-modules.')
+        ->group(fn () => rescue(fn () => app(ModuleHooks::class)->registerAdminRoutes(), report: false));
 
     // Dedicated servers in your own rack. Seeing them and switching their power is one permission;
     // adding, editing and their BMC logins is another.

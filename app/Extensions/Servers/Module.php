@@ -60,10 +60,22 @@ abstract class Module implements ServerModule
     }
 
     /**
-     * A product setting for the service's product, for example the package name.
+     * A product setting for the service's product, for example the package name. A setting marked
+     * "secret" in productFields() is stored encrypted and comes back plain (see ModuleConfig).
      */
     protected function productSetting(Service $service, string $key, mixed $default = null): mixed
     {
-        return $service->product->module_config[$key] ?? $default;
+        return ModuleConfig::read($service->product->module_config[$key] ?? null) ?? $default;
+    }
+
+    /**
+     * What the client entered in one of this module's order form fields (HasOrderFields), for
+     * example in create(). SSH keys come one per line. Since Nuvabill 0.7.0.
+     */
+    protected function orderField(Service $service, string $key, ?string $default = null): ?string
+    {
+        $value = ((array) $service->order_fields)[$key] ?? null;
+
+        return is_string($value) ? $value : $default;
     }
 }

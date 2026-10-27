@@ -75,6 +75,7 @@ final class ConsoleTickets
             'source' => $source,
             'url' => $session->url,
             'credentials' => array_filter(Arr::only($session->credentials, self::CREDENTIALS), 'is_string'),
+            'protocol' => in_array($session->protocol, ConsoleSession::PROTOCOLS, true) ? $session->protocol : ConsoleSession::VNC,
             'expires' => $now + $ttl,
             'module_expires' => $moduleExpiry,
         ];
@@ -90,16 +91,31 @@ final class ConsoleTickets
      */
     public function peek(string $handle, int $clientId, int $serviceId, string $sessionId): ?string
     {
+        return $this->look($handle, $clientId, $serviceId, $sessionId)['source'] ?? null;
+    }
+
+    /**
+     * The connect source and kind of console ("vnc" or "terminal") of a ticket that is still valid
+     * for this client, service and session, without using it up, or null.
+     *
+     * @return array{source: string, protocol: string}|null
+     */
+    public function look(string $handle, int $clientId, int $serviceId, string $sessionId): ?array
+    {
         $ticket = $this->read($handle);
 
-        return $ticket !== null && $this->belongsTo($ticket, $clientId, $serviceId, $sessionId) ? $ticket['source'] : null;
+        if ($ticket === null || ! $this->belongsTo($ticket, $clientId, $serviceId, $sessionId)) {
+            return null;
+        }
+
+        return ['source' => $ticket['source'], 'protocol' => self::protocolOf($ticket)];
     }
 
     /**
      * Use up a ticket that is valid for this client, service and session, once. A ticket asked for
      * by another client, service or session stays for its owner.
      *
-     * @return array{url: string, credentials: array<string, string>, expires_at: string}|null
+     * @return array{url: string, credentials: array<string, string>, expires_at: string, protocol: string}|null
      */
     public function redeem(string $handle, int $clientId, int $serviceId, string $sessionId): ?array
     {
@@ -127,6 +143,7 @@ final class ConsoleTickets
                 'url' => $ticket['url'],
                 'credentials' => $ticket['credentials'],
                 'expires_at' => Date::createFromTimestamp($ticket['module_expires'] ?? $ticket['expires'])->toIso8601ZuluString(),
+                'protocol' => self::protocolOf($ticket),
             ];
         } finally {
             $lock->release();
@@ -179,6 +196,16 @@ final class ConsoleTickets
             && $ticket['service'] === $serviceId
             && hash_equals($ticket['session'], hash('sha256', $sessionId))
             && $ticket['expires'] > Date::now()->getTimestamp();
+    }
+
+    /**
+     * The kind of console of a ticket. Tickets made before 0.7.0 were always VNC.
+     *
+     * @param  array<string, mixed>  $ticket
+     */
+    private static function protocolOf(array $ticket): string
+    {
+        return in_array($ticket['protocol'] ?? null, ConsoleSession::PROTOCOLS, true) ? $ticket['protocol'] : ConsoleSession::VNC;
     }
 
     private static function key(string $handle): string

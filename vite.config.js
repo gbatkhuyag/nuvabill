@@ -11,6 +11,8 @@ export default defineConfig({
                 'resources/js/app.js',
                 // The console page only: noVNC stays out of app.js.
                 'resources/js/console.js',
+                // The text terminal console page only: xterm.js stays out of app.js too.
+                'resources/js/terminal.js',
                 'themes/nova/assets/theme.css',
             ],
             refresh: ['resources/views/**', 'themes/**/views/**', 'extensions/**/*.php'],

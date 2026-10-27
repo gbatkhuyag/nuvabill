@@ -67,6 +67,47 @@ class ConsoleTest extends TestCase
         }
     }
 
+    public function test_a_terminal_console_gets_the_xterm_page_with_the_same_ticket_rules(): void
+    {
+        PanelFakeModule::$behaviour = ['console_protocol' => ConsoleSession::TERMINAL];
+        $service = $this->panelService();
+        $ticket = $this->openConsole($service);
+
+        $page = $this->inSession()->get(route('client.services.console', [$service, 'ticket' => $ticket]))
+            ->assertOk()
+            ->assertSee('data-terminal', false)
+            ->assertDontSee('data-console ', false)
+            ->assertSee('xterm.js')
+            ->assertDontSee('Ctrl+Alt+Del')
+            ->assertDontSee(PanelFakeModule::CONSOLE_PASSWORD);
+        $this->assertMatchesRegularExpression('#/build/assets/terminal-[^"]+\.js#', $page->getContent());
+        $this->assertDoesNotMatchRegularExpression('#/build/assets/console-[^"]+\.js#', $page->getContent());
+        $this->assertStringContainsString("connect-src 'self' wss://console.example.test:4083;", (string) $page->headers->get('Content-Security-Policy'));
+
+        $this->inSession()->postJson(route('client.services.console.redeem', $service), ['ticket' => $ticket])
+            ->assertOk()
+            ->assertJsonPath('protocol', 'terminal')
+            ->assertJsonPath('credentials.password', PanelFakeModule::CONSOLE_PASSWORD);
+        $this->inSession()->postJson(route('client.services.console.redeem', $service), ['ticket' => $ticket])->assertStatus(410);
+
+        // A VNC console stays on noVNC.
+        PanelFakeModule::$behaviour = [];
+        $vnc = $this->openConsole($service);
+        $this->inSession()->get(route('client.services.console', [$service, 'ticket' => $vnc]))->assertOk()->assertSee('data-console', false)->assertDontSee('data-terminal', false);
+        $this->inSession()->postJson(route('client.services.console.redeem', $service), ['ticket' => $vnc])->assertJsonPath('protocol', 'vnc');
+    }
+
+    public function test_a_console_kind_the_page_cannot_show_is_refused(): void
+    {
+        PanelFakeModule::$behaviour = ['console_protocol' => 'spice'];
+        $service = $this->panelService();
+
+        $this->inSession()->postJson(route('client.services.console.open', $service))
+            ->assertStatus(503)
+            ->assertJsonPath('message', 'The console is not available for this server right now.');
+        $this->assertSame([], $this->storedTickets());
+    }
+
     public function test_the_ticket_gives_the_address_and_password_once(): void
     {
         $service = $this->panelService();

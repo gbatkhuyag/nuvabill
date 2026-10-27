@@ -491,7 +491,10 @@ A custom view is shown inside its tab with the `panelSection` Alpine component: 
 `new ConsoleSession(url: 'wss://console.example.com/path', credentials: ['password' => $password], expiresAt: $time)`.
 
 - The address must use `wss://` with a DNS name or an IPv4 address: no IPv6 address and no user name in it. Without a
-  port it uses 443. Only VNC is supported.
+  port it uses 443.
+- `protocol` is `'vnc'` (the default: the server's screen with the bundled noVNC) or, since 0.7.0, `'terminal'`
+  (a text terminal with the bundled xterm.js 5.5.0). Any other value is refused. See **Terminal console** below for
+  what a terminal speaks.
 - Throw `PanelException` when the console is not available.
 - Core keeps the session as a single-use ticket for at most 60 seconds and opens the core console page; only that page
   may connect to the address. Never add console addresses to your extension's Content-Security-Policy list: that list
@@ -546,3 +549,136 @@ and never stores or logs the link. If your panel ties the session to an IP addre
 | `QueuesPackageChanges` | `changePackage()` is slow, for example a cloud server resize. Core runs it in a background job, never inside a payment. |
 
 `HasClientPanel`, `HasPanelState`, `WaitsForPayment` and `KeepsCreateServer` work as before.
+
+## For module makers: staff pages, schedules, order fields, long settings and terminals
+
+Since Nuvabill 0.7.0 a server module can also have pages for staff, run on a schedule, ask clients for details when
+they order, keep long product settings and offer a text terminal. Each hook needs its marketplace permission in
+`extension.json`, which staff see before they install the module; without it core ignores the contract. The test
+fixture `tests/Fixtures/extensions/servers/hookfake` uses all of them.
+
+| Hook | Contract | Permission in `extension.json` |
+|---|---|---|
+| Admin pages and dashboard items | `HasAdminPages` | `admin-page` |
+| A card on the admin service page | `HasStaffPanel` | `admin-page` |
+| Scheduled work | `RunsOnSchedule` | `schedule` |
+| Fields on the order form | `HasOrderFields` | `order-fields` |
+| Long and secret product settings | `productFields()` (no contract) | none |
+| Terminal console | `HasConsole` with `protocol: 'terminal'` | `client-page` |
+
+### The module's admin permission: `HasAdminPermission`
+
+`HasAdminPages` and `HasStaffPanel` both extend it:
+
+| Method | What it does |
+|---|---|
+| `adminPermission(): string` | The permission key: your slug, a dot and a short name of lowercase letters, digits or dashes, for example `proxmox-ve-servers.manage`. Any other key, or a slug that is one of core's permission groups (`billing`, `services`, `hardware` and so on), is refused and the module gets no staff pages. |
+| `adminPermissionLabel(): string` | What it allows, already translated. **Settings → Roles** lists it under the module's name. The owner role always has it. |
+
+Staff need this permission **and two-factor login on their own account** for the module's pages and actions, also
+when your company does not require two-factor login for everyone. Without it they are sent to their profile to turn
+it on; the staff card then shows its facts but no buttons.
+
+### Admin pages: `HasAdminPages`
+
+| Method | What it does |
+|---|---|
+| `adminRoutes(): void` | Register pages with short names, for example `Route::get('/', …)->name('index')` and `Route::post('nodes/{node}/maintenance', …)->name('maintenance')`. They are served under `/admin/server-modules/{slug}/` with the route names `admin.server-modules.{slug}.{name}`; build them with `ModuleAdmin::routeName($slug, $name)` (`App\Extensions\Servers\Staff`). A page named `index` is listed in the admin menu under **Setup** with the module's name. |
+| `attentionItems(Admin $admin): array` | Items for the dashboard's **Needs attention** list (and the phone app's Today screen), in the same shape as `App\Support\AttentionItems`: `key` (starts with `ext.`), `tone` (`warn` or `crit`), `text`, `url` (on this site) and `action`. Core asks only for staff with your permission, keeps at most 5, checks each one and leaves out bad ones. It runs on every dashboard view: read saved state, never the server. |
+
+Core puts every page behind the staff sign-in, your admin permission, two-factor login, the form token (CSRF) and a
+limit of 30 requests a minute. In the public demo, every page that changes something answers 403. Use Blade views from
+your extension's `views` folder (`ext-{slug}::name`) with `<x-layouts.admin>` and core's classes, escape everything
+with `{{ }}`, check every ID you get against your own data again, and log what staff change with
+`App\Support\Activity::log()` and the staff member's name. A module that fails while registering its pages is
+reported (only the class of the error) and left out.
+
+### A card on the admin service page: `HasStaffPanel`
+
+| Method | What it does |
+|---|---|
+| `staffPanel(Service $service): StaffPanel` | The card: `new StaffPanel(title: …, rows: [['label' => …, 'value' => …]], actions: [new StaffAction(…)], notice: …)`. Rows are plain text (shown escaped; at most 30). Never put a password, key or token in them. Keep it fast. |
+| `runStaffAction(Service $service, string $action, array $input, StaffContext $staff): ModuleResult` | Run one action. `$input` holds only that action's own fields, checked. `StaffContext` has `adminId`, `adminName` and `ipAddress`: write the name into your own logs as the operator. The result's message is shown to staff. |
+
+`new StaffAction(key: 'migrate', label: __('Move to another node'), fields: [...], confirm: __('Move this guest?'),
+danger: false)`: the key is 1 to 40 lowercase letters, digits or dashes, and at most 10 actions show. Fields have
+`label`, `type` (`text`, `number`, `select` or `checkbox`), and optionally `help`, `required`, `options` (for a select,
+`value => label`) and `max` (for text, at most 190). Core checks the input with these rules; a select only takes one
+of its options, so offer only what is allowed for this service.
+
+Only staff with **Manage services** and your admin permission see the card. Before an action runs, core checks
+two-factor login, asks `staffPanel()` again and runs the action only when the card offers it for this service now,
+checks the fields, takes the service lock (when other work holds it, nothing runs), limits it to 10 a minute, and logs
+`service.staff_action` (or `service.staff_action_failed`) with the action, module and staff member, never the values.
+An exception becomes a plain message for staff and is reported by class only. The route is
+`POST /admin/services/{service}/staff/{action}` (`admin.services.staff-action`), locked in the demo.
+
+### Scheduled work: `RunsOnSchedule`
+
+`scheduledTasks(): array` returns `ScheduledTask` objects (`App\Extensions\Servers`):
+
+```php
+new ScheduledTask(name: 'traffic', callback: fn () => $this->checkTraffic(), frequency: 'hourly', lockMinutes: 30)
+```
+
+- `name`: 1 to 40 lowercase letters, digits or dashes, once per module. The scheduler names it
+  `server-module:{slug}:{name}`.
+- `frequency`: `every-five-minutes`, `every-ten-minutes`, `every-fifteen-minutes`, `every-thirty-minutes`, `hourly`,
+  `every-six-hours`, `daily` or `weekly`. Every five minutes is the most often a module may run.
+- `lockMinutes` (1 to 1440): a run never starts while the last one still runs (`withoutOverlapping`); the lock ends
+  after this long if a run dies. With a cache that can hold locks (files, the database, Redis), it also runs on only
+  one server (`onOneServer`).
+
+Core's own cron line (`* * * * * php artisan schedule:run`) runs them: no extra cron lines. A bad task is left out and
+logged once a day. A failure is reported as `Scheduled task {slug}:{name}: {class}`, never with its message. Keep a run
+shorter than its frequency, do work per service under `Provisioner::lockFor($service)`, and work out again inside the
+lock what is due. Scheduled work does not run on the public demo.
+
+### Fields on the order form: `HasOrderFields`
+
+`orderFields(Product $product): array` returns the fields for one product, keyed by a name of a lowercase letter, then
+lowercase letters, digits or underscores (at most 20 fields). It must not call the server: the store shows them on
+every visit.
+
+| Key | Meaning |
+|---|---|
+| `label` | Already translated. |
+| `type` | `text` (one line, at most 190 characters), `textarea` (up to `max`, default 4000, at most 16384), `select` (one of `options`, `value => label`) or `ssh-key` (OpenSSH public keys, one per line, at most 10: `ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256/384/521` and the security key types; core checks that each key's body names its type). |
+| `required`, `help`, `max` | As on other forms. |
+| `rules` | More Laravel rules, for example `['regex:/^[a-z0-9.-]+$/']`. Core's rules always run first, so yours can only make the check stricter. |
+| `secret` | The value is never shown again: not to the client, not to staff, and never in a log or a form after an error. |
+
+Core shows the fields on the product's order page (theme view `store/partials/order-fields`) and checks them when the
+product is added to the cart, and on one-page orders before a new account is made. Plain fields post as
+`fields[name]`, secret ones as `secret_fields[name]`. The values ride in the cart encrypted and are kept on the service
+in `order_fields`, encrypted with the app key and never in JSON. Read them in `create()` with
+`$this->orderField($service, 'hostname')` from `App\Extensions\Servers\Module` (SSH keys come one per line). Staff see
+the plain values under **Order details** on the service page; secret ones show as hidden. A theme or order form that
+replaces the product page shows the fields with `@include('theme::store.partials.order-fields')` and the
+`orderFields` the store gives the page; a one-page order form posts the same names to `order.store`.
+
+### Long and secret product settings
+
+In `productFields()`, a `textarea` may set `max` up to 16384 characters, for example a cloud-init script:
+`'user_data' => ['label' => __('User data'), 'type' => 'textarea', 'max' => 16384]`. Core checks each field's own
+limit; every other field, and a textarea without `max`, stays at 190 characters, and all settings of a product together
+at most 64 KB. Mark a field `'secret' => true` (a `password` field counts as secret too) to store it encrypted with the
+app key: the product form never shows it again, and left empty it keeps the saved value. Read settings with
+`$this->productSetting($service, 'user_data')`, which gives secret ones in plain text; a module that reads
+`module_config` directly gets the encrypted value (`App\Extensions\Servers\ModuleConfig::read()` decrypts it).
+
+### Terminal console
+
+Return `new ConsoleSession(url: 'wss://console.example.com/term?token=…', credentials: ['username' => …, 'password' =>
+…], expiresAt: $time, protocol: ConsoleSession::TERMINAL)` from `consoleSession()`. The security model is the same as
+for VNC: a single-use ticket for at most 60 seconds, bound to the client, the service and the browser session; the page
+holds no address or password and alone may connect to the address. The browser opens the WebSocket with the
+subprotocol `nuvabill.terminal.v1` (a server may answer without one) and speaks:
+
+- Server to browser: binary or text frames are terminal output in UTF-8.
+- Browser to server: binary frames are what the client types, in UTF-8. Text frames are JSON control messages: first
+  `{"type":"auth","username":…,"password":…}` when the session has credentials, then
+  `{"type":"resize","cols":80,"rows":24}` at the start and whenever the window changes (at most 500 × 200).
+
+Your console proxy must check the token itself (single use, short-lived, bound to the service), check the `Origin`
+header against your site, and limit frame sizes and idle time.

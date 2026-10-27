@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\ProductAddon;
 use App\Models\ProductGroup;
 use App\Models\TldPrice;
+use App\Provisioning\OrderFields;
 use App\Seo\StorePages;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\View\View;
@@ -66,6 +67,8 @@ class StoreController extends Controller
             // Read from the database only: a store page never asks a server module.
             'resources' => app(ResourceOptions::class)->forStore($product, $this->currency()),
             'sellsDomains' => TldPrice::query()->enabled($this->currency())->exists(),
+            // Fields the server module asks for (HasOrderFields): declared by the module, no server call.
+            'orderFields' => app(OrderFields::class)->forStore($product),
         ]);
     }
 

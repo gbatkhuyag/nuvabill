@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Extensions\Servers\ModuleHooks;
 use Database\Factories\RoleFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -90,10 +91,24 @@ class Role extends Model
     }
 
     /**
+     * Every permission for the role editor: core's groups, then one group per server module with
+     * staff pages (its admin permission, since Nuvabill 0.7.0).
+     *
+     * @return array<string, array<string, string>>
+     */
+    public static function permissionGroups(): array
+    {
+        $modules = (array) rescue(fn (): array => app(ModuleHooks::class)->permissionGroups(), []);
+
+        // A module named like a core group never replaces it.
+        return self::PERMISSIONS + array_diff_key($modules, self::PERMISSIONS);
+    }
+
+    /**
      * @return list<string>
      */
     public static function allPermissionKeys(): array
     {
-        return array_merge(...array_map('array_keys', array_values(self::PERMISSIONS)));
+        return array_values(array_unique(array_merge(...array_map('array_keys', array_values(self::permissionGroups())))));
     }
 }

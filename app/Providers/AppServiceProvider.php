@@ -15,6 +15,7 @@ use App\Events\ServiceTerminated;
 use App\Events\TicketOpened;
 use App\Events\TicketReplied;
 use App\Extensions\ExtensionManager;
+use App\Extensions\Servers\ModuleHooks;
 use App\Jobs\TranslateTicketReply;
 use App\Models\ActivityLog;
 use App\Models\Admin;
@@ -139,6 +140,8 @@ class AppServiceProvider extends ServiceProvider
         if (Installation::isInstalled()) {
             $this->applySettingsToConfig();
             $this->app->make(ExtensionManager::class)->bootAddons();
+            // Dashboard items of server modules with admin pages, for staff with their permission.
+            rescue(fn () => $this->app->make(ModuleHooks::class)->registerAttentionItems($this->app->make(AttentionItems::class)));
             // A problem with an affiliate commission must never stop a payment.
             Event::listen(InvoicePaid::class, fn (InvoicePaid $event) => rescue(fn () => $this->app->make(Affiliates::class)->onInvoicePaid($event->invoice)));
             $this->listenForAutomations();

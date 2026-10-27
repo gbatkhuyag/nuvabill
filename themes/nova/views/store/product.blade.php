@@ -41,6 +41,8 @@
 
             @include('theme::store.partials.resources', ['resources' => $resources ?? []])
 
+            @include('theme::store.partials.order-fields', ['orderFields' => $orderFields ?? []])
+
             @if ($product->requires_domain)
                 <x-input name="domain" :label="__('Your domain name')" placeholder="example.com" :help="__('The website address this hosting is for. You can use a domain you already own.')" required autocomplete="off" />
                 @if ($sellsDomains)

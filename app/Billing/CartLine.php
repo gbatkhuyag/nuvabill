@@ -20,6 +20,7 @@ final readonly class CartLine
      * @param  list<array{id: int, name: string, price: int, setup_fee: int}>  $addons  Product add-ons chosen with the product, priced for its cycle.
      * @param  int  $discount  Coupon discount on this line, in minor units. It only ever comes off the product price.
      * @param  list<array{kind: string, option_id: int, label: string, steps: int, step_size: int, unit: string, units: int, text: string, price: int, setup_fee: int}>  $resources  Extras chosen with the product (see ResourceOptions::cartLines()), priced for its cycle: price and setup_fee are for all the steps together.
+     * @param  array<string, string>  $orderFields  What the client entered in the server module's order form fields, checked (see App\Provisioning\OrderFields). Some may be secret: never show them.
      */
     public function __construct(
         public int $index,
@@ -36,6 +37,7 @@ final readonly class CartLine
         public array $addons = [],
         public int $discount = 0,
         public array $resources = [],
+        public array $orderFields = [],
     ) {}
 
     public static function forDomain(int $index, string $domain, string $action, int $years, TldPrice $tldPrice, ?string $eppCode = null): self
@@ -104,7 +106,7 @@ final readonly class CartLine
     {
         return new self(
             $this->index, $this->product, $this->cycle, $this->domain, $this->price, $this->setupFee, $this->kind,
-            $this->domainAction, $this->years, $this->eppCode, $this->tldPrice, $this->addons, max(0, $discount), $this->resources,
+            $this->domainAction, $this->years, $this->eppCode, $this->tldPrice, $this->addons, max(0, $discount), $this->resources, $this->orderFields,
         );
     }
 

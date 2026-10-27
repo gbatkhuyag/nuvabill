@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Client;
 
 use App\Enums\ServiceStatus;
 use App\Extensions\Servers\Panel\ClientContext;
+use App\Extensions\Servers\Panel\ConsoleSession;
 use App\Http\Controllers\Controller;
 use App\Http\Middleware\SecurityHeaders;
 use App\Models\Service;
@@ -20,9 +21,10 @@ use Illuminate\Http\Response;
  * the connection details. The console page alone may connect to the console host.
  *
  * The console page view (theme::client.services.console) gets: service, ticket (the handle, or
- * null when it has expired), expired (bool), redeemUrl (POST {ticket} for the details), openUrl
- * (POST to start the console again) and backUrl (the service page's console tab). It never gets
- * the console address or password.
+ * null when it has expired), expired (bool), protocol ("vnc" for the screen with noVNC, or
+ * "terminal" for a text terminal with xterm.js, since 0.7.0), redeemUrl (POST {ticket} for the
+ * details), openUrl (POST to start the console again) and backUrl (the service page's console
+ * tab). It never gets the console address or password.
  */
 class ServiceConsoleController extends Controller
 {
@@ -75,9 +77,10 @@ class ServiceConsoleController extends Controller
 
         $handle = $request->query('ticket');
         $handle = is_string($handle) ? $handle : '';
-        $source = $handle !== '' && $service->status === ServiceStatus::Active
-            ? $tickets->peek($handle, (int) $request->user('web')->id, (int) $service->id, (string) $request->session()->getId())
+        $ticket = $handle !== '' && $service->status === ServiceStatus::Active
+            ? $tickets->look($handle, (int) $request->user('web')->id, (int) $service->id, (string) $request->session()->getId())
             : null;
+        $source = $ticket['source'] ?? null;
 
         if ($source !== null) {
             $request->attributes->set(SecurityHeaders::PAGE_SOURCES, ['connect-src' => [$source]]);
@@ -88,6 +91,7 @@ class ServiceConsoleController extends Controller
                 'service' => $service->loadMissing('product'),
                 'ticket' => $source !== null ? $handle : null,
                 'expired' => $source === null,
+                'protocol' => $ticket['protocol'] ?? ConsoleSession::VNC,
                 'redeemUrl' => route('client.services.console.redeem', $service),
                 'openUrl' => route('client.services.console.open', $service),
                 'backUrl' => route('client.services.show', $service).'#panel-console',
@@ -97,7 +101,7 @@ class ServiceConsoleController extends Controller
 
     /**
      * Hand out the connection details of a ticket once, as JSON: {ok, url, credentials,
-     * expires_at}. A second try, another session or an old ticket gets 410.
+     * expires_at, protocol}. A second try, another session or an old ticket gets 410.
      */
     public function redeem(Request $request, Service $service, ConsoleTickets $tickets): JsonResponse
     {
@@ -117,6 +121,7 @@ class ServiceConsoleController extends Controller
             'url' => $details['url'],
             'credentials' => (object) $details['credentials'],
             'expires_at' => $details['expires_at'],
+            'protocol' => $details['protocol'],
         ])->withHeaders(self::PRIVATE_HEADERS);
     }
 

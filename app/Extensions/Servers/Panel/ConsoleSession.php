@@ -8,14 +8,35 @@ use DateTimeImmutable;
  * A browser console for one service, from HasConsole::consoleSession(). Core keeps it in a
  * single-use ticket and gives the URL and credentials to the console page by one POST, so they
  * never appear in HTML. Only connectSource() goes into the page's Content-Security-Policy.
+ *
+ * Two kinds: "vnc", the server's screen with the bundled noVNC, and since Nuvabill 0.7.0
+ * "terminal", a text terminal with the bundled xterm.js. A terminal connects to the same kind of
+ * wss:// address and speaks this over the WebSocket (subprotocol "nuvabill.terminal.v1" is
+ * offered; a server may also answer without one):
+ *
+ * - Server to browser: binary or text frames are terminal output (UTF-8), shown as they come.
+ * - Browser to server: binary frames are what the client types (UTF-8). Text frames are JSON
+ *   control messages: first {"type":"auth","username":...,"password":...} when the session has
+ *   credentials, then {"type":"resize","cols":80,"rows":24} whenever the window changes.
  */
 final readonly class ConsoleSession
 {
+    public const VNC = 'vnc';
+
+    public const TERMINAL = 'terminal';
+
+    /**
+     * The kinds of console the console page can show.
+     *
+     * @var list<string>
+     */
+    public const PROTOCOLS = [self::VNC, self::TERMINAL];
+
     /**
      * @param  string  $url  wss://host[:port]/path[?query]. The query may hold a token.
      * @param  array{password?: string, username?: string, target?: string}  $credentials
      * @param  DateTimeImmutable|null  $expiresAt  When the panel stops accepting it. Core keeps the ticket 60 seconds at most.
-     * @param  string  $protocol  Only "vnc" (noVNC) in this release.
+     * @param  string  $protocol  "vnc" (noVNC) or "terminal" (xterm.js, since Nuvabill 0.7.0).
      * @param  bool  $shared  Whether other viewers may stay connected.
      */
     public function __construct(

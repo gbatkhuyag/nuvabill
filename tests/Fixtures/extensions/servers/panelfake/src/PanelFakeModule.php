@@ -63,7 +63,8 @@ use RuntimeException;
  * - data: array<string, array<string, mixed>> read data per section, instead of the defaults.
  * - kinds: array<string, ResourceKind>. base: array<string, int|null>. live: array<string, int|null> for checkResources().
  * - state: the power state (default "running"). welcome: array{key, context}. plan_changes: bool or list of allowed product ids.
- * - sign_in_url, login_url: ?string. console_url: string. access: the checkClientAccess() rows.
+ * - sign_in_url, login_url: ?string. console_url: string. console_protocol: "vnc" (default) or
+ *   "terminal". access: the checkClientAccess() rows.
  */
 class PanelFakeModule extends Module implements ChecksClientAccess, ChoosesWelcomeEmail, FinishesSetupLater, HasConsole, HasPanelSections, HasPanelState, HasResourceOptions, LimitsPlanChanges, LinksExistingAccount, QueuesPackageChanges, SignsInWithContext, UsesMachineInventory
 {
@@ -272,6 +273,7 @@ class PanelFakeModule extends Module implements ChecksClientAccess, ChoosesWelco
             url: (string) (self::$behaviour['console_url'] ?? self::CONSOLE_URL),
             credentials: ['password' => self::CONSOLE_PASSWORD],
             expiresAt: new DateTimeImmutable('+5 minutes'),
+            protocol: (string) (self::$behaviour['console_protocol'] ?? ConsoleSession::VNC),
         );
     }
 

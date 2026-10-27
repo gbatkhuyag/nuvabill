@@ -23,6 +23,7 @@ use App\Models\Client;
 use App\Models\Domain;
 use App\Models\Product;
 use App\Models\TldPrice;
+use App\Provisioning\OrderFields;
 use App\Security\Captcha;
 use App\Support\Demo;
 use App\Support\Locales;
@@ -168,6 +169,10 @@ class QuickOrderController extends Controller
         $data = $this->validateOrder($request, forQuote: false);
         $client = $request->user('web');
 
+        // The module's order fields are checked before an account is made, so a mistake there
+        // never leaves a new account without its order.
+        app(OrderFields::class)->validate(Product::query()->findOrFail($data['product_id']), $data);
+
         if ($client === null) {
             $this->verifySignUpCaptcha($request);
             $client = $registrar->register($request->validate(ClientRegistrar::rules(confirmPassword: false)));
@@ -240,6 +245,9 @@ class QuickOrderController extends Controller
             'domain' => ['nullable', 'string', 'max:190', 'not_in:!'],
             'epp_code' => ['nullable', 'string', 'max:128'],
             'coupon' => ['nullable', 'string', 'max:40'],
+            // The server module's order form fields; OrderFields::validate() checks each one when ordering.
+            OrderFields::PLAIN => ['sometimes', 'array', 'max:'.OrderFields::MAX_FIELDS],
+            OrderFields::SECRET => ['sometimes', 'array', 'max:'.OrderFields::MAX_FIELDS],
         ];
 
         if (! $forQuote) {
@@ -283,7 +291,9 @@ class QuickOrderController extends Controller
         }
 
         $resources = app(ResourceOptions::class)->validateForOrder($product, $cycle, $currency, (array) ($data['resources'] ?? []));
-        $cart->addProduct($product, $cycle, $product->requires_domain ? $domain : null, array_map('intval', $data['addons'] ?? []), $resources);
+        // A price check never needs the fields; an order checks them.
+        $fields = $checkAvailability ? app(OrderFields::class)->validate($product, $data) : [];
+        $cart->addProduct($product, $cycle, $product->requires_domain ? $domain : null, array_map('intval', $data['addons'] ?? []), $resources, $fields);
 
         if ($domain !== null && in_array($action, [Domain::TYPE_REGISTER, Domain::TYPE_TRANSFER], true)) {
             $price = $this->tldPrice($domain, $currency);

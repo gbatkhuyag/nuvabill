@@ -141,6 +141,12 @@ free Hetzner modules.
   wait for other work on the service, and a payment during the nightly run is no longer suspended or cancelled.
 - **For developers:** new optional contracts for server modules: `HasPanelSections`, `HasConsole`,
   `SignsInWithContext`, `HasResourceOptions`, `UsesMachineInventory` and more. See docs/integrations/servers.md.
+- **For developers:** server modules can now have admin pages and dashboard items (`HasAdminPages`), a card with
+  staff actions on the service page (`HasStaffPanel`), each behind their own permission in Settings → Roles and
+  two-factor login; scheduled work run by your one cron job (`RunsOnSchedule`); fields such as an SSH key on the
+  order form (`HasOrderFields`, the new "order-fields" permission), kept encrypted with the service; product settings
+  up to 16 KB, and secret ones stored encrypted; and a text terminal console with xterm.js. See "For module makers" in
+  docs/integrations/servers.md.
 
 ## 0.6.13
 

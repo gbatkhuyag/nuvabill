@@ -16,6 +16,7 @@ use App\Models\ImportMapping;
 use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\PaymentMethod;
+use App\Models\Service;
 use App\Models\Ticket;
 use App\Models\TicketReply;
 use Illuminate\Support\Facades\DB;
@@ -256,6 +257,8 @@ class ClientPrivacy
             $client->tickets()->delete();
             $client->invoices()->where('status', InvoiceStatus::Draft)->each(fn (Invoice $invoice) => $invoice->delete());
             Order::query()->where('client_id', $client->id)->update(['ip_address' => null, 'notes' => null]);
+            // What the client typed in server module order fields (SSH keys, hostnames).
+            Service::query()->where('client_id', $client->id)->update(['order_fields' => null]);
             // Another run of an import from the old system would otherwise put the personal data back.
             ImportMapping::markClientErased($client->id);
 

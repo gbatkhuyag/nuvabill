@@ -1,0 +1,11 @@
+{
+    "slug": "hookfake",
+    "type": "server",
+    "name": "Hook fake",
+    "version": "1.0.0",
+    "namespace": "Tests\\Fixtures\\HookFake\\",
+    "class": "Tests\\Fixtures\\HookFake\\HookFakeModule",
+    "description": "A server module that only exists in the test suite. It uses every hook server modules get in 0.7.0: admin pages, a staff card, schedules, order fields, long product settings and a terminal console.",
+    "requires": ">=0.7.0",
+    "permissions": ["servers", "client-page", "admin-page", "schedule", "order-fields"]
+}

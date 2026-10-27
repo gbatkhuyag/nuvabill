@@ -6,6 +6,7 @@ use App\Enums\AutoSetup;
 use App\Enums\BillingCycle;
 use App\Enums\ProductType;
 use App\Extensions\ExtensionManager;
+use App\Extensions\Servers\ModuleConfig;
 use App\Models\Machine;
 use App\Models\Product;
 use App\Models\Service;
@@ -13,6 +14,7 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
+use Throwable;
 
 class ProductRequest extends FormRequest
 {
@@ -49,8 +51,9 @@ class ProductRequest extends FormRequest
             'taxable' => ['boolean'],
             'server_module' => ['nullable', Rule::in($modules)],
             'server_id' => ['nullable', 'exists:servers,id'],
-            'module_config' => ['nullable', 'array'],
-            'module_config.*' => ['nullable', 'string', 'max:190'],
+            'module_config' => ['nullable', 'array', 'max:200'],
+            // Each value is a string; its length is checked per field in after() (16 KB for a long textarea).
+            'module_config.*' => ['nullable', 'string', 'max:'.ModuleConfig::MAX_LONG],
             'auto_setup' => ['required', Rule::enum(AutoSetup::class)],
             'stock' => ['nullable', 'integer', 'min:0'],
             'sort_order' => ['nullable', 'integer', 'min:0', 'max:10000'],
@@ -92,8 +95,54 @@ class ProductRequest extends FormRequest
                 if ($this->changesModuleOfHeldMachines()) {
                     $validator->errors()->add('server_module', __('This product has servers in use, so its module cannot change.'));
                 }
+
+                $this->checkModuleConfigLengths($validator);
             },
         ];
+    }
+
+    /**
+     * Each product setting may be as long as its field allows: 190 characters, or up to 16 KB for
+     * a textarea the module gives a "max" (see ModuleConfig). Settings the module does not declare
+     * keep the 190 limit, and all of them together stay under 64 KB.
+     */
+    private function checkModuleConfigLengths(Validator $validator): void
+    {
+        $config = $this->input('module_config');
+        $slug = (string) $this->input('server_module');
+
+        if (! is_array($config) || $slug === '') {
+            return;
+        }
+
+        try {
+            $fields = app(ExtensionManager::class)->serverModule($slug)->productFields();
+        } catch (Throwable) {
+            $fields = [];
+        }
+
+        $total = 0;
+
+        foreach ($config as $key => $value) {
+            if (! is_string($value)) {
+                continue;
+            }
+
+            $field = is_array($fields[$key] ?? null) ? $fields[$key] : [];
+            $max = ModuleConfig::maxLength($field);
+            $total += mb_strlen($value);
+
+            if (mb_strlen($value) > $max) {
+                $validator->errors()->add('module_config.'.$key, __('The :field may have at most :max characters.', [
+                    'field' => is_string($field['label'] ?? null) ? $field['label'] : $key,
+                    'max' => $max,
+                ]));
+            }
+        }
+
+        if ($total > ModuleConfig::MAX_TOTAL) {
+            $validator->errors()->add('module_config', __('The server settings of this product are too long together. Keep them under :max characters.', ['max' => ModuleConfig::MAX_TOTAL]));
+        }
     }
 
     /**

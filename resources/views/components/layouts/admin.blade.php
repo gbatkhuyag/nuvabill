@@ -56,7 +56,8 @@
             </a>
         @endforeach
 
-        @if ($setup)
+        @php $serverModulePages ??= []; @endphp
+        @if ($setup || $serverModulePages)
             <div class="nav-label">{{ __('Setup') }}</div>
             @foreach ($setup as $item)
                 @php $current = request()->routeIs($item['match']) && ! request()->routeIs($item['except'] ?? []); @endphp
@@ -67,6 +68,10 @@
                 @foreach ($item['pages'] ?? [] as $pageName => $pageUrl)
                     <a class="nav-link nav-sub" href="{{ $pageUrl }}" @if (request()->url() === $pageUrl) aria-current="page" @endif>{{ $pageName }}</a>
                 @endforeach
+            @endforeach
+            {{-- Admin pages of server modules, for staff with each module's own permission. --}}
+            @foreach ($serverModulePages as $pageName => $pageUrl)
+                <a class="nav-link" href="{{ $pageUrl }}" @if (str_starts_with(request()->url().'/', $pageUrl.'/')) aria-current="page" @endif><x-icon name="server" />{{ $pageName }}</a>
             @endforeach
         @endif
 
