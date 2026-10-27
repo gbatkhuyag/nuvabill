@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Marketplace\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Marketplace\MediaController;
 use App\Marketplace\Store\ItemPublisher;
+use App\Marketplace\Store\ListingLimits;
 use App\Models\MarketplaceItem;
 use App\Support\Activity;
 use App\Support\Money;
@@ -35,7 +36,18 @@ class ItemController extends Controller
 
     public function edit(MarketplaceItem $item): View
     {
-        return view('admin.store.item-form', ['item' => $item->load('developer', 'latestVersion'), 'categories' => MarketplaceItem::CATEGORIES]);
+        return view('admin.store.item-form', ['item' => $item->load('developer', 'latestVersion'), 'categories' => self::categories($item)]);
+    }
+
+    /**
+     * The categories staff can pick, with the item's own category when it is not one of them
+     * (official items are published with their own), so saving the form keeps it.
+     *
+     * @return list<string>
+     */
+    private static function categories(MarketplaceItem $item): array
+    {
+        return array_values(array_unique(array_filter([...MarketplaceItem::CATEGORIES, (string) $item->category])));
     }
 
     public function update(Request $request, MarketplaceItem $item, ItemPublisher $publisher): RedirectResponse
@@ -43,10 +55,10 @@ class ItemController extends Controller
         $data = $request->validate([
             'status' => ['required', Rule::in([MarketplaceItem::STATUS_DRAFT, MarketplaceItem::STATUS_LIVE, MarketplaceItem::STATUS_HIDDEN])],
             'is_featured' => ['boolean'],
-            'category' => ['nullable', Rule::in(MarketplaceItem::CATEGORIES)],
-            'price' => ['required', 'numeric', 'min:0', 'max:10000'],
-            'update_price' => ['nullable', 'numeric', 'min:0', 'lte:price'],
-            'demo_url' => ['nullable', 'url', 'max:255'],
+            'category' => ['nullable', 'string', 'max:'.ListingLimits::CATEGORY, Rule::in(self::categories($item))],
+            'price' => ['required', 'numeric', 'min:0', 'max:'.ListingLimits::MAX_PRICE],
+            'update_price' => ['nullable', 'numeric', 'min:0', 'max:'.ListingLimits::MAX_PRICE, 'lte:price'],
+            'demo_url' => ['nullable', 'url', 'max:'.ListingLimits::URL, 'starts_with:https://'],
         ]);
 
         $item->update([

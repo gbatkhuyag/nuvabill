@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Marketplace;
 
 use App\Http\Controllers\Controller;
+use App\Marketplace\Store\ListingLimits;
 use App\Models\Developer;
 use App\Models\DeveloperEarning;
 use App\Models\MarketplaceMessage;
@@ -130,7 +131,7 @@ class DeveloperController extends Controller
     private function validated(Request $request): array
     {
         return $request->validate([
-            'name' => ['required', 'string', 'max:120'],
+            'name' => ['required', 'string', 'max:'.ListingLimits::NAME],
             'website' => ['nullable', 'url', 'max:190'],
             'bio' => ['nullable', 'string', 'max:500'],
             'payout_method' => ['nullable', Rule::in(array_keys(self::PAYOUT_METHODS))],
@@ -140,10 +141,11 @@ class DeveloperController extends Controller
 
     /**
      * A free slug for a new developer. Slugs kept for the official developer get a number too.
+     * A long name is cut so the slug, with its number, always fits the 64-character column.
      */
     private function uniqueSlug(string $name): string
     {
-        $base = Str::slug($name) ?: 'developer';
+        $base = trim(substr(Str::slug($name), 0, ListingLimits::SLUG - 8), '-') ?: 'developer';
         $slug = $base;
         $number = 2;
 

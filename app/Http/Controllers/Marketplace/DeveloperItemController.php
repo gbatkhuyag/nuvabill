@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Marketplace;
 use App\Http\Controllers\Controller;
 use App\Marketplace\PackageType;
 use App\Marketplace\Store\ItemPublisher;
+use App\Marketplace\Store\ListingLimits;
 use App\Marketplace\Store\VersionUploader;
 use App\Models\Developer;
 use App\Models\MarketplaceItem;
@@ -133,7 +134,7 @@ class DeveloperItemController extends Controller
     public function upload(Request $request, MarketplaceItem $item, VersionUploader $uploader): RedirectResponse
     {
         $this->authorizeItem($request, $item);
-        $request->validate(['package' => ['required', 'file', 'mimes:zip', 'max:20480'], 'changelog' => ['nullable', 'string', 'max:2000']]);
+        $request->validate(['package' => ['required', 'file', 'mimes:zip', 'max:20480'], 'changelog' => ['nullable', 'string', 'max:'.ListingLimits::CHANGELOG]]);
 
         $version = $uploader->upload($item, $request->file('package'), $request->input('changelog'));
 
@@ -209,21 +210,21 @@ class DeveloperItemController extends Controller
         $request->merge(['slug' => Str::slug((string) $request->input('slug', $item?->slug))]);
 
         return $request->validate([
-            'name' => ['required', 'string', 'max:120'],
-            'slug' => $item ? ['nullable'] : ['required', 'string', 'max:64', 'regex:/^[a-z0-9][a-z0-9_-]*$/', Rule::unique('marketplace_items', 'slug'), $this->freeSlug(...)],
+            'name' => ['required', 'string', 'max:'.ListingLimits::NAME],
+            'slug' => $item ? ['nullable'] : ['required', 'string', 'max:'.ListingLimits::SLUG, 'regex:/^[a-z0-9][a-z0-9_-]*$/', Rule::unique('marketplace_items', 'slug'), $this->freeSlug(...)],
             'type' => $item ? ['nullable'] : ['required', Rule::enum(PackageType::class)->except(PackageType::License)],
             'category' => ['nullable', Rule::in(MarketplaceItem::CATEGORIES)],
-            'summary' => ['required', 'string', 'max:200'],
-            'description' => ['nullable', 'string', 'max:5000'],
-            'price' => ['nullable', 'numeric', 'min:0', 'max:10000'],
-            'update_price' => ['nullable', 'numeric', 'min:0', 'lte:price'],
-            'demo_url' => ['nullable', 'url', 'max:255', 'starts_with:https://'],
-            'docs_url' => ['nullable', 'url', 'max:255', 'starts_with:https://'],
-            'icon_bg' => ['nullable', 'regex:/^#[0-9A-Fa-f]{6}$/'],
-            'icon_fg' => ['nullable', 'regex:/^#[0-9A-Fa-f]{6}$/'],
-            'screenshots' => ['nullable', 'array', 'max:6'],
-            'screenshots.*' => ['image', 'mimes:png,jpg,jpeg,webp', 'max:3072'],
-            'changelog' => ['nullable', 'string', 'max:2000'],
+            'summary' => ['required', 'string', 'max:'.ListingLimits::SUMMARY],
+            'description' => ['nullable', 'string', 'max:'.ListingLimits::DESCRIPTION],
+            'price' => ['nullable', 'numeric', 'min:0', 'max:'.ListingLimits::MAX_PRICE],
+            'update_price' => ['nullable', 'numeric', 'min:0', 'max:'.ListingLimits::MAX_PRICE, 'lte:price'],
+            'demo_url' => ['nullable', 'url', 'max:'.ListingLimits::URL, 'starts_with:https://'],
+            'docs_url' => ['nullable', 'url', 'max:'.ListingLimits::URL, 'starts_with:https://'],
+            'icon_bg' => ['nullable', 'regex:'.ListingLimits::COLOR_PATTERN],
+            'icon_fg' => ['nullable', 'regex:'.ListingLimits::COLOR_PATTERN],
+            'screenshots' => ['nullable', 'array', 'max:'.ListingLimits::SCREENSHOTS],
+            'screenshots.*' => ['image', 'mimes:'.implode(',', ListingLimits::SCREENSHOT_TYPES), 'max:'.ListingLimits::SCREENSHOT_KB],
+            'changelog' => ['nullable', 'string', 'max:'.ListingLimits::CHANGELOG],
         ], ['slug.unique' => __('Another item already uses this short name.')]);
     }
 

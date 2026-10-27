@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Http\Controllers\Marketplace\MediaController;
 use App\Marketplace\PackageArchive;
 use App\Marketplace\Store\ItemPublisher;
+use App\Marketplace\Store\ListingLimits;
 use App\Marketplace\Store\VersionUploader;
 use App\Models\Developer;
 use App\Models\MarketplaceItem;
@@ -29,8 +30,16 @@ class MarketplacePublish extends Command
             return self::FAILURE;
         }
 
+        $developerName = trim((string) $this->option('developer'));
+
+        if ($developerName === '' || mb_strlen($developerName) > ListingLimits::NAME || Str::slug($developerName) === '' || strlen(Str::slug($developerName)) > ListingLimits::SLUG) {
+            $this->components->error('--developer must be a name of at most '.ListingLimits::NAME.' characters, with a short name (letters and numbers) of at most '.ListingLimits::SLUG.'.');
+
+            return self::FAILURE;
+        }
+
         try {
-            $developer = Developer::official((string) $this->option('developer'));
+            $developer = Developer::official($developerName);
         } catch (Throwable $exception) {
             $this->components->error($exception->getMessage());
 
@@ -65,7 +74,15 @@ class MarketplacePublish extends Command
         $slug = $archive->slug();
         $type = $archive->type();
         $name = $archive->name();
+        $packageVersion = $archive->version();
         unset($archive);
+
+        // Every field is checked against its limit before anything is saved or copied.
+        $problems = ListingLimits::problems($listing, ['slug' => $slug, 'name' => $name, 'version' => $packageVersion], $base);
+
+        if ($problems !== []) {
+            throw new \RuntimeException('Nothing was saved. '.implode(' ', array_map('ucfirst', $problems)));
+        }
 
         $renamedTo = MarketplaceItem::renamedTo($slug);
 
