@@ -57,8 +57,9 @@ class CurrencyListTest extends TestCase
             $this->assertMatchesRegularExpression('/^[A-Z]{3}$/', $code);
         }
 
-        foreach (['KPW', 'IRR', 'SYP', 'CUP', 'VED'] as $sanctioned) {
-            $this->assertNotContains($sanctioned, $codes);
+        // Kept on purpose: hosts may bill in them; card gateways refuse them below.
+        foreach (['KPW', 'IRR', 'SYP', 'CUP', 'VED'] as $kept) {
+            $this->assertContains($kept, $codes);
         }
 
         // Withdrawn codes that were replaced by a new one.
@@ -103,7 +104,7 @@ class CurrencyListTest extends TestCase
             $this->assertSame($gateways->gateway('stripe')->supportsCurrency($code), $gateways->gateway('stripe')->supportsCurrency(strtolower($code)));
         }
 
-        // A currency that is not on the list, or not a currency at all, is never charged by a card gateway.
+        // A currency the card gateways cannot charge, or not a currency at all, is never charged by them.
         foreach (['KPW', 'IRR', 'SYP', 'CUP', 'VED', 'XXX', 'ABC', ''] as $unknown) {
             $this->assertFalse($gateways->gateway('stripe')->supportsCurrency($unknown), "stripe and {$unknown}");
             $this->assertFalse($gateways->gateway('paypal')->supportsCurrency($unknown));

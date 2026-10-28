@@ -74,9 +74,8 @@ languages.
 
 **Currencies**
 
-- You can now bill in 150 currencies instead of 38: the national currencies in use today (ISO 4217), except
-  those of North Korea, Iran, Syria and Cuba, and Venezuela's digital bolívar (VED). The currencies you could pick
-  before are all still there.
+- You can now bill in 155 currencies instead of 38: the national currencies in use today (ISO 4217). The
+  currencies you could pick before are all still there.
 - Each payment method is only offered for currencies it charges correctly. Nuvabill keeps every amount with two
   decimal places, so Stripe is only offered for currencies Stripe takes with two decimal places. It is not offered
   for currencies Stripe counts with none or three (such as JPY, KRW, KWD and BHD), for Icelandic króna and Ugandan
