@@ -41,7 +41,7 @@ takes one import.
 - **Domains**: search, register, transfer and renew at ResellerClub, Namecheap, Enom or OpenSRS
 - **Support**: tickets with departments, priorities and email notifications
 - **Security**: two-factor sign-in, passkeys, CAPTCHA, fraud checks, staff roles, security headers
-- **11 languages**, with right-to-left Arabic and Kurdish (Sorani)
+- **12 languages**, with right-to-left Arabic and Kurdish (Sorani)
 - **Search engines**: sitemap, titles and descriptions, prices on Google, language links and link previews, with every theme
 - **REST API**, a **marketplace** of signed themes and extensions, and **signed one-click updates** with rollback
 - **Importers for WHMCS, Blesta, FOSSBilling and Paymenter**: clients (with their passwords), products, services, domains, invoices, payments and tickets, with a dry run first
@@ -322,11 +322,12 @@ and links shared on WhatsApp, Facebook and X show a preview with your share imag
 **Search appearance** box with a Google preview; changing a web address forwards the old one. The **Search engines**
 tab in Site health checks it all every night. See the [search engines guide](docs/search-engines.md).
 
-### 11 languages
+### 12 languages
 
-The whole client area and admin area speak **11 languages**, the most used in the world plus Kurdish and Thai: English,
-Chinese (Simplified), Spanish, French, Arabic, Portuguese (Brazil), Russian, German, Turkish, Kurdish (Sorani) and Thai.
-Arabic and Kurdish pages read **right to left**.
+The whole client area and admin area speak **12 languages**, the most used in the world plus Kurdish, Thai and
+Mongolian: English, Chinese (Simplified), Spanish, French, Arabic, Portuguese (Brazil), Russian, German, Turkish,
+Kurdish (Sorani), Thai and Mongolian. Arabic and Kurdish pages read **right to left**. Mongolian is off until you turn
+it on.
 Clients and staff pick their language from a searchable menu in the top bar; you choose the default and which
 languages clients can pick in **Settings → General**.
 

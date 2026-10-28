@@ -9,7 +9,7 @@ the [roadmap](ROADMAP.md).
 
 | Version | Released | Highlights |
 |---|---|---|
-| [0.7.1](https://github.com/meroxis/nuvabill/releases/tag/v0.7.1) | Unreleased | The public demo can switch chosen add-ons on again after every reset; marketplace listings are checked for length before they are saved; the client side follows the admin language when no client language was picked |
+| [0.7.1](https://github.com/meroxis/nuvabill/releases/tag/v0.7.1) | Unreleased | Mongolian (off until you turn it on), 150 currencies, the public demo can switch chosen add-ons on again after every reset; marketplace listings are checked for length before they are saved; the client side follows the admin language when no client language was picked |
 | [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 27 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Connect to marketplace, Thai, more hooks for server modules and dedicated server add-ons |
 | [0.6.13](https://github.com/meroxis/nuvabill/releases/tag/v0.6.13) | 10 Oct 2026 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
 | [0.6.12](https://github.com/meroxis/nuvabill/releases/tag/v0.6.12) | 4 Oct 2026 | Fixes from a full line-by-line review: sign-in security, payments, wallet, renewals, imports and site health |
@@ -58,7 +58,28 @@ the [roadmap](ROADMAP.md).
 
 ## 0.7.1
 
-A small fix release for demo sites, the marketplace store and languages.
+A small release with Mongolian, a longer currency list, and fixes for demo sites, the marketplace store and
+languages.
+
+**Mongolian**
+
+- Nuvabill, its emails and add-ons now speak Mongolian (12 languages). Mongolian PDF invoices are in Mongolian too.
+- Mongolian is off by default, on new sites and on sites that update. Hosts switch it on in Settings → General,
+  under the languages clients can choose. Staff can already pick it for themselves in the admin language menu.
+- Sites that update get the Mongolian email templates for every template that still has Nuvabill's own English
+  text. A template you rewrote keeps your words.
+- WhatsApp messages to Mongolian clients use your default language or English, because Meta has no Mongolian
+  message templates.
+- Thanks to @gbatkhuyag for the Mongolian translation and the longer currency list.
+
+**Currencies**
+
+- You can now bill in 150 currencies instead of 38: the national currencies in use today (ISO 4217), except
+  those of North Korea, Iran, Syria and Cuba. The currencies you could pick before are all still there.
+- Each payment method is only offered for currencies it charges correctly. Nuvabill keeps every amount with two
+  decimal places, so Stripe is not offered for currencies Stripe counts with none or three (such as JPY, KRW, KWD
+  and BHD), for Icelandic króna, or for Iraqi and Libyan dinar, which Stripe does not take. PayPal keeps its own
+  list, and FIB, FastPay and Wayl take Iraqi dinar only.
 
 **Languages**
 

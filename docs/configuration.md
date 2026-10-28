@@ -6,7 +6,7 @@ has all of them.
 ## Company details
 
 **Settings → General → Your company**: company name, email address, postal address, phone and tax number (shown on
-invoices and in emails), the default language, and which of the 11 languages clients can choose. When staff pick
+invoices and in emails), the default language, and which of the 12 languages clients can choose (Mongolian is off until you tick it). When staff pick
 a language in the admin area and no client language was picked in that browser, the client area uses it too, if
 clients can choose it. See [Which languages does it speak?](faq.md#which-languages-does-it-speak) for the full order.
 
@@ -54,6 +54,10 @@ Articles, categories and announcements have a tab for each other language you of
 
 ## Currencies and exchange rates
 
+**Settings → General** lists 150 currencies (current ISO 4217 codes). Each payment method only shows for the
+currencies it charges correctly: for example Stripe is not offered for currencies Stripe counts without two decimal
+places, such as JPY, KWD or ISK, and FIB, FastPay and Wayl take Iraqi dinar only.
+
 **Settings → Currencies**: your main currency, and exchange rates to other currencies. With a rate set you can, for
 example, show prices in US dollars and charge in Iraqi dinar: the invoice stays in dollars and is marked paid in full.
 
@@ -90,7 +94,7 @@ for the client.
 
 **Settings → General → Sending email**: SMTP details, then send yourself a test email. Email templates are in
 **Settings → Email templates**, with a tab for each language. Emails and PDF invoices go out in the language each client
-picked (staff emails in your default language). Arabic, Kurdish, Thai and Chinese PDFs stay in English for now, because the PDF engine cannot draw those scripts.
+picked (staff emails in your default language). Arabic, Kurdish, Thai and Chinese PDFs stay in English for now, because the PDF engine cannot draw those scripts; Mongolian PDFs are in Mongolian.
 
 ## Automation
 

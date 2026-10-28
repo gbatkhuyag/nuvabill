@@ -38,9 +38,11 @@ and 7 days. Card numbers never touch your server. See [Automatic payments](autom
 
 ## Which languages does it speak?
 
-The client area and the admin area speak 11 languages: English, Chinese (Simplified), Spanish, French, Arabic,
-Portuguese (Brazil), Russian, German, Turkish, Kurdish (Sorani) and Thai. Arabic and Kurdish read right to left. Emails and PDF invoices go out in each client's language (Arabic,
-Kurdish, Thai and Chinese PDFs stay in English, because the PDF engine cannot draw those scripts yet).
+The client area and the admin area speak 12 languages: English, Chinese (Simplified), Spanish, French, Arabic,
+Portuguese (Brazil), Russian, German, Turkish, Kurdish (Sorani), Thai and Mongolian. Arabic and Kurdish read right to
+left. Mongolian is off until you turn it on in **Settings → General**; the others are on for new sites. Emails and PDF
+invoices go out in each client's language (Arabic, Kurdish, Thai and Chinese PDFs stay in English, because the PDF
+engine cannot draw those scripts yet; Mongolian PDFs are in Mongolian).
 
 Staff and clients each pick their own language. The client area shows, in this order: the language of a link such
 as `?lang=de`, the language picked on the client side in this browser, the language staff picked with the language
