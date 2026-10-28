@@ -31,12 +31,20 @@ class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentM
     private const API = 'https://api.stripe.com/v1';
 
     /**
-     * Stripe treats these currencies as having no or three decimal places. Nuvabill stores
-     * two decimal places for every currency in v0.1, so these are not offered.
+     * Nuvabill stores two decimal places for every currency and sends Stripe that amount, so
+     * currencies Stripe counts differently are not offered:
+     * - no decimal places at Stripe;
+     * - three decimal places at Stripe;
+     * - ISK and UGX, which Stripe takes with two decimals that must be 00 (an amount with a
+     *   fraction would be refused or rounded);
+     * - IQD and LYD, which have three decimal places in ISO 4217 and which Stripe does not take.
+     * HUF and TWD are fine: Stripe charges them with two decimals and only rounds payouts.
      */
     private const UNSUPPORTED_CURRENCIES = [
         'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
         'BHD', 'JOD', 'KWD', 'OMR', 'TND',
+        'ISK',
+        'IQD', 'LYD',
     ];
 
     /**

@@ -1,0 +1,119 @@
+<?php
+
+namespace Tests\Feature\Gateways;
+
+use App\Extensions\ExtensionManager;
+use App\Http\Controllers\Admin\SettingsController;
+use App\Support\Money;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use NumberFormatter;
+use ResourceBundle;
+use Tests\TestCase;
+
+/**
+ * Nuvabill stores every amount with two decimal places. A gateway may only take a currency it
+ * charges with exactly that amount; any other currency must be refused by its supportsCurrency.
+ */
+class CurrencyListTest extends TestCase
+{
+    use RefreshDatabase;
+
+    /**
+     * ISO 4217 currencies whose minor unit is not two decimal places.
+     */
+    private const ISO_NO_DECIMALS = ['BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF'];
+
+    private const ISO_THREE_DECIMALS = ['BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND'];
+
+    /**
+     * Stripe's zero-decimal and three-decimal currencies, and ISK and UGX, which Stripe takes only
+     * with 00 as the decimals (docs.stripe.com/currencies).
+     */
+    private const STRIPE_NOT_TWO_DECIMALS = [
+        'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+        'BHD', 'JOD', 'KWD', 'OMR', 'TND',
+        'ISK',
+    ];
+
+    /**
+     * PayPal's currencies without two decimal places (HUF, JPY and TWD have none at PayPal).
+     */
+    private const PAYPAL_NOT_TWO_DECIMALS = ['HUF', 'JPY', 'TWD'];
+
+    public function test_the_currency_list_has_only_current_codes_and_no_sanctioned_ones(): void
+    {
+        $codes = SettingsController::CURRENCIES;
+
+        $this->assertSame(array_values(array_unique($codes)), $codes, 'No currency is listed twice.');
+        $this->assertSame($codes, collect($codes)->sort()->values()->all(), 'The list is in alphabetical order.');
+
+        foreach ($codes as $code) {
+            $this->assertMatchesRegularExpression('/^[A-Z]{3}$/', $code);
+        }
+
+        foreach (['KPW', 'IRR', 'SYP', 'CUP', 'VED'] as $sanctioned) {
+            $this->assertNotContains($sanctioned, $codes);
+        }
+
+        // Withdrawn codes that were replaced by a new one.
+        foreach (['ANG', 'HRK', 'SLL', 'MRO', 'STD', 'VEF', 'ZWL', 'CUC', 'BYR'] as $withdrawn) {
+            $this->assertNotContains($withdrawn, $codes);
+        }
+
+        // The currencies offered before the list grew are all still there, so no site loses its currency.
+        foreach (['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'CHF', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'RON', 'HUF', 'TRY', 'AED', 'SAR', 'QAR', 'IQD', 'EGP', 'MAD', 'INR', 'PKR', 'BDT', 'IDR', 'MYR', 'SGD', 'HKD', 'PHP', 'THB', 'CNY', 'BRL', 'MXN', 'ARS', 'ZAR', 'NGN', 'KES', 'UAH'] as $old) {
+            $this->assertContains($old, $codes);
+        }
+
+        $bundle = class_exists(ResourceBundle::class) ? ResourceBundle::create('en', 'ICUDATA-curr') : null;
+
+        if ($bundle !== null) {
+            foreach ($codes as $code) {
+                $this->assertNotNull($bundle['Currencies'][$code] ?? null, "{$code} is a currency the server's language data knows.");
+            }
+        }
+    }
+
+    public function test_every_currency_is_charged_correctly_or_refused_by_each_gateway(): void
+    {
+        $gateways = app(ExtensionManager::class);
+        $notTwoDecimals = [...self::ISO_NO_DECIMALS, ...self::ISO_THREE_DECIMALS];
+
+        foreach (SettingsController::CURRENCIES as $code) {
+            if ($gateways->gateway('stripe')->supportsCurrency($code)) {
+                $this->assertNotContains($code, [...self::STRIPE_NOT_TWO_DECIMALS, ...$notTwoDecimals], "Stripe would charge {$code} with the wrong amount.");
+            }
+
+            if ($gateways->gateway('paypal')->supportsCurrency($code)) {
+                $this->assertNotContains($code, [...self::PAYPAL_NOT_TWO_DECIMALS, ...$notTwoDecimals], "PayPal would charge {$code} with the wrong amount.");
+            }
+
+            // The Iraqi payments charge whole dinars, rounded up, and take nothing else.
+            foreach (['fib', 'fastpay', 'wayl'] as $iraqi) {
+                $this->assertSame($code === 'IQD', $gateways->gateway($iraqi)->supportsCurrency($code), "{$iraqi} and {$code}");
+            }
+
+            // Lower case codes are treated the same.
+            $this->assertSame($gateways->gateway('stripe')->supportsCurrency($code), $gateways->gateway('stripe')->supportsCurrency(strtolower($code)));
+        }
+
+        // A currency that is not on the list, or not a currency at all, is never charged by a card gateway.
+        foreach (['KPW', 'IRR', 'XXX', ''] as $unknown) {
+            $this->assertFalse($gateways->gateway('paypal')->supportsCurrency($unknown));
+            $this->assertFalse($gateways->gateway('fib')->supportsCurrency($unknown));
+        }
+    }
+
+    public function test_every_currency_shows_the_amount_that_is_owed(): void
+    {
+        foreach (SettingsController::CURRENCIES as $code) {
+            $shown = Money::format(123456, $code);
+
+            $this->assertMatchesRegularExpression('/1,?234\.56/u', $shown, "{$code}: {$shown}");
+
+            if (class_exists(NumberFormatter::class)) {
+                $this->assertMatchesRegularExpression('/1,?234/u', Money::format(123400, $code), $code);
+            }
+        }
+    }
+}
