@@ -52,7 +52,7 @@ takes one import.
 curl -fsSL https://nuvabill.com/install.sh | bash
 ```
 
-> **Status: v0.5.** New: the **admin phone app** with push alerts, **Telegram and WhatsApp** (invoices, reminders and tickets in chat apps, linked by QR code), **AI help** with your own Claude key (reply drafts, tickets in two languages, summaries) and **Automations**, "when this happens, do that", with 9 ready-made templates. Also taxes, a client wallet, quotes, affiliates, a REST API, passkeys, and 10 languages with right-to-left pages for Arabic and Kurdish. See the [roadmap](#roadmap).
+> **Status: v0.7.1.** New in 0.7: **resource sliders** (extra CPU, RAM, disk and IPs), a **full server panel** with a browser console, **your own dedicated servers** with power control, free **Hetzner** modules, **Connect to marketplace**, and **Mongolian** and **Thai**: 12 languages with right-to-left pages for Arabic and Kurdish, and billing in 155 currencies. Also the admin phone app, Telegram and WhatsApp, AI help, Automations, taxes, a client wallet, quotes, affiliates, a REST API and passkeys. See the [changelog](CHANGELOG.md) and the [roadmap](#roadmap).
 >
 > **Try it:** the [live demo](https://demo.nuvabill.com/admin/login) has sample clients, invoices and tickets. One click signs you in, and the data resets every hour.
 
@@ -454,11 +454,9 @@ extensions/gateways/mygateway/
 Payment gateways extend `App\Extensions\Gateways\Gateway`. Server modules extend `App\Extensions\Servers\Module`.
 
 **Add-ons** (`"type": "addon"`, in `extensions/addons/`) extend `App\Extensions\Addons\Addon`. In `boot()` they can
-listen to `OrderPlaced`, `InvoicePaid`, `ServiceActivated`, `TicketOpened` and `TicketReplied` (in `App\Events`),
-add HTML to page heads with `headHtml()` and allow extra hosts with `contentSecurityPolicy()`. Since 0.4.2 they can
-also run on a schedule (`schedule()`), add admin pages under `/admin/addons/{slug}/` (`adminRoutes()`), show a panel on
-their settings page (`settingsHtml()`), keep their own values with `remember()`, and ship `lang/ar.json` and
-`lang/ckb.json` translations. `App\Support\SiteBackup` makes whole-site or database backups for backup add-ons.
+listen to events such as `OrderPlaced`, `InvoicePaid` and `TicketOpened` (in `App\Events`), add admin and public
+pages, run on a schedule, receive webhooks, add their own database tables, and ship translations for every language.
+The [developer guide](docs/developers/README.md) lists every hook, with a step-by-step first add-on.
 
 List what your package does in `"permissions"`, for example `["events", "http:api.example.com"]`. Staff see it before installing.
 </details>
@@ -471,7 +469,7 @@ List what your package does in `"permissions"`, for example `["events", "http:ap
 3. When it is approved, the store signs it and it appears in every Nuvabill admin area.
 
 You set the price and the yearly update price. You keep 83% of each sale, and we pay out monthly.
-Read the full [developer guide](https://nuvabill.com/docs/developers/).
+Read [selling on the marketplace](docs/developers/selling.md) and the full [developer guide](docs/developers/README.md).
 </details>
 
 <details>

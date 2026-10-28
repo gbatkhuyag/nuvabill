@@ -27,5 +27,6 @@ These pages cover running your own copy. The same guides, and the developer and 
 More:
 
 - [REST API](https://nuvabill.com/docs/api/): `/api/v1` for clients, services, invoices, payments, products, orders and tickets
-- [Developer guide](https://nuvabill.com/docs/developers/): themes, extensions and selling on the marketplace
+- [Developer guide](developers/README.md): build themes, order forms, add-ons, payment gateways, server modules and
+  registrars, and sell them on the marketplace
 - [Changelog](../CHANGELOG.md) and [roadmap](../ROADMAP.md)

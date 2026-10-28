@@ -2,6 +2,10 @@
 
 Thank you for helping. Bug reports, translations, documentation fixes and pull requests are all welcome.
 
+**New here?** Start with an issue labelled [good first issue](https://github.com/meroxis/nuvabill/labels/good%20first%20issue).
+These are small, checked tasks with the files, what done looks like, and how to test. Say in the issue that you are
+working on it, so two people do not do the same task.
+
 Found a security problem? Please do **not** open an issue; follow the [security policy](SECURITY.md) instead.
 
 ## Reporting a bug
@@ -52,15 +56,31 @@ A few rules that matter a lot in billing software:
 
 ## Translations
 
-Nuvabill is in 10 languages. The texts are in `lang/<language>.json`, with the English text as the key. To improve a
-translation, change the value and open a pull request. Keep placeholders such as `:count` and `:name` exactly as they
-are.
+Nuvabill is in 12 languages: English, Arabic, Kurdish (Sorani), Chinese (Simplified), Spanish, French, Portuguese
+(Brazil), Russian, German, Turkish, Thai and Mongolian. The list is in `app/Support/Locales.php`.
+
+Where the texts are:
+
+- `lang/<language>.json`: almost every text, with the English text as the key.
+- `lang/<language>/*.php`: Laravel's own messages (form errors, password reset, page links).
+- `themes/<theme>/lang/<language>.json` and `orderforms/<form>/lang/<language>.json`: words a theme or order form
+  brings itself.
+- `database/seeders/email-templates/<language>.php`: the email templates.
+
+To improve a translation, change the value and open a pull request. Please:
+
+- keep placeholders such as `:count` and `:name`, and HTML tags such as `<strong>`, exactly as they are;
+- keep the same number of plural forms, or use one form without `|` if your language has no plurals;
+- never add a script, a link or Blade code to a text.
+
+A new language needs more than one file (emails, PDFs, right-to-left pages, every add-on), so open an issue first and
+we will plan it together.
 
 ## Extensions and themes
 
-Gateways, server modules, registrars, add-ons and themes can be written without changing Nuvabill itself. See the
-[developer guide](https://nuvabill.com/docs/developers/). You can sell them on the marketplace and keep 83% of each
-sale.
+Gateways, server modules, registrars, add-ons and themes can be written without changing Nuvabill itself. Start with
+the [developer guide](docs/developers/README.md): it has a step-by-step first add-on, every hook and contract, and how
+to sell on the marketplace, where you keep 83% of each sale by default.
 
 ## License of your contribution
 
