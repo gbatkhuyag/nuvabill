@@ -9,7 +9,7 @@ the [roadmap](ROADMAP.md).
 
 | Version | Released | Highlights |
 |---|---|---|
-| [0.7.2](https://github.com/meroxis/nuvabill/releases/tag/v0.7.2) | Unreleased | Security fixes: API keys after a password reset, typed secrets after form errors, refunds never sent twice, no server passwords over plain HTTP on the internet |
+| [0.7.2](https://github.com/meroxis/nuvabill/releases/tag/v0.7.2) | 28 Oct 2026 | Security fixes: API keys after a password reset, typed secrets after form errors, refunds never sent twice, no server passwords over plain HTTP on the internet |
 | [0.7.1](https://github.com/meroxis/nuvabill/releases/tag/v0.7.1) | 28 Oct 2026 | Mongolian (off until you turn it on), 155 currencies, the public demo can switch chosen add-ons on again after every reset; marketplace listings are checked for length before they are saved; the client side follows the admin language when no client language was picked |
 | [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 27 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Connect to marketplace, Thai, more hooks for server modules and dedicated server add-ons |
 | [0.6.13](https://github.com/meroxis/nuvabill/releases/tag/v0.6.13) | 10 Oct 2026 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
