@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Extensions\ExtensionManager;
 use App\Extensions\ExtensionManifest;
+use App\Extensions\SettingsForm;
 use App\Http\Controllers\Controller;
 use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
@@ -41,26 +42,9 @@ class RegistrarController extends Controller
         $current = $extensions->settings($registrar);
         $enabled = $request->boolean('enabled');
 
-        $rules = ['enabled' => ['boolean']];
+        $input = SettingsForm::validate($request, $fields, $current, $enabled, textareaMax: 1000);
 
-        foreach ($fields as $key => $field) {
-            $required = ($field['required'] ?? false) && $enabled && ! ($field['type'] === 'password' && filled($current[$key] ?? null));
-            $rules["settings.{$key}"] = array_filter([
-                $required ? 'required' : 'nullable',
-                'string',
-                'max:1000',
-                isset($field['options']) ? 'in:'.implode(',', array_keys($field['options'])) : null,
-            ]);
-        }
-
-        $input = $request->validate($rules, [], collect($fields)->mapWithKeys(fn (array $field, string $key): array => ["settings.{$key}" => $field['label']])->all());
-
-        $settings = [];
-
-        foreach ($fields as $key => $field) {
-            $value = $input['settings'][$key] ?? null;
-            $settings[$key] = ($field['type'] === 'password' && blank($value)) ? ($current[$key] ?? null) : $value;
-        }
+        $settings = SettingsForm::values($fields, $input, $current);
 
         $extensions->saveSettings($registrar, $settings, $enabled);
         Activity::log('registrar.updated', "Registrar {$manifest->name} ".($enabled ? 'enabled' : 'disabled'));

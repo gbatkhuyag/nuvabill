@@ -7,7 +7,9 @@
 @php
     $id = $attributes->get('id', 'f-'.str_replace(['.', '[', ']'], '-', $name));
     $errorKey = str_replace(['[', ']'], ['.', ''], $name);
-    $isChecked = old('_token') !== null ? (bool) old($errorKey) : (bool) $checked;
+    // The hidden 0 below means a submitted box always has old input; none means another form on
+    // the page was sent, so the box keeps its default (a box ticked for safety stays ticked).
+    $isChecked = old('_token') !== null && old($errorKey) !== null ? (bool) old($errorKey) : (bool) $checked;
 @endphp
 <div class="field {{ $attributes->get('class') }}">
     <input type="hidden" name="{{ $name }}" value="0">

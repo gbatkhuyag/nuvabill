@@ -40,7 +40,7 @@ class ServerSecretsTest extends TestCase
 
     public function test_changing_the_host_without_a_new_token_is_refused_and_nothing_is_sent_there(): void
     {
-        $this->put(route('admin.servers.update', $this->server), $this->form(['hostname' => 'collector.example.net', 'use_ssl' => 0, 'port' => 80]))
+        $this->put(route('admin.servers.update', $this->server), $this->form(['hostname' => 'collector.example.net', 'port' => 443]))
             ->assertSessionHasErrors('api_token');
 
         $server = $this->server->fresh();
@@ -54,11 +54,17 @@ class ServerSecretsTest extends TestCase
 
     public function test_changing_the_module_or_ssl_also_needs_the_secret_again(): void
     {
-        $this->put(route('admin.servers.update', $this->server), $this->form(['use_ssl' => 0]))->assertSessionHasErrors('api_token');
+        // Plain HTTP needs its own box, and only works for a private address.
+        $this->put(route('admin.servers.update', $this->server), $this->form(['use_ssl' => 0]))->assertSessionHasErrors('use_ssl');
+        $this->put(route('admin.servers.update', $this->server), $this->form(['use_ssl' => 0, 'allow_plain_http' => 1]))->assertSessionHasErrors('hostname');
         $this->put(route('admin.servers.update', $this->server), $this->form(['module' => 'directadmin', 'port' => 2222]))->assertSessionHasErrors('api_token');
+
+        $this->server->update(['hostname' => '10.0.0.5']);
+        $this->put(route('admin.servers.update', $this->server), $this->form(['hostname' => '10.0.0.5', 'use_ssl' => 0, 'allow_plain_http' => 1]))->assertSessionHasErrors('api_token');
 
         $this->assertSame('stored-root-token', $this->server->fresh()->api_token);
         $this->assertTrue($this->server->fresh()->use_ssl);
+        $this->assertFalse($this->server->fresh()->allow_plain_http);
     }
 
     public function test_editing_only_the_name_keeps_the_saved_token(): void

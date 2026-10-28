@@ -306,6 +306,8 @@ class FossbillingImporter extends ImportSource
                 'ip_address' => $ip,
                 'port' => (int) ($row->port ?? 0) ?: null,
                 'use_ssl' => (bool) ($row->secure ?? true),
+                // A server without "secure" keeps working as it did there. Site health lists it.
+                'allow_plain_http' => ! (bool) ($row->secure ?? true),
                 'username' => $this->text($row->username ?? null),
                 'nameservers' => array_values(array_filter(array_map(fn (int $number): ?string => $this->text($row->{'ns'.$number} ?? null), range(1, 4)))),
                 'max_accounts' => (int) ($row->max_accounts ?? 0) ?: null,

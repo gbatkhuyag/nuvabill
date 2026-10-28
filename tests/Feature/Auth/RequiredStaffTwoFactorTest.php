@@ -6,6 +6,7 @@ use App\Models\Admin;
 use App\Models\ApiToken;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Crypt;
 use Tests\TestCase;
 
 /**
@@ -49,9 +50,9 @@ class RequiredStaffTwoFactorTest extends TestCase
         $this->setSettings(['security.staff_two_factor' => 'required']);
         $admin = Admin::factory()->create(['two_factor_secret' => 'JBSWY3DPEHPK3PXP', 'two_factor_confirmed_at' => now()]);
 
-        $this->actingAs($admin, 'admin')->post(route('admin.profile.api-keys.store'), ['name' => 'Reports', 'can_write' => '0'])
+        $this->actingAs($admin, 'admin')->post(route('admin.profile.api-keys.store'), ['name' => 'Reports', 'can_write' => '0', 'current_password' => 'password'])
             ->assertSessionHas('new_api_key');
-        $plain = session('new_api_key');
+        $plain = Crypt::decryptString(session('new_api_key'));
         Auth::forgetGuards();
 
         $this->getJson('/api/v1/clients', ['Authorization' => 'Bearer '.$plain])->assertOk();

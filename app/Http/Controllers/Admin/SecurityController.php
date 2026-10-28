@@ -56,7 +56,7 @@ class SecurityController extends Controller
         $siteKey = trim((string) ($data['captcha_site_key'] ?? ''));
 
         if ($data['captcha_provider'] !== 'off' && $secret === '') {
-            return back()->withInput()->withErrors(['captcha_secret' => __('Enter the secret key.')]);
+            return back()->withInput($request->except('captcha_secret'))->withErrors(['captcha_secret' => __('Enter the secret key.')]);
         }
 
         // New keys must pass the check on this page again before any form uses them.

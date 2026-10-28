@@ -3,6 +3,7 @@
 namespace App\Billing;
 
 use App\Enums\InvoiceStatus;
+use App\Extensions\Gateways\RefundUnclear;
 use App\Mail\TemplateMailer;
 use App\Models\Admin;
 use App\Models\CreditNote;
@@ -45,7 +46,8 @@ class CreditNotes
      */
     public function issue(Invoice $invoice, int $amount, string $method, ?string $reason = null, ?Admin $admin = null, bool $throughGateway = true): CreditNote
     {
-        $lock = Cache::lock("invoice-credit-{$invoice->id}", 120);
+        // As long as RefundIssuer's lock: a refund of several payments can take a few minutes.
+        $lock = Cache::lock("invoice-credit-{$invoice->id}", 300);
 
         if (! $lock->get()) {
             throw new RuntimeException(__('A credit note for this invoice is being made. Try again in a minute.'));
@@ -86,7 +88,9 @@ class CreditNotes
                 } catch (Throwable $exception) {
                     $sent = -(int) $invoice->transactions()->where('type', 'refund')->sum('amount') - $refunded;
 
-                    if ($fromWallet - $sent > 0) {
+                    // A refund with no answer may have gone through, so its funds stay out of the wallet
+                    // until it is settled; the retry knows they are out already (fundsToTakeBack()).
+                    if (! $exception instanceof RefundUnclear && $fromWallet - $sent > 0) {
                         $this->wallet->change($invoice->client, $fromWallet - $sent, __('Funds returned: the refund of invoice :number did not go through', ['number' => $invoice->displayNumber()]), $invoice, $admin);
                     }
 
@@ -168,6 +172,12 @@ class CreditNotes
 
         if ($amount < 1 || $amount > $creditable) {
             throw new InvalidArgumentException(__('The credit note can be at most :amount.', ['amount' => money($creditable, $invoice->currency)]));
+        }
+
+        // A refund with no answer may have sent the money back already. Crediting the wallet as well
+        // would pay the client twice, so that refund is settled first.
+        if ($method === CreditNote::METHOD_WALLET && $invoice->transactions->where('type', 'payment')->contains(fn (Transaction $payment): bool => $this->refunds->hasUnclearRefund($payment))) {
+            throw new InvalidArgumentException(__('A refund of this invoice got no answer from the payment service and may have gone through. Settle that refund before you credit the wallet.'));
         }
 
         if ($method === CreditNote::METHOD_WALLET && $invoice->currency !== $invoice->client->currency) {

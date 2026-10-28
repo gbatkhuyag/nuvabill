@@ -76,7 +76,7 @@ class StaffSessionTest extends TestCase
         $this->post(route('admin.login'), ['email' => 'mer.las@example.test', 'password' => 'password'])->assertRedirect(route('admin.dashboard'));
 
         $this->put(route('admin.settings.staff.update', $owner), [
-            'name' => 'Mer Las', 'email' => 'mer.las@example.test', 'role_id' => $owner->role_id, 'is_active' => 1, 'password' => 'a-new-password-1',
+            'name' => 'Mer Las', 'email' => 'mer.las@example.test', 'role_id' => $owner->role_id, 'is_active' => 1, 'password' => 'a-new-password-1', 'current_password' => 'password',
         ])->assertSessionHasNoErrors();
 
         Auth::forgetGuards();

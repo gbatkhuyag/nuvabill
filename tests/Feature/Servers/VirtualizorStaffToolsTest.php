@@ -69,7 +69,7 @@ class VirtualizorStaffToolsTest extends TestCase
     public function test_the_access_check_names_the_https_switch_as_the_server_form_does(): void
     {
         $this->fakeVirtualizor();
-        $service = $this->vpsService(['client_login' => '1'], server: $this->master(['use_ssl' => false]));
+        $service = $this->vpsService(['client_login' => '1'], server: $this->master(['use_ssl' => false, 'allow_plain_http' => true]));
 
         $rows = collect(app(Provisioner::class)->checkClientAccess($service))->keyBy('label');
 

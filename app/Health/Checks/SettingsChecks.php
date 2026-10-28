@@ -54,6 +54,7 @@ class SettingsChecks extends CheckGroup
             $this->debug(),
             $this->https(),
             $this->secureCookies(),
+            $this->encryptedSessions(),
             $this->appKey(),
             $this->php(),
             $this->staffTimeout(),
@@ -113,6 +114,25 @@ class SettingsChecks extends CheckGroup
         return $check->warning('Browsers may also send the sign-in cookie over plain HTTP',
             advice: 'Nuvabill already asks browsers to use HTTPS only, so this is a second lock on the same door.',
             fix: $this->fix('settings.secure_cookies', 'Turn it on', confirm: 'SESSION_SECURE_COOKIE=true is written to the .env file.'),
+        );
+    }
+
+    /**
+     * Sign-ins, and what a form keeps after an error, are saved in the session. Encrypted, a copy
+     * of the sessions table or of the session files cannot be read without the app key. New sites
+     * have it on (.env.example); older .env files say SESSION_ENCRYPT=false.
+     */
+    private function encryptedSessions(): CheckResult
+    {
+        $check = $this->check('settings.encrypt_sessions', 'Session data is encrypted', weight: 1);
+
+        if (config('session.encrypt') === true) {
+            return $check->passed();
+        }
+
+        return $check->warning('Session data is saved without encryption',
+            advice: 'Anyone with a copy of the database or the session files can read what a session holds. Encryption is a second lock: reading it then needs the app key too.',
+            fix: $this->fix('settings.encrypt_sessions', 'Turn it on', confirm: 'SESSION_ENCRYPT=true is written to the .env file. Everyone is signed out once, you too, and signs in again.'),
         );
     }
 

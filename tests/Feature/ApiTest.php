@@ -11,6 +11,7 @@ use App\Models\Client;
 use App\Models\Service;
 use App\Models\Ticket;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
@@ -101,11 +102,17 @@ class ApiTest extends TestCase
         $admin = Admin::factory()->create();
         $other = ApiToken::issue(Admin::factory()->create(), 'Not mine', true)[0];
 
-        $this->actingAs($admin, 'admin')->post(route('admin.profile.api-keys.store'), ['name' => 'Accounting sync', 'can_write' => '1'])
+        $this->actingAs($admin, 'admin')->post(route('admin.profile.api-keys.store'), ['name' => 'Accounting sync', 'can_write' => '1', 'current_password' => 'password'])
             ->assertSessionHas('new_api_key');
         $token = $admin->apiTokens()->sole();
         $this->assertTrue($token->can_write);
-        $this->get(route('admin.profile.edit'))->assertOk()->assertSee('Accounting sync')->assertSee(session('new_api_key'));
+
+        // The session holds the key encrypted; the page shows it in plain text once.
+        $plain = Crypt::decryptString(session('new_api_key'));
+        $this->assertStringStartsWith(ApiToken::PREFIX, $plain);
+        $this->assertStringNotContainsString($plain, serialize(session()->all()));
+        $this->assertSame($token->id, ApiToken::findByPlainText($plain)?->id);
+        $this->get(route('admin.profile.edit'))->assertOk()->assertSee('Accounting sync')->assertSee($plain);
 
         $this->delete(route('admin.profile.api-keys.destroy', $other))->assertNotFound();
         $this->delete(route('admin.profile.api-keys.destroy', $token))->assertSessionHas('status');

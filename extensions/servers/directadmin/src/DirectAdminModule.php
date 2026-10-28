@@ -11,6 +11,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 /**
  * DirectAdmin through its CMD_API commands, signed in as an admin or reseller with a login key.
@@ -129,10 +130,11 @@ class DirectAdminModule extends Module
         }
 
         try {
+            $url = $this->baseUrl($server).'/api/login/url';
             $response = $this->request($server, $this->adminUsername($server).'|'.$service->username)
                 ->asJson()
-                ->post($this->baseUrl($server).'/api/login/url', ['redirectURL' => '/']);
-        } catch (ConnectionException) {
+                ->post($url, ['redirectURL' => '/']);
+        } catch (ConnectionException|RuntimeException) {
             return null;
         }
 
@@ -200,7 +202,11 @@ class DirectAdminModule extends Module
             return ['ok' => false, 'reason' => __('No server is assigned.'), 'data' => []];
         }
 
-        $url = $this->baseUrl($server).'/'.$command;
+        try {
+            $url = $this->baseUrl($server).'/'.$command;
+        } catch (RuntimeException $exception) {
+            return ['ok' => false, 'reason' => $exception->getMessage(), 'data' => []];
+        }
 
         try {
             $request = $this->request($server, $this->adminUsername($server))->timeout($timeout);
@@ -237,9 +243,12 @@ class DirectAdminModule extends Module
         return Http::withBasicAuth($username, (string) ($server->api_token ?: $server->password));
     }
 
+    /**
+     * @throws RuntimeException when the server is set to plain HTTP without "Allow plain HTTP"
+     */
     private function baseUrl(Server $server): string
     {
-        $scheme = $server->use_ssl ? 'https' : 'http';
+        $scheme = $server->apiScheme();
         $port = $server->port ?: $this->defaultPort();
 
         return "{$scheme}://{$server->hostname}:{$port}";

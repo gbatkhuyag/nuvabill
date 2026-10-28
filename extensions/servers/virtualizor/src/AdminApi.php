@@ -16,7 +16,8 @@ use Throwable;
  * reinstall and reads of a VPS. Every part of this extension calls the Admin API through here, so
  * the key and password never reach a message, a log or the browser.
  *
- * call(), answer(), clean() and baseUrl() are the module's request code from 1.1.0, unchanged. The
+ * call(), answer(), clean() and baseUrl() are the module's request code from 1.1.0. Since then,
+ * call() only uses plain HTTP when the server allows it (Server::apiScheme()). The
  * reads below them (one VPS, its live figures, the OS templates) and the small static helpers are
  * shared by the module and its other helpers.
  */
@@ -36,7 +37,8 @@ final class AdminApi
     /**
      * One Admin API call. The key and password go in the query string, as Virtualizor's own SDK
      * sends them, so they never go into a message: a failed connection names only the host, and
-     * an error from Virtualizor is cleaned of them. Plain HTTP only when the server has SSL off.
+     * an error from Virtualizor is cleaned of them. Plain HTTP only when the server has SSL off and
+     * "Allow plain HTTP" ticked: otherwise it refuses before anything is sent.
      *
      * @param  array<string, mixed>  $query
      * @param  array<string, mixed>  $post
@@ -48,7 +50,7 @@ final class AdminApi
             throw new RuntimeException(__('No server is assigned.'));
         }
 
-        $url = $this->baseUrl($server, (int) ($server->port ?: self::DEFAULT_PORT), $server->use_ssl !== false).'/index.php';
+        $url = $this->baseUrl($server, (int) ($server->port ?: self::DEFAULT_PORT), $server->apiScheme() === 'https').'/index.php';
         $query += ['api' => 'json', 'adminapikey' => (string) $server->api_token, 'adminapipass' => (string) $server->password];
 
         try {

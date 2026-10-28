@@ -7,6 +7,7 @@ use App\Extensions\ExtensionManifest;
 use App\Health\CheckGroup;
 use App\Health\CheckResult;
 use App\Models\Server;
+use App\Provisioning\ServerTransport;
 
 /**
  * Payment gateways, domain registrars and server connections: nothing left in test mode on a
@@ -109,17 +110,52 @@ class PaymentChecks extends CheckGroup
     private function serverHttps(): CheckResult
     {
         $check = $this->check('servers.https', 'Server connections use HTTPS', weight: 5);
-        $servers = Server::query()->where('is_active', true)->orderBy('name')->get(['id', 'name', 'hostname', 'use_ssl']);
+        // Turned-off servers still look after the services on them, so they count too.
+        $servers = Server::query()
+            ->where(fn ($query) => $query->where('is_active', true)->orWhereHas('services'))
+            ->orderBy('name')
+            ->get(['id', 'name', 'hostname', 'ip_address', 'use_ssl']);
         $plain = $servers->reject(fn (Server $server): bool => $server->use_ssl);
 
         if ($plain->isEmpty()) {
             return $check->passed(':count servers', ['count' => $servers->count()]);
         }
 
-        return $check->urgent(':names: passwords and API tokens are sent without encryption', ['names' => $plain->pluck('name')->implode(', ')],
-            advice: 'Anyone on the network between Nuvabill and the server can read them. Turn on "Connect with HTTPS" for these servers.',
-            items: $plain->map(fn (Server $server): array => ['label' => $server->name, 'value' => $server->hostname, 'mono' => true, 'status' => 'urgent'])->values()->all(),
-            link: $this->link('admin.servers.index', 'Open servers'),
+        $public = $plain->reject(fn (Server $server): bool => $this->onPrivateNetwork($server));
+        $items = $plain->map(fn (Server $server): array => [
+            'label' => $server->name,
+            'value' => $server->hostname,
+            'mono' => true,
+            'status' => $public->contains('id', $server->id) ? 'urgent' : 'warning',
+        ])->values()->all();
+        $link = $this->link('admin.servers.index', 'Open servers');
+
+        if ($public->isNotEmpty()) {
+            return $check->urgent(':names: passwords and API tokens are sent without encryption over the internet', ['names' => $public->pluck('name')->implode(', ')],
+                advice: 'Anyone on the network between Nuvabill and the server can read them. Turn on "Connect with HTTPS" for these servers. If the panel has a self-signed certificate, give it a trusted one first, for example a free certificate from Let\'s Encrypt.',
+                items: $items,
+                link: $link,
+            );
+        }
+
+        return $check->warning(':names: plain HTTP on a private network', ['names' => $plain->pluck('name')->implode(', ')],
+            advice: 'Passwords and API tokens are sent without encryption, so anyone on your private network can read them. Turn on "Connect with HTTPS" once the panel has a trusted certificate.',
+            items: $items,
+            link: $link,
         );
+    }
+
+    /**
+     * A server whose host name and IP address are both private or local.
+     */
+    private function onPrivateNetwork(Server $server): bool
+    {
+        foreach ([$server->hostname, $server->ip_address] as $host) {
+            if (filled($host) && ! ServerTransport::isPrivateHost((string) $host)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

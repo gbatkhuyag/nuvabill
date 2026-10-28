@@ -18,11 +18,20 @@ class ServerFactory extends Factory
             'hostname' => 'server'.fake()->unique()->numberBetween(1, 9999).'.example.test',
             'port' => 2087,
             'use_ssl' => true,
+            'allow_plain_http' => false,
             'username' => 'root',
             'api_token' => 'TESTTOKEN123',
             'nameservers' => ['ns1.example.test', 'ns2.example.test'],
             'is_active' => true,
         ];
+    }
+
+    /**
+     * HTTPS off, with "Allow plain HTTP" ticked.
+     */
+    public function plainHttp(): static
+    {
+        return $this->state(['use_ssl' => false, 'allow_plain_http' => true]);
     }
 
     public function directadmin(): static

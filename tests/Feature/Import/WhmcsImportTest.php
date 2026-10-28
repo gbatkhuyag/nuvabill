@@ -193,6 +193,19 @@ class WhmcsImportTest extends TestCase
         $this->assertSame('razstud-pass', Service::query()->firstOrFail()->password);
     }
 
+    public function test_a_whmcs_server_without_secure_keeps_working_over_plain_http(): void
+    {
+        $this->seedWhmcs();
+        DB::connection(self::CONNECTION)->table('tblservers')->where('id', 1)->update(['secure' => '']);
+
+        $this->runImport();
+
+        $server = Server::query()->firstOrFail();
+        $this->assertFalse($server->use_ssl);
+        $this->assertTrue($server->allow_plain_http);
+        $this->assertSame('http', $server->apiScheme());
+    }
+
     public function test_wallet_credit_is_a_wallet_entry_and_a_new_run_adds_only_the_change(): void
     {
         $this->seedWhmcs();

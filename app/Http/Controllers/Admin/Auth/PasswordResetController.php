@@ -62,17 +62,22 @@ class PasswordResetController extends Controller
 
         // A new password hash also ends every other signed-in session (the auth.session middleware).
         // The link proved this is the owner, so wrong passwords others typed no longer keep them out.
+        // A reset is the "someone took my account" path, so every API key is deleted as well.
+        $revoked = 0;
         $status = Password::broker('admins')->reset(
             $request->only('email', 'password', 'password_confirmation', 'token'),
-            function (Admin $admin, string $password) use ($request): void {
+            function (Admin $admin, string $password) use ($request, &$revoked): void {
                 $admin->forceFill(['password' => $password, 'remember_token' => Str::random(60)])->save();
+                $revoked = $admin->revokeApiKeys('password reset', actor: $admin);
                 SignInLimiter::passwordReset($request, 'admin', $admin->email);
                 event(new PasswordReset($admin));
             },
         );
 
         return $status === Password::PASSWORD_RESET
-            ? redirect()->route('admin.login')->with('status', __('Your password was changed. Sign in with the new one.'))
+            ? redirect()->route('admin.login')->with('status', $revoked > 0
+                ? __('Your password was changed and your API keys were deleted. Sign in with the new one.')
+                : __('Your password was changed. Sign in with the new one.'))
             : back()->withInput($request->only('email'))->withErrors(['email' => __($status)]);
     }
 }

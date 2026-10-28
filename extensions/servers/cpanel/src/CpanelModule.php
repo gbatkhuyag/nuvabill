@@ -9,6 +9,7 @@ use App\Models\Service;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 /**
  * cPanel & WHM through WHM API 1, signed in with a WHM API token.
@@ -143,7 +144,12 @@ class CpanelModule extends Module
             return ['ok' => false, 'reason' => __('No server is assigned.'), 'data' => []];
         }
 
-        $scheme = $server->use_ssl ? 'https' : 'http';
+        try {
+            $scheme = $server->apiScheme();
+        } catch (RuntimeException $exception) {
+            return ['ok' => false, 'reason' => $exception->getMessage(), 'data' => []];
+        }
+
         $port = $server->port ?: $this->defaultPort();
         $url = "{$scheme}://{$server->hostname}:{$port}/json-api/{$function}";
 

@@ -63,6 +63,7 @@
             <x-input name="current_password" type="password" :label="__('Current password')" required autocomplete="current-password" />
             <x-input name="password" type="password" :label="__('New password')" :help="__('At least 10 characters.')" required autocomplete="new-password" />
             <x-input name="password_confirmation" type="password" :label="__('Type it again')" required autocomplete="new-password" />
+            <x-checkbox name="revoke_api_keys" id="revoke-api-keys" :checked="true" :label="__('Also delete my API keys')" :help="__('Tools that use them stop working until you make a new key.')" />
             <div class="form-actions"><button class="btn btn-primary" type="submit">{{ __('Change password') }}</button></div>
         </form>
     </div>
@@ -155,6 +156,7 @@
             @csrf
             <x-input name="name" :label="__('New key name')" required :placeholder="__('For example Accounting sync')" style="min-width:240px" />
             <x-checkbox name="can_write" :label="__('Can change data')" :help="__('Off: the key can only read.')" />
+            <x-input name="current_password" type="password" :label="__('Your password')" id="api-key-password" required autocomplete="current-password" />
             <button class="btn btn-primary" type="submit"><x-icon name="key" />{{ __('Create key') }}</button>
         </form>
     </section>

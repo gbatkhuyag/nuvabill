@@ -125,7 +125,8 @@ class PackageInspector
             $extension = strtolower(pathinfo($file, PATHINFO_EXTENSION));
             $basename = strtolower(basename($file));
 
-            if (in_array($extension, self::BLOCKED_EXTENSIONS, true) || $basename === '.htaccess') {
+            // Only the store writes the license stamp, into each buyer's copy (DownloadBuilder).
+            if (in_array($extension, self::BLOCKED_EXTENSIONS, true) || in_array($basename, ['.htaccess', '.nuvabill-license'], true)) {
                 $blocked[] = $file;
 
                 continue;

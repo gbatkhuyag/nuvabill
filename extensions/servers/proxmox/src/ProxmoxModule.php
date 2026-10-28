@@ -889,7 +889,7 @@ class ProxmoxModule extends Module implements HasClientPanel, HasResourceOptions
             throw new RuntimeException(__('No server is assigned.'));
         }
 
-        $url = ($server->use_ssl ? 'https' : 'http').'://'.$server->hostname.':'.($server->port ?: $this->defaultPort()).'/api2/json/'.$path;
+        $url = $server->apiScheme().'://'.$server->hostname.':'.($server->port ?: $this->defaultPort()).'/api2/json/'.$path;
 
         try {
             $request = Http::withHeaders(['Authorization' => 'PVEAPIToken='.$server->username.'='.$server->api_token])

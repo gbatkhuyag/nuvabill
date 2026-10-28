@@ -175,7 +175,7 @@ class PleskModule extends Module
             $response = $this->request($server, 20)
                 ->withBody((string) $packet->asXML(), 'text/xml')
                 ->post($this->baseUrl($server).'/enterprise/control/agent.php');
-        } catch (ConnectionException) {
+        } catch (ConnectionException|RuntimeException) {
             return null;
         }
 
@@ -265,12 +265,14 @@ class PleskModule extends Module
 
     private function baseUrl(Server $server): string
     {
-        return ($server->use_ssl ? 'https' : 'http').'://'.$server->hostname.':'.($server->port ?: $this->defaultPort());
+        return $server->apiScheme().'://'.$server->hostname.':'.($server->port ?: $this->defaultPort());
     }
 
     private function request(Server $server, int $timeout): PendingRequest
     {
-        $request = Http::timeout($timeout);
+        // Never follow a redirect: the API key or password is in custom headers, which Guzzle
+        // would send on to another host.
+        $request = Http::timeout($timeout)->withoutRedirecting();
 
         return filled($server->api_token)
             ? $request->withHeaders(['X-API-Key' => (string) $server->api_token, 'KEY' => (string) $server->api_token])

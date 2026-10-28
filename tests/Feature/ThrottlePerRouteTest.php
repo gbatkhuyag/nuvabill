@@ -63,7 +63,7 @@ class ThrottlePerRouteTest extends TestCase
         }
 
         $this->signInAdmin($admin);
-        $this->post(route('admin.profile.api-keys.store'), ['name' => 'Accounting'])->assertRedirect()->assertSessionHas('new_api_key');
+        $this->post(route('admin.profile.api-keys.store'), ['name' => 'Accounting', 'current_password' => 'password'])->assertRedirect()->assertSessionHas('new_api_key');
     }
 
     public function test_each_route_still_has_its_limit(): void

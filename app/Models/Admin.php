@@ -2,8 +2,10 @@
 
 namespace App\Models;
 
+use App\Support\Activity;
 use Database\Factories\AdminFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
@@ -112,5 +114,20 @@ class Admin extends Authenticatable
     public function apiTokens(): HasMany
     {
         return $this->hasMany(ApiToken::class);
+    }
+
+    /**
+     * Delete all of this staff member's API keys, for example after a new password, so a stolen key
+     * stops working too. Writes one activity log entry and returns how many keys were deleted.
+     */
+    public function revokeApiKeys(string $reason, ?Model $actor = null): int
+    {
+        $count = $this->apiTokens()->delete();
+
+        if ($count > 0) {
+            Activity::log('api.keys_revoked', "{$count} API key(s) of {$this->name} deleted: {$reason}", $this, actor: $actor);
+        }
+
+        return $count;
     }
 }

@@ -73,14 +73,22 @@ class Installation
 
         $key = 'base64:'.base64_encode(Encrypter::generateKey((string) config('app.cipher')));
 
+        $encrypt = null;
+
         try {
             $env = new EnvFile(base_path('.env'));
             $env->ensureExists(base_path('.env.example'));
             $env->set(['APP_KEY' => $key]);
+            $encrypt = $env->get('SESSION_ENCRYPT');
         } catch (Throwable) {
             // The installer's requirement check explains how to make the folder writable.
         }
 
         config(['app.key' => $key]);
+
+        // A .env made just now: this first page keeps its session the way the next pages read it.
+        if ($encrypt !== null) {
+            config(['session.encrypt' => filter_var($encrypt, FILTER_VALIDATE_BOOL)]);
+        }
     }
 }

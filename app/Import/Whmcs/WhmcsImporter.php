@@ -471,6 +471,8 @@ class WhmcsImporter extends ImportSource
                 'ip_address' => $ip,
                 'port' => (int) ($row->port ?? 0) ?: null,
                 'use_ssl' => ($row->secure ?? '') === 'on',
+                // A WHMCS server without "secure" keeps working as it did there. Site health lists it.
+                'allow_plain_http' => ($row->secure ?? '') !== 'on',
                 'username' => $this->text($row->username ?? null),
                 'nameservers' => array_values(array_filter(array_map(fn (int $number): ?string => $this->text($row->{'nameserver'.$number} ?? null), range(1, 5)))),
                 'max_accounts' => (int) ($row->maxaccounts ?? 0) ?: null,

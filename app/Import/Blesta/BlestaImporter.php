@@ -374,6 +374,8 @@ class BlestaImporter extends ImportSource
                 'ip_address' => filter_var($values['ip_address'] ?? null, FILTER_VALIDATE_IP) ?: (filter_var($hostname, FILTER_VALIDATE_IP) ?: null),
                 'port' => (int) ($values['port'] ?? 0) ?: null,
                 'use_ssl' => ! in_array(strtolower((string) ($values['use_ssl'] ?? 'true')), ['false', '0', ''], true),
+                // A server without SSL keeps working as it did there. Site health lists it.
+                'allow_plain_http' => in_array(strtolower((string) ($values['use_ssl'] ?? 'true')), ['false', '0', ''], true),
                 'username' => $this->text($values['user_name'] ?? $values['username'] ?? $values['user'] ?? null),
                 'nameservers' => array_values(array_filter(array_map(fn (mixed $name): ?string => $this->text($name), is_array($nameservers) ? $nameservers : [$nameservers]))),
                 'max_accounts' => (int) ($values['account_limit'] ?? 0) ?: null,

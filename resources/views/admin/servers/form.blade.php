@@ -3,7 +3,7 @@
     <div class="page-head"><div><h1>{{ $editing ? __('Edit server') : __('Add server') }}</h1>@if ($editing)<p>{{ $server->hostname }}</p>@endif</div></div>
 
     <form method="POST" action="{{ $editing ? route('admin.servers.update', $server) : route('admin.servers.store') }}" class="card" style="display:grid;gap:1.1rem;max-width:860px"
-          x-data="{ module: @js(old('module', $server->module ?? array_key_first($modules))), help: @js($help) }">
+          x-data="{ module: @js(old('module', $server->module ?? array_key_first($modules))), help: @js($help), ssl: true }">
         @csrf
         @if ($editing) @method('PUT') @endif
 
@@ -25,7 +25,11 @@
                 <input id="f-port" name="port" type="number" class="input" value="{{ old('port', $server->port) }}" :placeholder="help[module] ? help[module].port : ''">
                 <p class="help">{{ __('Leave empty for the usual port.') }}</p>
             </div>
-            <x-checkbox name="use_ssl" :label="__('Connect with HTTPS')" :checked="$server->use_ssl" />
+            <x-checkbox name="use_ssl" :label="__('Connect with HTTPS')" :checked="$server->use_ssl" x-init="ssl = $el.checked" x-on:change="ssl = $el.checked" />
+            <div class="span-2" x-show="!ssl" x-cloak style="display:grid;gap:.7rem">
+                <div class="flash" data-tone="crit">{{ __('Without HTTPS, the password and API token are sent without encryption. Anyone on the network between Nuvabill and the server can read them. Use plain HTTP only for a server on your private network.') }}</div>
+                <x-checkbox name="allow_plain_http" :label="__('Allow plain HTTP (private network only)')" :checked="$server->allow_plain_http" :help="__('Only for a private or local address, such as 10.0.0.5. A server on the internet must use HTTPS.')" />
+            </div>
             <x-input name="username" :label="__('Username')" :value="$server->username" autocomplete="off" />
             <x-input name="password" type="password" :label="__('Password')" :help="$server->password ? __('Saved. Leave empty to keep it.') : __('Only if the panel uses a password instead of a token.')" autocomplete="new-password" />
             <x-textarea name="api_token" :label="__('API token')" rows="2" class="span-2" :help="$server->api_token ? __('Saved. Leave empty to keep it.') : null" autocomplete="off" />

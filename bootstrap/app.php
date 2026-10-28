@@ -26,9 +26,8 @@ use App\Http\Middleware\SetLocale;
 use App\Http\Middleware\ThrottleRequests;
 use App\Http\Middleware\TrackAffiliateLink;
 use App\Http\Middleware\VerifyCaptcha;
+use App\Http\SecretInput;
 use App\Models\SeoRedirect;
-use App\Provisioning\OrderFields;
-use App\Security\OwnerCheck;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -151,13 +150,10 @@ return Application::configure(basePath: dirname(__DIR__))
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
 
-        // Passwords typed on the Account page are never kept in the session after a form error.
-        $exceptions->dontFlash(OwnerCheck::PASSWORD_FIELDS);
-        // Nor are server API tokens, BMC logins of dedicated servers, or root passwords staff type,
-        // so a form shown again after an error never writes them back into the page.
-        $exceptions->dontFlash(['api_token', 'bmc_username', 'bmc_password', 'root_password']);
-        // Nor are the secret order form fields of server modules (App\Provisioning\OrderFields).
-        $exceptions->dontFlash([OrderFields::SECRET]);
+        // Secrets (passwords, API tokens, root passwords, secret order fields, API keys, client
+        // secrets and more) are never kept in the session after a form error. The list is in
+        // App\Http\SecretInput, so the CAPTCHA check leaves out the same fields.
+        $exceptions->dontFlash(SecretInput::names());
 
         // A store page that got a new web address: send visitors and search engines to it.
         $exceptions->render(function (NotFoundHttpException $exception, Request $request) {

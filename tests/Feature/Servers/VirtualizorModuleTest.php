@@ -264,7 +264,7 @@ class VirtualizorModuleTest extends TestCase
     {
         $api = $this->fakeVirtualizor(['status' => ['status' => ['77' => ['status' => 1]]]]);
         $secure = $this->service();
-        $plain = $this->service(server: ['use_ssl' => false, 'hostname' => 'vz2.example.test']);
+        $plain = $this->service(server: ['use_ssl' => false, 'allow_plain_http' => true, 'hostname' => 'vz2.example.test']);
 
         app(Provisioner::class)->clientPanel($secure);
         app(Provisioner::class)->clientPanel($plain);
@@ -565,7 +565,7 @@ class VirtualizorModuleTest extends TestCase
     public function test_clients_keep_the_vnc_details_while_panel_sign_in_cannot_be_offered(): void
     {
         $this->fakeVirtualizor(['vnc' => ['info' => ['ip' => '198.51.100.2', 'port' => 5901, 'password' => 'vncpass1']]]);
-        $plain = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']], ['use_ssl' => false]);
+        $plain = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']], ['use_ssl' => false, 'allow_plain_http' => true]);
         $moved = $this->service(['client_login' => '1'], ['client_id' => $plain->client_id, 'module_data' => ['vpsid' => '77', 'uid' => '99']]);
         $this->actingAs($plain->client, 'web');
 
@@ -615,7 +615,7 @@ class VirtualizorModuleTest extends TestCase
     {
         $api = $this->fakeVirtualizor(['sso' => ['token_key' => 'x', 'sid' => '']]);
 
-        $plain = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']], ['use_ssl' => false]);
+        $plain = $this->service(['client_login' => '1'], ['module_data' => ['vpsid' => '77', 'uid' => '58']], ['use_ssl' => false, 'allow_plain_http' => true]);
         $this->assertNull(app(Provisioner::class)->signInUrl($plain, $this->context($plain)));
         $this->assertSame([], $api->calls);
 

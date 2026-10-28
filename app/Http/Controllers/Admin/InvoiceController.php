@@ -77,6 +77,7 @@ class InvoiceController extends Controller
             'invoice' => $invoice,
             'methods' => $methods,
             'canRefundThroughGateway' => $canRefundThroughGateway,
+            'unclearRefund' => $invoice->transactions->where('type', 'payment')->contains(fn (Transaction $payment): bool => $refunds->hasUnclearRefund($payment)),
             // Funds added to the wallet are already in it, so a credit note cannot put them there again.
             'creditToWallet' => $invoice->currency === $invoice->client->currency && ! $invoice->items->contains('type', InvoiceItem::TYPE_CREDIT),
             'autoPay' => $savedMethod === null && ! $repeat ? null : [

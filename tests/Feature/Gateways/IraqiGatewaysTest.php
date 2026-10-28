@@ -145,6 +145,20 @@ class IraqiGatewaysTest extends TestCase
         $this->assertDatabaseHas('activity_logs', ['action' => 'payment.failed', 'description' => 'Wayl could not start a payment for invoice '.$invoice->displayNumber().': Wayl could not create the payment link: Validation failed (Total must be at least 1000)']);
     }
 
+    public function test_a_fib_error_logs_only_the_status_and_error_code(): void
+    {
+        $this->enableGateway('fib', ['client_id' => 'shop', 'client_secret' => 'secret', 'mode' => 'stage']);
+        Http::fake([
+            self::FIB.'/auth/realms/fib-online-shop/protocol/openid-connect/token' => Http::response(['access_token' => 'token-1', 'expires_in' => 60]),
+            self::FIB.'/protected/v1/payments' => Http::response(['traceId' => 'trace-1', 'errors' => [['code' => 'INVALID_AMOUNT', 'title' => 'Invalid amount', 'detail' => 'Merchant account 4411 limit reached']]], 400),
+        ]);
+
+        [$client, $invoice] = $this->invoice(3000000);
+        $this->actingAs($client, 'web')->post(route('client.invoices.pay', $invoice), ['gateway' => 'fib']);
+
+        $this->assertDatabaseHas('activity_logs', ['action' => 'payment.failed', 'description' => 'FIB (First Iraqi Bank) could not start a payment for invoice '.$invoice->displayNumber().': FIB could not start the payment: HTTP 400 INVALID_AMOUNT']);
+    }
+
     public function test_iraqi_gateways_are_only_offered_for_dinar_invoices(): void
     {
         $this->enableGateway('fib', ['client_id' => 'shop', 'client_secret' => 'secret']);

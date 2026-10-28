@@ -126,6 +126,9 @@
                     <form method="POST" action="{{ route('admin.invoices.refund', $invoice) }}" data-confirm="{{ __('Refund this invoice? This cannot be undone.') }}" style="display:grid;gap:.9rem">
                         @csrf
                         <p class="muted" style="margin:0">{{ __('Refunds :amount, marks the invoice Refunded and makes a credit note for it. Services on the invoice are not changed.', ['amount' => money($invoice->creditableAmount(), $invoice->currency)]) }}</p>
+                        @if ($unclearRefund)
+                            <p class="flash" data-tone="warn" style="margin:0">{{ __('The payment service did not answer an earlier refund, so it may have gone through. Refunding again first sends that same refund again, so the client is not refunded twice.') }}</p>
+                        @endif
                         @if ($canRefundThroughGateway)
                             <x-checkbox name="through_gateway" :label="__('Send the money back through the payment gateway')" :help="__('Payments made another way are only recorded. Refund those yourself.')" checked />
                         @else
@@ -140,6 +143,9 @@
                     <form method="POST" action="{{ route('admin.invoices.credit-notes.store', $invoice) }}" style="display:grid;gap:.9rem">
                         @csrf
                         <p class="muted" style="margin:0">{{ __('Take back part of this invoice, for example for a day of downtime. The invoice stays as it is.') }}</p>
+                        @if ($unclearRefund)
+                            <p class="flash" data-tone="warn" style="margin:0">{{ __('The payment service did not answer an earlier refund, so it may have gone through. Refunding again first sends that same refund again, so the client is not refunded twice.') }}</p>
+                        @endif
                         @if ($invoice->items->contains('type', \App\Models\InvoiceItem::TYPE_RESOURCE_CHANGE))
                             <p class="flash" data-tone="warn" style="margin:0">{{ __('Resources from this invoice are still on the service. Lower them on the service page if you take the money back.') }}</p>
                         @endif

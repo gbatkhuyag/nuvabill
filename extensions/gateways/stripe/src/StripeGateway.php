@@ -4,20 +4,24 @@ namespace Nuvabill\Extensions\Stripe;
 
 use App\Contracts\ChecksSavedCharges;
 use App\Contracts\SavesPaymentMethods;
+use App\Contracts\SendsRefundsOnce;
 use App\Extensions\Gateways\ChargeResult;
 use App\Extensions\Gateways\Gateway;
 use App\Extensions\Gateways\PaymentResult;
 use App\Extensions\Gateways\PaymentStart;
 use App\Extensions\Gateways\RefundResult;
+use App\Extensions\Gateways\RefundUnclear;
 use App\Extensions\Gateways\SavedMethod;
 use App\Extensions\Gateways\WebhookResult;
 use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\PaymentMethod;
 use App\Models\Transaction;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -26,7 +30,7 @@ use RuntimeException;
  * reference without the client. A charge the bank is still processing is settled by the
  * payment_intent.succeeded webhook, or checked by the next nightly run.
  */
-class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentMethods
+class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentMethods, SendsRefundsOnce
 {
     private const API = 'https://api.stripe.com/v1';
 
@@ -190,15 +194,34 @@ class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentM
 
     public function refund(Transaction $payment, int $amount): RefundResult
     {
+        return $this->refundOnce($payment, $amount, 'once-'.Str::lower(Str::random(20)));
+    }
+
+    public function refundOnce(Transaction $payment, int $amount, string $attemptKey): RefundResult
+    {
         if (! str_starts_with((string) $payment->reference, 'pi_')) {
             throw new RuntimeException('This payment has no Stripe payment ID, so Stripe cannot refund it.');
         }
 
-        $response = $this->api()->asForm()->post(self::API.'/refunds', [
-            'payment_intent' => $payment->reference,
-            'amount' => $amount,
-            'metadata' => ['invoice_id' => (string) $payment->invoice_id],
-        ]);
+        try {
+            $response = $this->api()->asForm()
+                // The same refund sent twice (a timeout, then a retry) sends the money back once.
+                // Stripe keeps keys for about 24 hours; the attempt in the metadata lets staff find
+                // the refund in Stripe after that.
+                ->withHeaders(['Idempotency-Key' => $this->idempotencyKey('refund-'.$attemptKey)])
+                ->post(self::API.'/refunds', [
+                    'payment_intent' => $payment->reference,
+                    'amount' => $amount,
+                    'metadata' => ['invoice_id' => (string) $payment->invoice_id, 'attempt' => $attemptKey, 'nuvabill_site' => $this->siteMarker()],
+                ]);
+        } catch (ConnectionException $exception) {
+            throw new RefundUnclear('Stripe did not answer the refund.', previous: $exception);
+        }
+
+        // A Stripe error, too many requests, or the same key still running: the refund may have been made.
+        if ($response->serverError() || in_array($response->status(), [409, 429], true)) {
+            throw new RefundUnclear('Stripe did not answer the refund (HTTP '.$response->status().').');
+        }
 
         if ($response->failed() || ! in_array($response->json('status'), ['succeeded', 'pending'], true)) {
             throw new RuntimeException('Stripe could not refund the payment: '.($response->json('error.message') ?? $response->json('status') ?? $response->status()));
@@ -209,6 +232,11 @@ class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentM
             reference: (string) $response->json('id'),
             meta: ['status' => $response->json('status')],
         );
+    }
+
+    public function refundKeyHours(): int
+    {
+        return 23;
     }
 
     public function hasValidSignature(string $payload, string $header): bool
@@ -307,8 +335,8 @@ class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentM
     }
 
     /**
-     * The Idempotency-Key of one try of an automatic payment, at most 255 characters. Unclear tries
-     * are found again by the attempt in their metadata, not by this key.
+     * The Idempotency-Key of one try of an automatic payment or a refund, at most 255 characters.
+     * Unclear payment tries are found again by the attempt in their metadata, not by this key.
      */
     private function idempotencyKey(string $attemptKey): string
     {

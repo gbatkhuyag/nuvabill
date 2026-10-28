@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -143,7 +144,11 @@ class FibGateway extends Gateway
         ]);
 
         if (! $response->successful() || ! is_string($response->json('paymentId'))) {
-            throw new RuntimeException('FIB could not start the payment: HTTP '.$response->status().' '.$response->body());
+            // Only the status and FIB's short error code or title: the full reply is not written to the activity log.
+            $error = collect([$response->json('errors.0.code'), $response->json('errors.0.title'), $response->json('code'), $response->json('title')])
+                ->first(fn (mixed $value): bool => is_string($value) && trim($value) !== '');
+
+            throw new RuntimeException('FIB could not start the payment: HTTP '.$response->status().($error !== null ? ' '.Str::limit(trim($error), 100) : ''));
         }
 
         return PaymentIntent::create([

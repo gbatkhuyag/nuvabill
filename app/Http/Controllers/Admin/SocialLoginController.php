@@ -54,7 +54,8 @@ class SocialLoginController extends Controller
             $enabled = (bool) ($data[$slug]['enabled'] ?? false);
 
             if ($enabled && $secret === '') {
-                return back()->withInput()->withErrors([$slug.'.client_secret' => __('Enter the client secret to switch this on.')]);
+                // No client secret typed here is kept in the session.
+                return back()->withInput($request->except(array_map(fn (string $other): string => $other.'.client_secret', $slugs)))->withErrors([$slug.'.client_secret' => __('Enter the client secret to switch this on.')]);
             }
 
             $values['social.'.$slug] = [

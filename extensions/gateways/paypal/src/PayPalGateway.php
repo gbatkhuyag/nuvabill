@@ -5,11 +5,13 @@ namespace Nuvabill\Extensions\PayPal;
 use App\Contracts\ChecksSavedCharges;
 use App\Contracts\RepeatsUnclearCharges;
 use App\Contracts\SavesPaymentMethods;
+use App\Contracts\SendsRefundsOnce;
 use App\Extensions\Gateways\ChargeResult;
 use App\Extensions\Gateways\Gateway;
 use App\Extensions\Gateways\PaymentResult;
 use App\Extensions\Gateways\PaymentStart;
 use App\Extensions\Gateways\RefundResult;
+use App\Extensions\Gateways\RefundUnclear;
 use App\Extensions\Gateways\SavedMethod;
 use App\Extensions\Gateways\WebhookResult;
 use App\Models\Client;
@@ -18,6 +20,7 @@ use App\Models\PaymentMethod;
 use App\Models\Transaction;
 use App\Support\Money;
 use Carbon\CarbonImmutable;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Http\Request;
@@ -25,6 +28,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -33,7 +37,7 @@ use RuntimeException;
  * their PayPal account for automatic renewals (PayPal calls it vaulting; the PayPal business account
  * must allow it). An automatic payment PayPal is still processing is checked by the next nightly run.
  */
-class PayPalGateway extends Gateway implements ChecksSavedCharges, RepeatsUnclearCharges, SavesPaymentMethods
+class PayPalGateway extends Gateway implements ChecksSavedCharges, RepeatsUnclearCharges, SavesPaymentMethods, SendsRefundsOnce
 {
     /**
      * Currencies PayPal accepts with two decimal places.
@@ -226,19 +230,36 @@ class PayPalGateway extends Gateway implements ChecksSavedCharges, RepeatsUnclea
 
     public function refund(Transaction $payment, int $amount): RefundResult
     {
+        return $this->refundOnce($payment, $amount, 'once-'.Str::lower(Str::random(20)));
+    }
+
+    public function refundOnce(Transaction $payment, int $amount, string $attemptKey): RefundResult
+    {
         $captureId = (string) $payment->reference;
 
         if (! preg_match('/^[A-Z0-9]+$/', $captureId)) {
             throw new RuntimeException('This payment has no PayPal capture ID, so PayPal cannot refund it.');
         }
 
-        $response = $this->api()->post($this->baseUrl().'/v2/payments/captures/'.$captureId.'/refund', [
-            'amount' => [
-                'currency_code' => $payment->currency,
-                'value' => Money::toDecimal($amount),
-            ],
-            'custom_id' => (string) $payment->invoice_id,
-        ]);
+        try {
+            $response = $this->api()
+                // The same refund sent twice (a timeout, then a retry) sends the money back once.
+                // PayPal keeps this key for a few hours only (see refundKeyHours()).
+                ->withHeaders(['PayPal-Request-Id' => $this->attemptId('refund-'.$attemptKey)])
+                ->post($this->baseUrl().'/v2/payments/captures/'.$captureId.'/refund', [
+                    'amount' => [
+                        'currency_code' => $payment->currency,
+                        'value' => Money::toDecimal($amount),
+                    ],
+                    'custom_id' => (string) $payment->invoice_id,
+                ]);
+        } catch (ConnectionException $exception) {
+            throw new RefundUnclear('PayPal did not answer the refund.', previous: $exception);
+        }
+
+        if ($this->gaveNoAnswer($response)) {
+            throw new RefundUnclear('PayPal did not answer the refund (HTTP '.$response->status().').');
+        }
 
         if ($response->failed() || ! in_array($response->json('status'), ['COMPLETED', 'PENDING'], true)) {
             throw new RuntimeException('PayPal could not refund the payment: '.($response->json('details.0.description') ?? $response->json('message') ?? $response->status()));
@@ -249,6 +270,15 @@ class PayPalGateway extends Gateway implements ChecksSavedCharges, RepeatsUnclea
             reference: (string) $response->json('id'),
             meta: ['status' => $response->json('status')],
         );
+    }
+
+    /**
+     * PayPal does not promise to keep request IDs long, so an unclear refund is sent again only
+     * within a few hours.
+     */
+    public function refundKeyHours(): int
+    {
+        return 3;
     }
 
     /**

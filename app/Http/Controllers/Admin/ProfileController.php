@@ -10,6 +10,7 @@ use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\View\View;
@@ -33,7 +34,7 @@ class ProfileController extends Controller
             'recoveryCodes' => session('recovery_codes'),
             'passkeys' => $admin->passkeys()->latest('id')->get(),
             'apiTokens' => $admin->apiTokens()->latest('id')->get(),
-            'newApiKey' => session('new_api_key'),
+            'newApiKey' => is_string($key = session('new_api_key')) ? rescue(fn (): string => Crypt::decryptString($key), null, report: false) : null,
             'pushDevices' => $admin->pushSubscriptions()->latest('id')->get(),
             'pushAlerts' => $admin->pushAlerts(),
             'pushKey' => rescue(fn (): string => app(WebPush::class)->publicKey(), '', report: false),
@@ -46,15 +47,23 @@ class ProfileController extends Controller
         $request->validate([
             'current_password' => ['required', 'current_password:admin'],
             'password' => ['required', 'confirmed', Password::min(10)],
+            'revoke_api_keys' => ['sometimes', 'boolean'],
         ]);
+        $admin = $request->user('admin');
 
         // The guard's own copy gets the new password, so this device stays signed in while every
         // other session and remember-me cookie stops working (the auth.session middleware).
-        $request->user('admin')->forceFill(['password' => $request->input('password'), 'remember_token' => Str::random(60)])->save();
+        $admin->forceFill(['password' => $request->input('password'), 'remember_token' => Str::random(60)])->save();
         $request->session()->regenerate();
         Activity::log('admin.password', 'Changed own password');
 
-        return back()->with('status', __('Password changed.'));
+        // API keys do not end with the sessions. The box is ticked by default; untick it to keep
+        // a working integration when the password is changed on purpose.
+        $revoked = $request->boolean('revoke_api_keys', true) ? $admin->revokeApiKeys('own password changed') : 0;
+
+        return back()->with('status', $revoked > 0
+            ? __('Password changed. Your API keys were deleted.')
+            : __('Password changed.'));
     }
 
     /**

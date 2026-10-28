@@ -114,7 +114,7 @@ Route::middleware(['auth:admin', 'auth.session', 'admin.can', 'admin.two-factor'
     Route::post('profile/two-factor', [ProfileController::class, 'startTwoFactor'])->middleware('throttle:staff-reauth')->name('profile.two-factor.start');
     Route::post('profile/two-factor/confirm', [ProfileController::class, 'confirmTwoFactor'])->middleware('throttle:staff-reauth')->name('profile.two-factor.confirm');
     Route::delete('profile/two-factor', [ProfileController::class, 'disableTwoFactor'])->middleware('throttle:staff-reauth')->name('profile.two-factor.disable');
-    Route::post('profile/api-keys', [ApiKeyController::class, 'store'])->middleware('throttle:10,1')->name('profile.api-keys.store');
+    Route::post('profile/api-keys', [ApiKeyController::class, 'store'])->middleware('throttle:staff-reauth')->name('profile.api-keys.store');
     Route::delete('profile/api-keys/{apiToken}', [ApiKeyController::class, 'destroy'])->name('profile.api-keys.destroy');
     Route::post('language', [LanguageController::class, 'admin'])->name('language');
     Route::post('profile/passkeys/options', [PasskeyController::class, 'options'])->middleware('throttle:staff-reauth')->name('profile.passkeys.options');

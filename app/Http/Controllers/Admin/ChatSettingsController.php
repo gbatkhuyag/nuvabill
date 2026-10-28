@@ -69,7 +69,7 @@ class ChatSettingsController extends Controller
         try {
             $bot = $telegram->connect(trim($data['token']), route('webhooks.telegram'));
         } catch (ChatError $error) {
-            return back()->withInput()->with('error', $error->getMessage());
+            return back()->withInput($request->except('token'))->with('error', $error->getMessage());
         }
 
         $settings->setMany(['chat.telegram_token' => trim($data['token']), 'chat.telegram_bot' => $bot['username'], 'chat.telegram_secret' => $bot['secret']]);

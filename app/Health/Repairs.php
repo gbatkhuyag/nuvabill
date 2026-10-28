@@ -34,6 +34,7 @@ class Repairs
         private readonly DatabaseInspector $database,
         private readonly ReleaseSource $releases,
         private readonly Themes $themes,
+        private readonly ?string $envPath = null,
     ) {}
 
     /**
@@ -70,6 +71,7 @@ class Repairs
             'core.restore' => trans_choice(':count original file was put back.|:count original files were put back.', $count = $this->coreFiles->restore($paths, $this->releases), ['count' => $count]),
             'settings.debug_off' => $this->writeEnv(['APP_DEBUG' => 'false'], __('Debug mode is off.')),
             'settings.secure_cookies' => $this->writeEnv(['SESSION_SECURE_COOKIE' => 'true'], __('Sign-in cookies are now only sent over HTTPS.')),
+            'settings.encrypt_sessions' => $this->writeEnv(['SESSION_ENCRYPT' => 'true'], __('Session data is now encrypted. Everyone signs in again once.')),
             'db.migrate' => $this->migrate(),
             'db.cleanup' => trans_choice(':count old record was removed.|:count old records were removed.', $count = array_sum($this->database->cleanUp()), ['count' => $count]),
             'db.optimize' => $this->optimize(),
@@ -233,7 +235,7 @@ class Repairs
      */
     private function writeEnv(array $values, string $done): string
     {
-        (new EnvFile(base_path('.env')))->set($values);
+        (new EnvFile($this->envPath ?? base_path('.env')))->set($values);
 
         // A cached configuration would keep using the old values.
         if (app()->configurationIsCached()) {

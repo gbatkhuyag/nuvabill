@@ -7,6 +7,7 @@ use App\Billing\PaymentRecorder;
 use App\Billing\RefundIssuer;
 use App\Billing\Wallet;
 use App\Enums\InvoiceStatus;
+use App\Extensions\Gateways\RefundUnclear;
 use App\Mail\TemplatedMessage;
 use App\Models\Admin;
 use App\Models\Client;
@@ -178,6 +179,35 @@ class CreditNoteTest extends TestCase
         $this->assertSame(1000, $invoice->client->fresh()->credit);
         $this->assertSame([1000, -1000, 1000], CreditTransaction::query()->orderBy('id')->pluck('amount')->all());
         $this->assertSame(0, CreditNote::query()->count());
+    }
+
+    public function test_an_unclear_refund_keeps_the_funds_out_of_the_wallet(): void
+    {
+        $invoice = $this->paidTopUp(1000);
+        $calls = 0;
+        $this->mock(RefundIssuer::class)->shouldReceive('refundAmount')->twice()->andReturnUsing(function () use (&$calls): int {
+            if (++$calls === 1) {
+                throw new RefundUnclear('No answer');
+            }
+
+            return 1000;
+        });
+
+        try {
+            app(CreditNotes::class)->issue($invoice, 1000, CreditNote::METHOD_REFUND);
+            $this->fail('The refund should be unclear.');
+        } catch (RefundUnclear) {
+        }
+
+        // It may have gone through, so the client cannot spend the funds meanwhile.
+        $this->assertSame(0, $invoice->client->fresh()->credit);
+        $this->assertSame([1000, -1000], CreditTransaction::query()->orderBy('id')->pluck('amount')->all());
+
+        // The retry does not take them out a second time.
+        app(CreditNotes::class)->issue($invoice, 1000, CreditNote::METHOD_REFUND);
+        $this->assertSame(0, $invoice->client->fresh()->credit);
+        $this->assertSame([1000, -1000], CreditTransaction::query()->orderBy('id')->pluck('amount')->all());
+        $this->assertSame(InvoiceStatus::Refunded, $invoice->fresh()->status);
     }
 
     private function paidTopUp(int $amount): Invoice

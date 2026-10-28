@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Extensions\ExtensionManager;
 use App\Extensions\ExtensionManifest;
+use App\Extensions\SettingsForm;
 use App\Http\Controllers\Controller;
 use App\Marketplace\LicenseChecker;
 use App\Marketplace\Listing;
@@ -106,7 +107,7 @@ class MarketplaceController extends Controller
             $download = $this->client->download($slug, $key);
             $installed = $installer->install($download, $key);
         } catch (RuntimeException $exception) {
-            return back()->withInput()->with('error', $this->refusalMessage($exception));
+            return back()->withInput($request->except('license_key'))->with('error', $this->refusalMessage($exception));
         }
 
         $this->client->catalog(fresh: true);
@@ -200,26 +201,9 @@ class MarketplaceController extends Controller
         $current = $this->extensions->settings($slug);
         $enabled = $request->boolean('enabled');
 
-        $rules = ['enabled' => ['boolean']];
-
-        foreach ($fields as $key => $field) {
-            $required = ($field['required'] ?? false) && $enabled && ! ($field['type'] === 'password' && filled($current[$key] ?? null));
-            $rules["settings.{$key}"] = array_filter([
-                $required ? 'required' : 'nullable',
-                'string',
-                $field['type'] === 'textarea' ? 'max:5000' : 'max:1000',
-                isset($field['options']) ? 'in:'.implode(',', array_keys($field['options'])) : null,
-            ]);
-        }
-
-        $input = $request->validate($rules, [], collect($fields)->mapWithKeys(fn (array $field, string $key): array => ["settings.{$key}" => $field['label']])->all());
+        $input = SettingsForm::validate($request, $fields, $current, $enabled);
         // Keep values the add-on saved for itself, such as a connection token.
-        $settings = $current;
-
-        foreach ($fields as $key => $field) {
-            $value = $input['settings'][$key] ?? null;
-            $settings[$key] = ($field['type'] === 'password' && blank($value)) ? ($current[$key] ?? null) : $value;
-        }
+        $settings = array_replace($current, SettingsForm::values($fields, $input, $current));
 
         $this->extensions->saveSettings($slug, $settings, $enabled);
         Activity::log('extension.updated', "Extension {$manifest->name} ".($enabled ? 'switched on' : 'switched off'));

@@ -4,12 +4,14 @@ namespace App\Models;
 
 use App\Enums\OrderStatus;
 use App\Enums\ServiceStatus;
+use App\Provisioning\ServerTransport;
 use Database\Factories\ServerFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 
 /**
  * A control panel server (cPanel/WHM, DirectAdmin, ...) that services are created on.
@@ -26,6 +28,7 @@ class Server extends Model
         'ip_address',
         'port',
         'use_ssl',
+        'allow_plain_http',
         'username',
         'password',
         'api_token',
@@ -45,6 +48,7 @@ class Server extends Model
             'api_token' => 'encrypted',
             'nameservers' => 'array',
             'use_ssl' => 'boolean',
+            'allow_plain_http' => 'boolean',
             'is_active' => 'boolean',
             'port' => 'integer',
             'max_accounts' => 'integer',
@@ -98,6 +102,17 @@ class Server extends Model
     public function checks(): HasMany
     {
         return $this->hasMany(ServerCheck::class);
+    }
+
+    /**
+     * "https", or "http" when staff allowed plain HTTP for this server. Server modules call it
+     * right before they send the password or token, and it throws when plain HTTP is not allowed.
+     *
+     * @throws RuntimeException
+     */
+    public function apiScheme(): string
+    {
+        return ServerTransport::scheme($this);
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Http\SecretInput;
 use App\Security\Captcha;
 use Closure;
 use Illuminate\Http\Request;
@@ -18,7 +19,8 @@ class VerifyCaptcha
     {
         if ($this->captcha->protects($form) && ! $this->captcha->verify($request)) {
             return back()
-                ->withInput($request->except(['password', 'password_confirmation', 'current_password']))
+                // The same fields a form error leaves out, such as EPP codes and secret order fields.
+                ->withInput($request->except(SecretInput::names()))
                 ->withErrors(['captcha' => __('Please confirm you are a person, then try again.')]);
         }
 

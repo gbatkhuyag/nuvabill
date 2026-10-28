@@ -7,6 +7,7 @@ use App\Extensions\ExtensionManager;
 use App\Http\Controllers\Controller;
 use App\Models\Server;
 use App\Provisioning\Provisioner;
+use App\Provisioning\ServerTransport;
 use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -60,7 +61,7 @@ class ServerController extends Controller
 
         // A saved password or token is only ever sent to the server it was entered for. When the
         // address or module changes, both must be entered again, so an old secret never goes to a new host.
-        $addressChanged = $server->isDirty(['module', 'hostname', 'port', 'use_ssl', 'username']);
+        $addressChanged = $server->isDirty(['module', 'hostname', 'port', 'use_ssl', 'allow_plain_http', 'username']);
 
         if ($addressChanged && blank($data['password'] ?? null) && blank($data['api_token'] ?? null) && (filled($server->password) || filled($server->api_token))) {
             throw ValidationException::withMessages(['api_token' => __('The server address, port, SSL, user name or module changed. Enter the API token or password again.')]);
@@ -141,6 +142,7 @@ class ServerController extends Controller
             'ip_address' => ['nullable', 'ip'],
             'port' => ['nullable', 'integer', 'between:1,65535'],
             'use_ssl' => ['boolean'],
+            'allow_plain_http' => ['boolean'],
             'username' => ['nullable', 'string', 'max:100'],
             'password' => ['nullable', 'string', 'max:190'],
             'api_token' => ['nullable', 'string', 'max:2000'],
@@ -149,8 +151,38 @@ class ServerController extends Controller
             'is_active' => ['boolean'],
         ], ['hostname.regex' => __('Enter only the host name, for example server1.example.com, without https:// or a path.')]);
 
+        $this->checkPlainHttp($data);
         $data['nameservers'] = collect(preg_split('/[\s,]+/', (string) ($data['nameservers'] ?? '')))->filter()->values()->all() ?: null;
 
         return $data;
+    }
+
+    /**
+     * Plain HTTP sends the password or API token without encryption, so it needs its own box and
+     * only works for a server on a private network or this machine. With HTTPS on, the box is cleared.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function checkPlainHttp(array &$data): void
+    {
+        $data['use_ssl'] = (bool) ($data['use_ssl'] ?? true);
+
+        if ($data['use_ssl']) {
+            $data['allow_plain_http'] = false;
+
+            return;
+        }
+
+        if (! (bool) ($data['allow_plain_http'] ?? false)) {
+            throw ValidationException::withMessages(['use_ssl' => __('Turn on "Connect with HTTPS". Plain HTTP needs the box "Allow plain HTTP (private network only)".')]);
+        }
+
+        foreach (['hostname', 'ip_address'] as $field) {
+            if (filled($data[$field] ?? null) && ! ServerTransport::isPrivateHost((string) $data[$field])) {
+                throw ValidationException::withMessages([$field => __('Plain HTTP only works for a server on a private network. Turn on "Connect with HTTPS" for a server on the internet.')]);
+            }
+        }
+
+        $data['allow_plain_http'] = true;
     }
 }

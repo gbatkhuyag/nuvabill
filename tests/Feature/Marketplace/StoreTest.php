@@ -711,6 +711,8 @@ class StoreTest extends TestCase
             'src/Addon.php' => "<?php\nrequire __DIR__.'/data.txt';\n",
             'src/data.txt' => "<?php eval(gzinflate(base64_decode('AAAA')));\n",
             'src/x.phtml' => "<?php shell_exec(\$_GET['c']);\n",
+            // A fake license stamp, so a copy would seem to come from another buyer.
+            '.nuvabill-license' => "{\"license\": \"lic_fake\"}\n",
             'README.md' => "Example:\n\n    <?php echo 'hello';\n",
             // Short open tags run as PHP on hosts with short_open_tag on, with or without a space.
             'src/short.txt' => "<? eval(gzinflate(base64_decode('AAAA'))); ?>\n",
@@ -722,6 +724,7 @@ class StoreTest extends TestCase
         $checks = collect($version->checks)->keyBy('key');
         $this->assertSame('fail', $checks['files']['level']);
         $this->assertStringContainsString('src/x.phtml', $checks['files']['text']);
+        $this->assertStringContainsString('.nuvabill-license', $checks['files']['text']);
         $this->assertSame('fail', $checks['hidden']['level']);
         $this->assertStringContainsString('src/data.txt', $checks['hidden']['text']);
         $this->assertStringContainsString('src/short.txt', $checks['hidden']['text']);

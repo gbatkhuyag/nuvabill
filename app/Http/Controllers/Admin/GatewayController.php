@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Extensions\ExtensionManager;
 use App\Extensions\ExtensionManifest;
+use App\Extensions\SettingsForm;
 use App\Http\Controllers\Controller;
 use App\Support\Activity;
 use Illuminate\Http\RedirectResponse;
@@ -40,26 +41,9 @@ class GatewayController extends Controller
         $current = $extensions->settings($gateway);
         $enabled = $request->boolean('enabled');
 
-        $rules = ['enabled' => ['boolean']];
+        $input = SettingsForm::validate($request, $fields, $current, $enabled);
 
-        foreach ($fields as $key => $field) {
-            $required = ($field['required'] ?? false) && $enabled && ! ($field['type'] === 'password' && filled($current[$key] ?? null));
-            $rules["settings.{$key}"] = array_filter([
-                $required ? 'required' : 'nullable',
-                'string',
-                $field['type'] === 'textarea' ? 'max:5000' : 'max:1000',
-                isset($field['options']) ? 'in:'.implode(',', array_keys($field['options'])) : null,
-            ]);
-        }
-
-        $input = $request->validate($rules, [], collect($fields)->mapWithKeys(fn (array $field, string $key): array => ["settings.{$key}" => $field['label']])->all());
-
-        $settings = [];
-
-        foreach ($fields as $key => $field) {
-            $value = $input['settings'][$key] ?? null;
-            $settings[$key] = ($field['type'] === 'password' && blank($value)) ? ($current[$key] ?? null) : $value;
-        }
+        $settings = SettingsForm::values($fields, $input, $current);
 
         $extensions->saveSettings($gateway, $settings, $enabled);
         Activity::log('gateway.updated', "Payment gateway {$manifest->name} ".($enabled ? 'enabled' : 'disabled'));

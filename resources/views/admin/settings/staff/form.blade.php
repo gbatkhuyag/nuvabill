@@ -11,6 +11,9 @@
             <x-select name="role_id" :label="__('Role')" :options="$roles" :value="$admin->role_id" required />
             <x-input name="password" type="password" :label="$editing ? __('New password') : __('Password')" :help="$editing ? __('Leave empty to keep the current password.') : __('At least 10 characters.')" :required="! $editing" autocomplete="new-password" />
             <x-checkbox name="is_active" :label="__('Can sign in')" :checked="$admin->is_active" />
+            @if ($editing && $admin->is(auth('admin')->user()))
+                <x-input name="current_password" type="password" :label="__('Your current password')" :help="__('Only needed when you change your own email or password.')" autocomplete="current-password" />
+            @endif
         </div>
         <div class="form-actions">
             <button class="btn btn-primary" type="submit">{{ __('Save') }}</button>
