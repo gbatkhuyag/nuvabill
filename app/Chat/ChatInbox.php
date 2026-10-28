@@ -229,6 +229,7 @@ class ChatInbox
 
     private function locale(Client $client): string
     {
-        return Locales::isSupported($client->language) ? (string) $client->language : Locales::default();
+        // The same rule as emails: a language the host switched off is not used.
+        return Locales::forClient($client);
     }
 }

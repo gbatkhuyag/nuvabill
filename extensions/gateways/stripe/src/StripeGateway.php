@@ -31,20 +31,29 @@ class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentM
     private const API = 'https://api.stripe.com/v1';
 
     /**
-     * Nuvabill stores two decimal places for every currency and sends Stripe that amount, so
-     * currencies Stripe counts differently are not offered:
-     * - no decimal places at Stripe;
-     * - three decimal places at Stripe;
+     * Nuvabill stores two decimal places for every currency and sends Stripe that amount, so Stripe
+     * is offered only for the currencies listed here: Stripe's presentment currencies that Stripe
+     * charges with exactly two decimal places (docs.stripe.com/currencies). A currency that is not
+     * listed is refused until someone has checked it, so a new currency can never be charged with
+     * the wrong amount. Left out on purpose:
+     * - currencies with no decimal places or three decimal places at Stripe (JPY, KWD and others);
      * - ISK and UGX, which Stripe takes with two decimals that must be 00 (an amount with a
      *   fraction would be refused or rounded);
-     * - IQD and LYD, which have three decimal places in ISO 4217 and which Stripe does not take.
+     * - IQD and LYD, which have three decimal places in ISO 4217 and which Stripe does not take;
+     * - currencies Stripe does not take, or that have not been checked at Stripe (BTN, ERN, GHS,
+     *   MRU, SDG, SSP, STN, SVC, TMT, VES, XCG and ZWG), so a client is not sent to a payment
+     *   that can only fail.
      * HUF and TWD are fine: Stripe charges them with two decimals and only rounds payouts.
      */
-    private const UNSUPPORTED_CURRENCIES = [
-        'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
-        'BHD', 'JOD', 'KWD', 'OMR', 'TND',
-        'ISK',
-        'IQD', 'LYD',
+    private const SUPPORTED_CURRENCIES = [
+        'AED', 'AFN', 'ALL', 'AMD', 'AOA', 'ARS', 'AUD', 'AWG', 'AZN', 'BAM', 'BBD', 'BDT', 'BMD', 'BND', 'BOB',
+        'BRL', 'BSD', 'BWP', 'BYN', 'BZD', 'CAD', 'CDF', 'CHF', 'CNY', 'COP', 'CRC', 'CVE', 'CZK', 'DKK', 'DOP',
+        'DZD', 'EGP', 'ETB', 'EUR', 'FJD', 'FKP', 'GBP', 'GEL', 'GIP', 'GMD', 'GTQ', 'GYD', 'HKD', 'HNL',
+        'HTG', 'HUF', 'IDR', 'ILS', 'INR', 'JMD', 'KES', 'KGS', 'KHR', 'KYD', 'KZT', 'LAK', 'LBP', 'LKR', 'LRD',
+        'LSL', 'MAD', 'MDL', 'MKD', 'MMK', 'MNT', 'MOP', 'MUR', 'MVR', 'MWK', 'MXN', 'MYR', 'MZN', 'NAD', 'NGN',
+        'NIO', 'NOK', 'NPR', 'NZD', 'PAB', 'PEN', 'PGK', 'PHP', 'PKR', 'PLN', 'QAR', 'RON', 'RSD', 'RUB', 'SAR',
+        'SBD', 'SCR', 'SEK', 'SGD', 'SHP', 'SLE', 'SOS', 'SRD', 'SZL', 'THB', 'TJS', 'TOP', 'TRY', 'TTD', 'TWD',
+        'TZS', 'UAH', 'USD', 'UYU', 'UZS', 'WST', 'XCD', 'YER', 'ZAR', 'ZMW',
     ];
 
     /**
@@ -77,7 +86,7 @@ class StripeGateway extends Gateway implements ChecksSavedCharges, SavesPaymentM
 
     public function supportsCurrency(string $currency): bool
     {
-        return ! in_array(strtoupper($currency), self::UNSUPPORTED_CURRENCIES, true);
+        return in_array(strtoupper($currency), self::SUPPORTED_CURRENCIES, true);
     }
 
     /**

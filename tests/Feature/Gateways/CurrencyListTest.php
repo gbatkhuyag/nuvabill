@@ -40,6 +40,12 @@ class CurrencyListTest extends TestCase
      */
     private const PAYPAL_NOT_TWO_DECIMALS = ['HUF', 'JPY', 'TWD'];
 
+    /**
+     * Currencies the server's language data (CLDR) shows without decimals, although ISO 4217 and
+     * Stripe count them with two. Each was checked by hand; a currency is only added here after that.
+     */
+    private const CHECKED_TWO_DECIMALS = ['AFN', 'ALL', 'LAK', 'LBP', 'MMK', 'RSD', 'SOS', 'YER'];
+
     public function test_the_currency_list_has_only_current_codes_and_no_sanctioned_ones(): void
     {
         $codes = SettingsController::CURRENCIES;
@@ -98,9 +104,36 @@ class CurrencyListTest extends TestCase
         }
 
         // A currency that is not on the list, or not a currency at all, is never charged by a card gateway.
-        foreach (['KPW', 'IRR', 'XXX', ''] as $unknown) {
+        foreach (['KPW', 'IRR', 'SYP', 'CUP', 'VED', 'XXX', 'ABC', ''] as $unknown) {
+            $this->assertFalse($gateways->gateway('stripe')->supportsCurrency($unknown), "stripe and {$unknown}");
             $this->assertFalse($gateways->gateway('paypal')->supportsCurrency($unknown));
             $this->assertFalse($gateways->gateway('fib')->supportsCurrency($unknown));
+        }
+    }
+
+    /**
+     * A second check that does not rest on the lists above: the server's language data says how
+     * many decimals each currency has, so a currency added later without decimals or with three is
+     * caught even when nobody updated the lists in this test.
+     */
+    public function test_two_decimal_gateways_refuse_currencies_the_language_data_does_not_count_with_two_decimals(): void
+    {
+        if (! class_exists(NumberFormatter::class)) {
+            $this->markTestSkipped('The intl extension is not installed.');
+        }
+
+        $gateways = app(ExtensionManager::class);
+
+        foreach (SettingsController::CURRENCIES as $code) {
+            $digits = (new NumberFormatter("en@currency={$code}", NumberFormatter::CURRENCY))->getAttribute(NumberFormatter::FRACTION_DIGITS);
+
+            if ($digits === 2 || in_array($code, self::CHECKED_TWO_DECIMALS, true)) {
+                continue;
+            }
+
+            foreach (['stripe', 'paypal'] as $gateway) {
+                $this->assertFalse($gateways->gateway($gateway)->supportsCurrency($code), "{$gateway} would charge {$code} ({$digits} decimals) with the wrong amount.");
+            }
         }
     }
 
@@ -114,6 +147,17 @@ class CurrencyListTest extends TestCase
             if (class_exists(NumberFormatter::class)) {
                 $this->assertMatchesRegularExpression('/1,?234/u', Money::format(123400, $code), $code);
             }
+        }
+
+        // Three-decimal currencies show the two stored decimals for whole amounts too, never 1,234.000.
+        if (class_exists(NumberFormatter::class)) {
+            foreach (['BHD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND'] as $code) {
+                $this->assertMatchesRegularExpression('/1,?234\.00(?!\d)/u', Money::format(123400, $code), $code);
+                $this->assertStringNotContainsString('234.000', Money::format(123400, $code), $code);
+            }
+
+            // Other currencies keep their usual look for whole amounts.
+            $this->assertStringNotContainsString('.00', Money::format(123400, 'JPY'));
         }
     }
 }

@@ -119,7 +119,7 @@ class LocaleTest extends TestCase
         $this->assertNotSame('Sign in to your account', __('Sign in to your account', locale: 'mn'));
     }
 
-    public function test_mongolian_has_one_plural_form_and_its_pdfs_stay_in_mongolian(): void
+    public function test_mongolian_texts_use_one_form_for_every_count_and_its_pdfs_stay_in_mongolian(): void
     {
         app()->setLocale('mn');
 
@@ -290,8 +290,9 @@ class LocaleTest extends TestCase
 
     public function test_every_language_translates_every_text_and_keeps_its_placeholders(): void
     {
-        // How many plural forms Laravel picks from in each language; Kurdish uses explicit ranges instead.
-        $pluralForms = ['ar' => 6, 'mn' => 1, 'th' => 1, 'tr' => 1, 'zh_CN' => 1, 'ru' => 3];
+        // How many plural forms Laravel picks from in each language (2 when not listed, as for Mongolian);
+        // one form for every count is always allowed. Kurdish uses explicit ranges instead.
+        $pluralForms = ['ar' => 6, 'th' => 1, 'tr' => 1, 'zh_CN' => 1, 'ru' => 3];
         $english = null;
 
         foreach (array_diff(array_keys(Locales::ALL), ['en']) as $locale) {

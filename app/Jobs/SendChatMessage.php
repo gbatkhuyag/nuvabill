@@ -52,7 +52,8 @@ class SendChatMessage implements ShouldQueue
 
     private function sendToClient(ChatLink $link, Telegram $telegram, WhatsApp $whatsApp): void
     {
-        $locale = Locales::isSupported($link->client->language) ? (string) $link->client->language : Locales::default();
+        // The same rule as emails: a language the host switched off is not used.
+        $locale = Locales::forClient($link->client);
         $message = ChatMessages::build($this->event, $this->context, $locale);
 
         if ($message === null) {

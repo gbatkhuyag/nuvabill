@@ -75,11 +75,15 @@ languages.
 **Currencies**
 
 - You can now bill in 150 currencies instead of 38: the national currencies in use today (ISO 4217), except
-  those of North Korea, Iran, Syria and Cuba. The currencies you could pick before are all still there.
+  those of North Korea, Iran, Syria and Cuba, and Venezuela's digital bolívar (VED). The currencies you could pick
+  before are all still there.
 - Each payment method is only offered for currencies it charges correctly. Nuvabill keeps every amount with two
-  decimal places, so Stripe is not offered for currencies Stripe counts with none or three (such as JPY, KRW, KWD
-  and BHD), for Icelandic króna, or for Iraqi and Libyan dinar, which Stripe does not take. PayPal keeps its own
-  list, and FIB, FastPay and Wayl take Iraqi dinar only.
+  decimal places, so Stripe is only offered for currencies Stripe takes with two decimal places. It is not offered
+  for currencies Stripe counts with none or three (such as JPY, KRW, KWD and BHD), for Icelandic króna and Ugandan
+  shilling, or for currencies Stripe does not take (such as Iraqi and Libyan dinar). A new currency is refused
+  until it has been checked. PayPal keeps its own list, and FIB, FastPay and Wayl take Iraqi dinar only.
+- Currencies with three decimals, such as Kuwaiti dinar, show the two decimals Nuvabill keeps (KWD 1,234.00, not
+  KWD 1,234.000).
 
 **Languages**
 
@@ -88,6 +92,8 @@ languages.
   browser still wins, and the admin area never follows the client side. Signing in to the admin area does not count
   as a pick.
 - Emails and PDF invoices still use the language saved on each client's account.
+- Telegram and WhatsApp messages to a client use the client's language only while that language is switched on,
+  the same as emails. Otherwise they use the site language.
 - The announcements RSS feed is now in your default language, or in the language of its link (`?lang=de`), and no
   longer in the language picked in the browser that fetched it, so a shared cache cannot hand one reader's language
   to another. A feed in another language links to the pages in that language, its own address included, and the

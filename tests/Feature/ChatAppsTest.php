@@ -138,6 +138,34 @@ class ChatAppsTest extends TestCase
         Mail::assertSent(TemplatedMessage::class, fn (TemplatedMessage $mail): bool => $mail->hasTo($client->email));
     }
 
+    public function test_chat_messages_use_the_clients_language_only_while_the_host_has_it_switched_on(): void
+    {
+        Mail::fake();
+        $this->connectTelegram();
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => []])]);
+        $client = Client::factory()->create(['first_name' => 'Raz', 'language' => 'de']);
+        ChatLink::create(['client_id' => $client->id, 'channel' => 'telegram', 'external_id' => '555']);
+        $ticket = app(TicketDesk::class)->open($client, TicketDepartment::query()->firstOrFail(), 'SSL', 'Not secure warning');
+
+        // German is switched on: answers and alerts are in German.
+        $this->setSettings(['locale.enabled' => ['en', 'de'], 'locale.default' => 'en']);
+        $this->telegramUpdate(['message' => ['chat' => ['id' => 555, 'type' => 'private'], 'text' => '/invoices']]);
+        app(TicketDesk::class)->replyAsStaff($ticket, Admin::factory()->create(), 'First answer.');
+
+        Http::assertSent(fn (Request $request): bool => str_contains((string) $request['text'], 'Sie haben keine unbezahlten Rechnungen.'));
+        Http::assertSent(fn (Request $request): bool => str_contains((string) $request['text'], 'Neue Antwort auf Ticket'));
+
+        // The host switches German off: chat follows the same rule as emails and uses the site language.
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => []])]);
+        $this->setSettings(['locale.enabled' => ['en']]);
+        $this->telegramUpdate(['message' => ['chat' => ['id' => 555, 'type' => 'private'], 'text' => '/invoices']]);
+        app(TicketDesk::class)->replyAsStaff($ticket, Admin::factory()->create(), 'Second answer.');
+
+        Http::assertSent(fn (Request $request): bool => str_contains((string) $request['text'], 'You have no unpaid invoices.'));
+        Http::assertSent(fn (Request $request): bool => str_contains((string) $request['text'], 'New reply on ticket'));
+        Http::assertNotSent(fn (Request $request): bool => str_contains((string) $request['text'], 'Second answer.') && str_contains((string) $request['text'], 'Neue Antwort'));
+    }
+
     public function test_messages_the_owner_switched_off_are_not_sent(): void
     {
         Mail::fake();
