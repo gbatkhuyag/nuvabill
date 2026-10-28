@@ -98,6 +98,45 @@ class EmailLanguageTest extends TestCase
         $this->assertSame(1, $invoice->translations()->where('locale', 'fr')->count());
     }
 
+    public function test_mongolian_clients_get_mongolian_emails_once_staff_turn_mongolian_on(): void
+    {
+        Mail::fake();
+        $client = Client::factory()->create(['language' => 'mn']);
+
+        // Mongolian is off on a new site, so the client gets the default language.
+        app(TemplateMailer::class)->send('client.welcome', $client);
+        Mail::assertSent(TemplatedMessage::class, fn (TemplatedMessage $mail): bool => str_starts_with($mail->subjectLine, 'Welcome to'));
+
+        Mail::fake();
+        $this->setSettings(['locale.enabled' => ['en', 'mn']]);
+        app(TemplateMailer::class)->send('client.welcome', $client);
+
+        Mail::assertSent(TemplatedMessage::class, fn (TemplatedMessage $mail): bool => str_ends_with($mail->subjectLine, '-д тавтай морилно уу')
+            && str_contains($mail->render(), 'lang="mn"'));
+    }
+
+    public function test_a_site_that_updates_gets_the_mongolian_emails_but_not_for_rewritten_templates(): void
+    {
+        $welcome = EmailTemplate::query()->where('key', 'client.welcome')->firstOrFail();
+        $invoice = EmailTemplate::query()->where('key', 'invoice.created')->firstOrFail();
+        DB::table('email_template_translations')->where('locale', 'mn')->delete();
+        $invoice->translations()->where('locale', 'de')->delete();
+        $welcome->update(['subject' => 'Hello from our team']);
+
+        $migration = require database_path('migrations/2027_08_01_000017_add_mongolian_email_template_translations.php');
+        $migration->up();
+        $migration->up();
+
+        $this->assertSame(1, $invoice->translations()->where('locale', 'mn')->count());
+        $this->assertSame(0, $invoice->translations()->where('locale', 'de')->count(), 'Other languages are left alone.');
+        $this->assertSame(0, $welcome->translations()->where('locale', 'mn')->count());
+        $this->assertArrayNotHasKey('mn', Locales::enabled(), 'Adding the emails does not switch Mongolian on.');
+
+        $migration->down();
+        $this->assertSame(0, $invoice->translations()->where('locale', 'mn')->count());
+        $this->assertSame(1, $invoice->translations()->where('locale', 'fr')->count());
+    }
+
     public function test_a_rewritten_template_keeps_the_hosts_words_in_every_language(): void
     {
         $template = EmailTemplate::query()->where('key', 'client.welcome')->firstOrFail();
@@ -108,7 +147,7 @@ class EmailLanguageTest extends TestCase
 
         $this->assertSame(0, $template->translations()->count());
         $this->assertSame('Hello from our team', $template->fresh('translations')->textFor('de')[0]);
-        $this->assertSame(10, EmailTemplate::query()->where('key', 'invoice.created')->firstOrFail()->translations()->count());
+        $this->assertSame(11, EmailTemplate::query()->where('key', 'invoice.created')->firstOrFail()->translations()->count());
     }
 
     public function test_staff_edit_and_remove_a_translation(): void
@@ -134,12 +173,14 @@ class EmailLanguageTest extends TestCase
             $seen[] = app()->getLocale();
         });
 
-        foreach (['de', 'ar', 'th', 'zh_CN'] as $language) {
+        $this->setSettings(['locale.enabled' => ['en', 'de', 'ar', 'mn', 'th', 'zh_CN']]);
+
+        foreach (['de', 'ar', 'mn', 'th', 'zh_CN'] as $language) {
             $invoice = Invoice::factory()->create(['client_id' => Client::factory()->create(['language' => $language])->id]);
             app(InvoicePdf::class)->render($invoice);
         }
 
-        $this->assertSame(['de', 'en', 'en', 'en'], $seen);
+        $this->assertSame(['de', 'en', 'mn', 'en', 'en'], $seen);
         $this->assertSame('en', app()->getLocale(), 'The request language comes back afterwards.');
     }
 }

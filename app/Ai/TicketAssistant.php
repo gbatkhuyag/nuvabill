@@ -153,7 +153,7 @@ class TicketAssistant
         if ($language !== null) {
             return match ($language) {
                 'ar', 'ckb' => 'arabic',
-                'ru' => 'cyrillic',
+                'mn', 'ru' => 'cyrillic',
                 'th' => 'thai',
                 'zh_CN' => 'han',
                 default => 'latin',

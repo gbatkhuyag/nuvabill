@@ -9,9 +9,10 @@ use Illuminate\Http\Request;
 use Locale;
 
 /**
- * The languages Nuvabill speaks: the most used languages in the world, with Kurdish (Sorani) and Thai. Arabic
- * and Kurdish are written right to left; right-to-left languages show prices in Latin digits so
- * invoices and payments read the same everywhere.
+ * The languages Nuvabill speaks: the most used languages in the world, with Kurdish (Sorani), Thai and
+ * Mongolian. Arabic and Kurdish are written right to left; right-to-left languages show prices in Latin
+ * digits so invoices and payments read the same everywhere. Mongolian is off on new sites until staff
+ * turn it on in Settings → General.
  */
 class Locales
 {
@@ -223,7 +224,8 @@ class Locales
 
     /**
      * The language of a PDF. The PDF engine cannot join Arabic letters or draw Thai or Chinese ones,
-     * so those PDFs stay in English.
+     * so those PDFs stay in English. Its font has every Mongolian letter (Ө ө Ү ү too), so Mongolian
+     * PDFs stay in Mongolian.
      */
     public static function forPdf(string $locale): string
     {

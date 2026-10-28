@@ -73,6 +73,72 @@ class LocaleTest extends TestCase
         $this->assertSame(['en', 'th'], array_keys(Locales::enabled()));
     }
 
+    public function test_a_new_site_offers_mongolian_only_after_staff_turn_it_on(): void
+    {
+        // Off on a new site: clients cannot pick it and the client language menu does not list it.
+        $this->assertArrayNotHasKey('mn', Locales::enabled());
+        $this->assertCount(11, Locales::enabled());
+        $this->post(route('language.update'), ['locale' => 'mn'])->assertSessionHasErrors('locale');
+        $this->get(route('client.login', ['lang' => 'mn']))->assertSee('lang="en"', false)->assertDontSee('value="mn"', false);
+        $this->assertSame('en', Locales::forClient(Client::factory()->create(['language' => 'mn'])));
+
+        // The 0.7.0 update step never switches it on, whether staff saved their languages or not.
+        $migration = require database_path('migrations/2027_08_01_000013_keep_enabled_languages_on_update.php');
+        $migration->up();
+        $this->assertArrayNotHasKey('mn', Locales::enabled());
+        Admin::factory()->create();
+        $migration->up();
+        $this->assertArrayNotHasKey('mn', Locales::enabled());
+
+        // Staff turn it on in Settings → General.
+        $this->signInAdmin();
+        $this->get(route('admin.settings.edit'))->assertOk()->assertSee('value="mn"', false);
+        $this->put(route('admin.settings.update'), [
+            'company_name' => 'YourHost',
+            'company_email' => 'billing@host.test',
+            'currency' => 'USD',
+            'renewal_days_before' => 7,
+            'payment_terms_days' => 7,
+            'suspend_days' => 5,
+            'terminate_days' => 30,
+            'accent' => '#0B7A70',
+            'theme' => 'nova',
+            'locale_default' => 'en',
+            'locale_enabled' => ['en', 'mn'],
+        ])->assertSessionHas('status');
+
+        $this->assertSame(['en', 'mn'], array_keys(Locales::enabled()));
+        $this->assertSame('Монгол', Locales::enabled()['mn']);
+
+        $this->post(route('language.update'), ['locale' => 'mn'])->assertRedirect()->assertSessionHasNoErrors();
+        $this->get(route('client.login'))
+            ->assertOk()
+            ->assertSee('lang="mn" dir="ltr"', false)
+            ->assertSee(__('Sign in to your account', locale: 'mn'))
+            ->assertDontSee('Sign in to your account');
+        $this->assertNotSame('Sign in to your account', __('Sign in to your account', locale: 'mn'));
+    }
+
+    public function test_mongolian_has_one_plural_form_and_its_pdfs_stay_in_mongolian(): void
+    {
+        app()->setLocale('mn');
+
+        $this->assertSame('5 нэхэмжлэх', trans_choice(':count invoice|:count invoices', 5));
+        $this->assertSame('1 нэхэмжлэх', trans_choice(':count invoice|:count invoices', 1));
+        $this->assertSame('mn', Locales::forPdf('mn'));
+        $this->assertFalse(Locales::isRtl('mn'));
+
+        // The PDF font has every letter the Mongolian texts use, so a Mongolian PDF has no empty boxes.
+        foreach (['DejaVuSans', 'DejaVuSans-Bold'] as $font) {
+            preg_match_all('/^U (\d+) ;/m', (string) file_get_contents(base_path("vendor/dompdf/dompdf/lib/fonts/{$font}.ufm")), $glyphs);
+            $glyphs = array_flip(array_map('intval', $glyphs[1]));
+            $letters = array_unique(mb_str_split(implode('', json_decode((string) file_get_contents(lang_path('mn.json')), true))));
+            $missing = array_filter($letters, fn (string $letter): bool => mb_ord($letter) >= 32 && ! isset($glyphs[mb_ord($letter)]));
+
+            $this->assertSame([], array_values($missing), "{$font} draws every Mongolian letter.");
+        }
+    }
+
     public function test_the_language_is_saved_on_the_account_and_follows_the_client(): void
     {
         $client = Client::factory()->create();
@@ -225,7 +291,7 @@ class LocaleTest extends TestCase
     public function test_every_language_translates_every_text_and_keeps_its_placeholders(): void
     {
         // How many plural forms Laravel picks from in each language; Kurdish uses explicit ranges instead.
-        $pluralForms = ['ar' => 6, 'th' => 1, 'tr' => 1, 'zh_CN' => 1, 'ru' => 3];
+        $pluralForms = ['ar' => 6, 'mn' => 1, 'th' => 1, 'tr' => 1, 'zh_CN' => 1, 'ru' => 3];
         $english = null;
 
         foreach (array_diff(array_keys(Locales::ALL), ['en']) as $locale) {

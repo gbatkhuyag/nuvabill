@@ -77,7 +77,8 @@ final class ChatMessages
     ];
 
     /**
-     * Nuvabill language => Meta's template language code. Meta has no Kurdish (Sorani) templates.
+     * Nuvabill language => Meta's template language code. Meta has no Kurdish (Sorani) or Mongolian
+     * templates, so those clients get the message in the store's language or in English.
      */
     public const META_LANGUAGES = [
         'en' => 'en', 'ar' => 'ar', 'de' => 'de', 'es' => 'es', 'fr' => 'fr', 'pt_BR' => 'pt_BR', 'ru' => 'ru',

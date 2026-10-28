@@ -758,9 +758,10 @@
 }
 
 /*
- * Figtree only has Latin letters. Pages in Russian, Thai or Chinese use the system font, so every
- * word of a sentence is set in the same font.
+ * Figtree only has Latin letters. Pages in Russian, Mongolian, Thai or Chinese use the system font, so
+ * every word of a sentence is set in the same font.
  */
+:root:lang(mn),
 :root:lang(ru),
 :root:lang(zh) {
     --nb-font-body: system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;

@@ -75,7 +75,8 @@ class Settings
         'license.white_label' => null,
 
         'locale.default' => 'en',
-        'locale.enabled' => ['de', 'en', 'es', 'fr', 'mn', 'pt_BR', 'tr', 'ru', 'ar', 'ckb', 'th', 'zh_CN'],
+        // Mongolian (mn) is off until staff turn it on in Settings → General.
+        'locale.enabled' => ['de', 'en', 'es', 'fr', 'pt_BR', 'tr', 'ru', 'ar', 'ckb', 'th', 'zh_CN'],
 
         'marketplace.developer_share' => 83,
         // Store only: old slug => new slug of renamed items (nuvabill:marketplace-rename).
