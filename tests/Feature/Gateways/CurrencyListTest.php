@@ -43,8 +43,10 @@ class CurrencyListTest extends TestCase
     /**
      * Currencies the server's language data (CLDR) shows without decimals, although ISO 4217 and
      * Stripe count them with two. Each was checked by hand; a currency is only added here after that.
+     * COP, HUF, IDR and PKR lost their decimals in CLDR 48 (ICU 78), while Stripe still charges
+     * them with two (docs.stripe.com/currencies; HUF is only rounded for payouts).
      */
-    private const CHECKED_TWO_DECIMALS = ['AFN', 'ALL', 'LAK', 'LBP', 'MMK', 'RSD', 'SOS', 'YER'];
+    private const CHECKED_TWO_DECIMALS = ['AFN', 'ALL', 'COP', 'HUF', 'IDR', 'LAK', 'LBP', 'MMK', 'PKR', 'RSD', 'SOS', 'YER'];
 
     public function test_the_currency_list_has_only_current_codes_and_no_sanctioned_ones(): void
     {
