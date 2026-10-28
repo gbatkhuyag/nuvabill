@@ -54,7 +54,7 @@ Articles, categories and announcements have a tab for each other language you of
 
 ## Currencies and exchange rates
 
-**Settings → General** lists 150 currencies (current ISO 4217 codes). Each payment method only shows for the
+**Settings → General** lists 155 currencies (current ISO 4217 codes). Each payment method only shows for the
 currencies it charges correctly: for example Stripe is only offered for currencies Stripe takes with two decimal
 places, so not for JPY, KWD, ISK or currencies Stripe does not take, and FIB, FastPay and Wayl take Iraqi dinar only.
 
