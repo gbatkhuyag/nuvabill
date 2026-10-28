@@ -33,6 +33,7 @@ already shipped is in the [changelog](CHANGELOG.md).
 | 0.6.13 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
 | 0.7.0 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Connect to marketplace, Thai, hooks for server modules and dedicated server add-ons |
 | 0.7.1 | Mongolian, 155 currencies, the client side follows the admin language; the public demo keeps chosen add-ons on; marketplace listings are checked for length |
+| 0.7.2 | Security fixes: API keys, typed secrets, refunds sent once, server connections |
 
 ## Next
 

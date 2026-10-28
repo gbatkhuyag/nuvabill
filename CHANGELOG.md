@@ -9,6 +9,7 @@ the [roadmap](ROADMAP.md).
 
 | Version | Released | Highlights |
 |---|---|---|
+| [0.7.2](https://github.com/meroxis/nuvabill/releases/tag/v0.7.2) | Unreleased | Security fixes: API keys after a password reset, typed secrets after form errors, refunds never sent twice, no server passwords over plain HTTP on the internet |
 | [0.7.1](https://github.com/meroxis/nuvabill/releases/tag/v0.7.1) | 28 Oct 2026 | Mongolian (off until you turn it on), 155 currencies, the public demo can switch chosen add-ons on again after every reset; marketplace listings are checked for length before they are saved; the client side follows the admin language when no client language was picked |
 | [0.7.0](https://github.com/meroxis/nuvabill/releases/tag/v0.7.0) | 27 Oct 2026 | Resource sliders, a full server panel with console, Virtualizor 2.0, your own dedicated servers, free Hetzner modules, Connect to marketplace, Thai, more hooks for server modules and dedicated server add-ons |
 | [0.6.13](https://github.com/meroxis/nuvabill/releases/tag/v0.6.13) | 10 Oct 2026 | Virtualizor power buttons work again, a new VPS panel with one-click panel sign-in; stock limits hold on MySQL |
@@ -55,6 +56,51 @@ the [roadmap](ROADMAP.md).
 | [0.1.2](https://github.com/meroxis/nuvabill/releases/tag/v0.1.2) | 26 Sep 2026 | Faster demo resets |
 | [0.1.1](https://github.com/meroxis/nuvabill/releases/tag/v0.1.1) | 26 Sep 2026 | Demo mode and security headers |
 | [0.1.0](https://github.com/meroxis/nuvabill/releases/tag/v0.1.0) | 26 Sep 2026 | First release |
+
+## 0.7.2
+
+[security] Security fixes from a review of sign-ins, saved secrets, refunds and server connections. Sites that
+install security fixes automatically get this update by themselves.
+
+**What staff will notice**
+
+- Making an API key now asks for your password, the same as passkeys and two-factor login.
+- A staff password reset, or a password an owner or manager sets in staff settings, deletes that person's API keys.
+  Tools that use them stop working until a new key is made. When you change your own password on your profile, the
+  box **Also delete my API keys** is ticked; untick it to keep them.
+- Changing your own email or password in **Settings → Staff** now asks for your current password.
+- Servers on plain HTTP: see below. Servers that already use plain HTTP keep working.
+
+**Security**
+
+- **API keys:** a stolen staff session can no longer make an API key that keeps working after the password is
+  reset. The new key shown once on the profile page is no longer kept as plain text in the session.
+- **Typed secrets after a form error:** when a settings form has an error, API keys, tokens, passwords, client
+  secrets, license keys and EPP codes you typed are no longer kept in the session. This covers payment gateways,
+  registrars, add-ons, chat apps, sign-in with Google and others, captcha, the marketplace license key, and a failed
+  captcha on the order form. You type the secret again; the other fields are still filled in.
+- **Session encryption:** new installs keep session data encrypted. Existing sites get a new Site health item,
+  **Session data is saved without encryption**, with a one-click fix. Using it signs everyone out once, you too.
+- **Refunds are never sent twice.** Each Stripe or PayPal refund is saved before it is sent, with a fixed key.
+  When the payment service does not answer, pressing Refund again sends the same refund again, so the client is
+  refunded once. While such a refund is open, a new refund must be at least that amount. A wallet refund and its
+  record are now saved together.
+- **Server passwords and tokens over plain HTTP:** a server can only use plain HTTP with the new box **Allow plain
+  HTTP (private network only)**, and only on a private or local address. Servers that already used plain HTTP get
+  the box ticked by the update, so nothing stops working, and Site health lists them: urgent on a public address, a
+  warning on a private network. Plesk requests no longer follow redirects.
+- **Marketplace store:** an uploaded package may not contain its own license stamp file; only the store writes it.
+- **Error logs:** when FIB refuses to start a payment, the activity log keeps the status and FIB's short error
+  code only, not FIB's whole reply.
+
+**Languages**
+
+- Every new text is in all 12 languages. One Thai text was still in English.
+
+**For developers**
+
+- Gateways can implement the new optional contract `App\Contracts\SendsRefundsOnce` to get safe refund retries.
+  Gateways that do not are unchanged.
 
 ## 0.7.1
 

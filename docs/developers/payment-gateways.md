@@ -510,6 +510,13 @@ Gateway refunds arrived in 0.2.0.
    refund ID as the reference.
 4. Throw a `RuntimeException` when the provider refuses.
 
+**Safe retries (0.7.2+):** if the provider takes an idempotency key, also implement
+`App\Contracts\SendsRefundsOnce`: `refundOnce(Transaction $payment, int $amount, string $attemptKey): RefundResult`
+sends the refund with `$attemptKey` as the provider's idempotency key, and `refundKeyHours(): int` says how long the
+provider keeps keys. Throw `App\Extensions\Gateways\RefundUnclear` when the provider gives no clear answer (no
+connection, a timeout, HTTP 5xx or 429). Nuvabill saves each try before it is sent and sends an unclear try again
+with the same key, so the client is refunded once. Stripe and PayPal are the examples.
+
 Nuvabill calls your `refund()` only when:
 
 - the refund was asked to go through the gateway,

@@ -11,6 +11,9 @@ when invoices are overdue, unsuspends them when they are paid, and removes them 
 3. **Products** → open a plan → choose **Automatic setup** and the server, then fill in the module's plan settings.
 
 Connections use HTTPS by default (**Connect with HTTPS**), and the server password and API token are stored encrypted.
+Without HTTPS, the password and token are sent without encryption, so plain HTTP (0.7.2+) needs the box **Allow plain
+HTTP (private network only)** and only works for a private or local address, such as `10.0.0.5`. Servers that used
+plain HTTP before 0.7.2 keep working, and **Site health** lists them until HTTPS is on.
 
 Dedicated servers on your own hardware have no server record: you add each machine under **Hardware** instead. See
 [Dedicated servers](../hardware.md).
